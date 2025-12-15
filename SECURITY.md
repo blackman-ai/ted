@@ -20,7 +20,7 @@ We take the security of Ted seriously. If you discover a security vulnerability,
    - Avoid discussing the vulnerability in public forums
 
 2. **Private Disclosure**
-   Send a detailed report to: security@blackman-ai.com
+   Send a detailed report to: security@useblackman.ai
 
    Include the following information:
    - Description of the vulnerability
