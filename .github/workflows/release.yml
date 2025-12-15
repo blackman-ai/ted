@@ -28,12 +28,12 @@ jobs:
             os: ubuntu-latest
             archive: tar.gz
             cross: true
-          # macOS
+          # macOS (both built on ARM runner, x86_64 is cross-compiled)
           - target: x86_64-apple-darwin
-            os: macos-13  # Intel runner for x86_64 builds
+            os: macos-latest
             archive: tar.gz
           - target: aarch64-apple-darwin
-            os: macos-latest  # ARM runner for aarch64 builds
+            os: macos-latest
             archive: tar.gz
           # Windows
           - target: x86_64-pc-windows-msvc
