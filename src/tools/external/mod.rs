@@ -482,6 +482,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)] // Uses bash scripts not available on Windows
     async fn test_external_tool_execute_echo() {
         let temp_dir = TempDir::new().unwrap();
         let context = create_test_context(&temp_dir);
@@ -525,6 +526,7 @@ echo '{"jsonrpc": "2.0", "result": {"output": "Hello from tool!"}, "id": 1}'
     }
 
     #[tokio::test]
+    #[cfg(unix)] // Uses bash scripts not available on Windows
     async fn test_external_tool_execute_with_recall() {
         let temp_dir = TempDir::new().unwrap();
 
@@ -581,6 +583,7 @@ echo '{"jsonrpc": "2.0", "result": {"output": "Done", "recall": {"files_read": [
     }
 
     #[tokio::test]
+    #[cfg(unix)] // Uses bash scripts not available on Windows
     async fn test_external_tool_execute_error_response() {
         let temp_dir = TempDir::new().unwrap();
         let context = create_test_context(&temp_dir);
