@@ -1,0 +1,5 @@
+/target
+
+# Ted local config and docs
+/.ted/
+tarpaulin-report.json

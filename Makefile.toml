@@ -1,0 +1,182 @@
+[config]
+default_to_workspace = false
+
+[tasks.default]
+alias = "dev"
+
+# ==================== Development ====================
+
+[tasks.dev]
+description = "Run in development mode"
+command = "cargo"
+args = ["run"]
+
+[tasks.dev-trust]
+description = "Run in development mode with trust mode enabled"
+command = "cargo"
+args = ["run", "--", "--trust"]
+
+[tasks.watch]
+description = "Watch for changes and rebuild"
+install_crate = "cargo-watch"
+command = "cargo"
+args = ["watch", "-x", "build"]
+
+# ==================== Build ====================
+
+[tasks.build]
+description = "Build the project"
+command = "cargo"
+args = ["build"]
+
+[tasks.build-release]
+description = "Build release binary"
+command = "cargo"
+args = ["build", "--release"]
+
+[tasks.install]
+description = "Install ted locally"
+command = "cargo"
+args = ["install", "--path", "."]
+
+# ==================== Testing ====================
+
+[tasks.test]
+description = "Run all tests"
+command = "cargo"
+args = ["test"]
+
+[tasks.test-lib]
+description = "Run library tests only"
+command = "cargo"
+args = ["test", "--lib"]
+
+[tasks.test-verbose]
+description = "Run tests with verbose output"
+command = "cargo"
+args = ["test", "--", "--nocapture"]
+
+[tasks.test-specific]
+description = "Run a specific test (use: cargo make test-specific TEST_NAME)"
+command = "cargo"
+args = ["test", "${@}"]
+
+# ==================== Coverage ====================
+
+[tasks.cov]
+description = "Run code coverage analysis"
+install_crate = "cargo-tarpaulin"
+command = "cargo"
+args = ["tarpaulin", "--skip-clean", "--ignore-tests", "--lib", "-o", "stdout"]
+
+[tasks.cov-html]
+description = "Generate HTML coverage report"
+install_crate = "cargo-tarpaulin"
+command = "cargo"
+args = ["tarpaulin", "--skip-clean", "--ignore-tests", "--lib", "-o", "html"]
+
+[tasks.cov-full]
+description = "Run full coverage including binaries"
+install_crate = "cargo-tarpaulin"
+command = "cargo"
+args = ["tarpaulin", "--skip-clean", "--ignore-tests", "-o", "stdout"]
+
+# ==================== Linting & Formatting ====================
+
+[tasks.fmt]
+description = "Format code"
+command = "cargo"
+args = ["fmt"]
+
+[tasks.fmt-check]
+description = "Check code formatting"
+command = "cargo"
+args = ["fmt", "--", "--check"]
+
+[tasks.clippy]
+description = "Run clippy lints"
+command = "cargo"
+args = ["clippy", "--all-targets", "--all-features", "--", "-D", "warnings"]
+
+[tasks.lint]
+description = "Run all lints (fmt + clippy)"
+dependencies = ["fmt-check", "clippy"]
+
+# ==================== Documentation ====================
+
+[tasks.doc]
+description = "Generate documentation"
+command = "cargo"
+args = ["doc", "--no-deps"]
+
+[tasks.doc-open]
+description = "Generate and open documentation"
+command = "cargo"
+args = ["doc", "--no-deps", "--open"]
+
+# ==================== Cleaning ====================
+
+[tasks.clean]
+description = "Clean build artifacts"
+command = "cargo"
+args = ["clean"]
+
+[tasks.clean-coverage]
+description = "Clean coverage artifacts"
+script = ["rm -rf tarpaulin-report.html", "rm -rf cobertura.xml"]
+
+# ==================== CI Tasks ====================
+
+[tasks.ci]
+description = "Run all CI checks"
+dependencies = ["fmt-check", "clippy", "test", "build"]
+
+[tasks.ci-full]
+description = "Run full CI including coverage"
+dependencies = ["fmt-check", "clippy", "test", "cov", "build-release"]
+
+# ==================== Utility ====================
+
+[tasks.check]
+description = "Quick check without building"
+command = "cargo"
+args = ["check"]
+
+[tasks.update]
+description = "Update dependencies"
+command = "cargo"
+args = ["update"]
+
+[tasks.outdated]
+description = "Check for outdated dependencies"
+install_crate = "cargo-outdated"
+command = "cargo"
+args = ["outdated"]
+
+[tasks.audit]
+description = "Audit dependencies for security vulnerabilities"
+install_crate = "cargo-audit"
+command = "cargo"
+args = ["audit"]
+
+[tasks.bloat]
+description = "Analyze binary size"
+install_crate = "cargo-bloat"
+command = "cargo"
+args = ["bloat", "--release"]
+
+[tasks.tree]
+description = "Show dependency tree"
+command = "cargo"
+args = ["tree"]
+
+# ==================== Release ====================
+
+[tasks.release-dry]
+description = "Dry run of release build"
+command = "cargo"
+args = ["build", "--release", "--verbose"]
+
+[tasks.version]
+description = "Show current version"
+script = ["grep '^version' Cargo.toml | head -1"]

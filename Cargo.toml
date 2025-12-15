@@ -1,0 +1,87 @@
+[package]
+name = "ted"
+version = "0.1.0"
+edition = "2021"
+description = "The AI Coding Assistant you always wanted"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/blackman-ai/ted"
+keywords = ["ai", "cli", "coding-assistant", "llm"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+# CLI argument parsing
+clap = { version = "4.0", features = ["derive"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+toml = "0.8"
+
+# HTTP client for LLM API
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# Async traits
+async-trait = "0.1"
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# UUID for chunk IDs
+uuid = { version = "1.0", features = ["v4", "serde"] }
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Streaming SSE parsing
+futures = "0.3"
+futures-util = "0.3"
+tokio-stream = "0.1"
+
+# Terminal UI
+crossterm = "0.28"
+ratatui = "0.29"
+
+# Directory paths
+dirs = "5.0"
+
+# Compression for cold storage
+zstd = "0.13"
+
+# File watching (for hot-reload)
+notify = "7.0"
+
+# Glob patterns
+glob = "0.3"
+
+# Regex for grep
+regex = "1.0"
+
+# Directory walking
+walkdir = "2.0"
+
+# Git repository analysis
+git2 = "0.19"
+
+# Archive extraction for updates
+flate2 = "1.0"
+tar = "0.4"
+zip = "2.2"
+
+[dev-dependencies]
+tempfile = "3.23.0"
+tokio-test = "0.4"
+mockall = "0.11.4"
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+proptest = "1.2"
+wiremock = "0.6"
