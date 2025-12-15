@@ -3,7 +3,9 @@
 # Copyright (C) 2025 Blackman Artificial Intelligence Technologies Inc.
 #
 # Ted installer script
-# Usage: curl -fsSL https://raw.githubusercontent.com/blackman-ai/ted/master/install.sh | sh
+# Usage:
+#   Install:   curl -fsSL https://raw.githubusercontent.com/blackman-ai/ted/master/install.sh | sh
+#   Uninstall: curl -fsSL https://raw.githubusercontent.com/blackman-ai/ted/master/install.sh | sh -s -- --uninstall
 #
 # Environment variables:
 #   TED_INSTALL_DIR - Installation directory (default: ~/.local/bin or /usr/local/bin)
@@ -125,6 +127,61 @@ check_path() {
     esac
 }
 
+# Find ted binary location
+find_ted() {
+    # Check common locations
+    for dir in "$TED_INSTALL_DIR" "$HOME/.local/bin" "/usr/local/bin" "/usr/bin"; do
+        if [ -n "$dir" ] && [ -x "$dir/ted" ]; then
+            echo "$dir/ted"
+            return 0
+        fi
+    done
+
+    # Try which
+    if command -v ted >/dev/null 2>&1; then
+        which ted
+        return 0
+    fi
+
+    return 1
+}
+
+# Uninstall ted
+uninstall() {
+    info "Uninstalling Ted..."
+    echo
+
+    local ted_path=$(find_ted)
+
+    if [ -z "$ted_path" ]; then
+        error "Ted is not installed or could not be found."
+    fi
+
+    info "Found ted at: $ted_path"
+
+    # Get version before removing
+    local version=$("$ted_path" --version 2>/dev/null | head -1 | awk '{print $2}' || echo "unknown")
+
+    # Remove binary
+    if rm "$ted_path" 2>/dev/null; then
+        success "Removed $ted_path"
+    else
+        error "Failed to remove $ted_path. Try running with sudo."
+    fi
+
+    # Optionally remove config directory
+    local config_dir="${TED_HOME:-$HOME/.ted}"
+    if [ -d "$config_dir" ]; then
+        echo
+        warn "Configuration directory exists at: $config_dir"
+        echo "This contains your settings, session history, and custom caps."
+        echo "To remove it, run: rm -rf $config_dir"
+    fi
+
+    echo
+    success "Ted v$version uninstalled successfully!"
+}
+
 # Main installation
 main() {
     info "Installing Ted - AI coding assistant for your terminal"
@@ -235,7 +292,30 @@ main() {
     echo "  1. Set your API key:  export ANTHROPIC_API_KEY=\"your-key\""
     echo "  2. Start chatting:    ted"
     echo
+    echo "To uninstall: curl -fsSL https://raw.githubusercontent.com/${REPO}/master/install.sh | sh -s -- --uninstall"
     echo "For more info, visit: https://github.com/${REPO}"
 }
 
-main "$@"
+# Parse arguments
+case "${1:-}" in
+    --uninstall|-u|uninstall)
+        uninstall
+        ;;
+    --help|-h|help)
+        echo "Ted Installer"
+        echo ""
+        echo "Usage:"
+        echo "  install.sh [options]"
+        echo ""
+        echo "Options:"
+        echo "  --uninstall, -u    Uninstall ted"
+        echo "  --help, -h         Show this help"
+        echo ""
+        echo "Environment variables:"
+        echo "  TED_INSTALL_DIR    Installation directory"
+        echo "  TED_VERSION        Specific version to install"
+        ;;
+    *)
+        main "$@"
+        ;;
+esac

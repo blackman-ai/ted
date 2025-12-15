@@ -2,11 +2,18 @@
 # Copyright (C) 2025 Blackman Artificial Intelligence Technologies Inc.
 #
 # Ted installer script for Windows
-# Usage: irm https://raw.githubusercontent.com/blackman-ai/ted/master/install.ps1 | iex
+# Usage:
+#   Install:   irm https://raw.githubusercontent.com/blackman-ai/ted/master/install.ps1 | iex
+#   Uninstall: & ([scriptblock]::Create((irm https://raw.githubusercontent.com/blackman-ai/ted/master/install.ps1))) -Uninstall
 #
 # Environment variables:
 #   TED_INSTALL_DIR - Installation directory (default: %LOCALAPPDATA%\Programs\ted)
 #   TED_VERSION     - Specific version to install (default: latest)
+
+param(
+    [switch]$Uninstall,
+    [switch]$Help
+)
 
 $ErrorActionPreference = 'Stop'
 
@@ -82,6 +89,90 @@ function Add-ToPath {
         return $true
     }
     return $false
+}
+
+function Find-Ted {
+    # Check TED_INSTALL_DIR
+    if ($env:TED_INSTALL_DIR) {
+        $path = Join-Path $env:TED_INSTALL_DIR $BinaryName
+        if (Test-Path $path) { return $path }
+    }
+
+    # Check default location
+    $defaultPath = Join-Path (Join-Path $env:LOCALAPPDATA "Programs\ted") $BinaryName
+    if (Test-Path $defaultPath) { return $defaultPath }
+
+    # Check PATH
+    $cmd = Get-Command ted -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+
+    return $null
+}
+
+function Invoke-Uninstall {
+    Write-Info "Uninstalling Ted..."
+    Write-Host ""
+
+    $tedPath = Find-Ted
+
+    if (-not $tedPath) {
+        Write-Error "Ted is not installed or could not be found."
+        return
+    }
+
+    Write-Info "Found ted at: $tedPath"
+
+    # Get version before removing
+    try {
+        $version = & $tedPath --version 2>$null | Select-Object -First 1 | ForEach-Object { $_.Split(' ')[1] }
+    }
+    catch {
+        $version = "unknown"
+    }
+
+    # Remove binary
+    try {
+        Remove-Item -Path $tedPath -Force
+        Write-Success "Removed $tedPath"
+    }
+    catch {
+        Write-Error "Failed to remove $tedPath. Error: $_"
+        return
+    }
+
+    # Check if directory is empty and remove it
+    $installDir = Split-Path $tedPath
+    if ((Get-ChildItem $installDir -ErrorAction SilentlyContinue | Measure-Object).Count -eq 0) {
+        Remove-Item -Path $installDir -Force -ErrorAction SilentlyContinue
+    }
+
+    # Note about config directory
+    $configDir = if ($env:TED_HOME) { $env:TED_HOME } else { Join-Path $env:USERPROFILE ".ted" }
+    if (Test-Path $configDir) {
+        Write-Host ""
+        Write-Warn "Configuration directory exists at: $configDir"
+        Write-Host "This contains your settings, session history, and custom caps."
+        Write-Host "To remove it, run: Remove-Item -Recurse -Force '$configDir'"
+    }
+
+    Write-Host ""
+    Write-Success "Ted v$version uninstalled successfully!"
+}
+
+function Show-Help {
+    Write-Host "Ted Installer for Windows"
+    Write-Host ""
+    Write-Host "Usage:"
+    Write-Host "  Install:   irm .../install.ps1 | iex"
+    Write-Host "  Uninstall: & ([scriptblock]::Create((irm .../install.ps1))) -Uninstall"
+    Write-Host ""
+    Write-Host "Parameters:"
+    Write-Host "  -Uninstall    Uninstall ted"
+    Write-Host "  -Help         Show this help"
+    Write-Host ""
+    Write-Host "Environment variables:"
+    Write-Host "  TED_INSTALL_DIR    Installation directory"
+    Write-Host "  TED_VERSION        Specific version to install"
 }
 
 function Main {
@@ -167,6 +258,7 @@ function Main {
         Write-Host "  1. Set your API key:  `$env:ANTHROPIC_API_KEY = 'your-key'"
         Write-Host "  2. Start chatting:    ted"
         Write-Host ""
+        Write-Host "To uninstall: & ([scriptblock]::Create((irm https://raw.githubusercontent.com/$Repo/master/install.ps1))) -Uninstall"
         Write-Host "For more info, visit: https://github.com/$Repo"
     }
     finally {
@@ -175,4 +267,13 @@ function Main {
     }
 }
 
-Main
+# Entry point
+if ($Help) {
+    Show-Help
+}
+elseif ($Uninstall) {
+    Invoke-Uninstall
+}
+else {
+    Main
+}
