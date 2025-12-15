@@ -15,10 +15,11 @@ use super::{ensure_plans_dir, plans_dir, plans_index_path};
 use crate::error::{Result, TedError};
 
 /// Status of a plan
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PlanStatus {
     /// Currently being worked on
+    #[default]
     Active,
     /// User paused work
     Paused,
@@ -47,12 +48,6 @@ impl PlanStatus {
             PlanStatus::Complete => "Complete",
             PlanStatus::Archived => "Archived",
         }
-    }
-}
-
-impl Default for PlanStatus {
-    fn default() -> Self {
-        PlanStatus::Active
     }
 }
 
@@ -197,10 +192,7 @@ impl Plan {
 
 /// Count all tasks including subtasks
 fn count_all_tasks(tasks: &[PlanTask]) -> usize {
-    tasks
-        .iter()
-        .map(|t| 1 + count_all_tasks(&t.subtasks))
-        .sum()
+    tasks.iter().map(|t| 1 + count_all_tasks(&t.subtasks)).sum()
 }
 
 /// Count completed tasks including subtasks

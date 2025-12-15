@@ -682,7 +682,7 @@ mod tests {
 
     #[test]
     fn test_handle_editor_insert_mode_typing() {
-        use crate::tui::editor::{Editor, EditorMode};
+        use crate::tui::editor::Editor;
 
         let settings = Settings::default();
         let mut app = App::new(settings);

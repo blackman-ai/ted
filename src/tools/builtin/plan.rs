@@ -140,12 +140,7 @@ impl PlanUpdateTool {
         // Set project path if available
         if let Some(ref project_root) = context.project_root {
             // Re-fetch the mutable reference after the borrow ends
-            if let Some(info) = store
-                .list()
-                .iter()
-                .find(|p| p.id == plan.info.id)
-                .cloned()
-            {
+            if let Some(info) = store.list().iter().find(|p| p.id == plan.info.id).cloned() {
                 plan.info = info;
             }
             // Update the project path in a separate operation

@@ -224,7 +224,9 @@ impl Editor {
     /// Move cursor right (l)
     pub fn move_right(&mut self) {
         let max_col = self.current_line_len().saturating_sub(1);
-        if self.cursor.1 < max_col || (self.mode == EditorMode::Insert && self.cursor.1 < self.current_line_len()) {
+        if self.cursor.1 < max_col
+            || (self.mode == EditorMode::Insert && self.cursor.1 < self.current_line_len())
+        {
             self.cursor.1 += 1;
         }
     }
@@ -529,7 +531,9 @@ impl Editor {
             "w" => CommandResult::Save,
             "q" => {
                 if self.modified {
-                    CommandResult::Invalid("No write since last change (use :q! to force)".to_string())
+                    CommandResult::Invalid(
+                        "No write since last change (use :q! to force)".to_string(),
+                    )
                 } else {
                     CommandResult::Quit
                 }

@@ -187,13 +187,16 @@ fn parse_task_line(line: &str) -> Option<(usize, bool, String)> {
     // Check for task marker: - [ ] or - [x] or - [X]
     let trimmed = trimmed_start.trim_start_matches('-').trim_start();
 
-    if trimmed.starts_with("[ ]") {
-        let description = trimmed[3..].trim().to_string();
+    if let Some(rest) = trimmed.strip_prefix("[ ]") {
+        let description = rest.trim().to_string();
         if !description.is_empty() {
             return Some((indent, false, description));
         }
-    } else if trimmed.starts_with("[x]") || trimmed.starts_with("[X]") {
-        let description = trimmed[3..].trim().to_string();
+    } else if let Some(rest) = trimmed
+        .strip_prefix("[x]")
+        .or_else(|| trimmed.strip_prefix("[X]"))
+    {
+        let description = rest.trim().to_string();
         if !description.is_empty() {
             return Some((indent, true, description));
         }
@@ -239,10 +242,7 @@ fn get_subtask_count(tasks: &[PlanTask], path: &[(usize, usize)]) -> usize {
 
 /// Count all tasks including subtasks
 fn count_all_tasks(tasks: &[PlanTask]) -> usize {
-    tasks
-        .iter()
-        .map(|t| 1 + count_all_tasks(&t.subtasks))
-        .sum()
+    tasks.iter().map(|t| 1 + count_all_tasks(&t.subtasks)).sum()
 }
 
 /// Count completed tasks including subtasks

@@ -607,12 +607,8 @@ fn draw_plan_edit(frame: &mut Frame, area: Rect, app: &App) {
 
     // Draw mode/command line
     let mode_line = match editor.mode() {
-        EditorMode::Normal => {
-            Span::styled("-- NORMAL --", Style::default().fg(Color::Blue))
-        }
-        EditorMode::Insert => {
-            Span::styled("-- INSERT --", Style::default().fg(Color::Green))
-        }
+        EditorMode::Normal => Span::styled("-- NORMAL --", Style::default().fg(Color::Blue)),
+        EditorMode::Insert => Span::styled("-- INSERT --", Style::default().fg(Color::Green)),
         EditorMode::Command => {
             let cmd = format!(":{}", editor.command_buffer());
             Span::styled(cmd, Style::default().fg(Color::Yellow))

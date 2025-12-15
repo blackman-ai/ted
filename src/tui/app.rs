@@ -320,7 +320,10 @@ impl App {
 
     /// Get whether the editor has unsaved changes
     pub fn editor_modified(&self) -> bool {
-        self.editor.as_ref().map(|e| e.is_modified()).unwrap_or(false)
+        self.editor
+            .as_ref()
+            .map(|e| e.is_modified())
+            .unwrap_or(false)
     }
 
     /// Handle editor command result

@@ -23,7 +23,6 @@ use ted::caps::{CapLoader, CapResolver};
 use ted::cli::{ChatArgs, Cli, Commands, UpdateArgs};
 use ted::config::Settings;
 use ted::context::{ContextManager, SessionId};
-use ted::plans::PlanStore;
 use ted::error::{ApiError, Result, TedError};
 use ted::history::{HistoryStore, SessionInfo};
 use ted::llm::message::{ContentBlock, Conversation, Message, MessageContent};
@@ -32,6 +31,7 @@ use ted::llm::provider::{
     StreamEvent,
 };
 use ted::llm::providers::AnthropicProvider;
+use ted::plans::PlanStore;
 use ted::tools::{ToolContext, ToolExecutor, ToolResult};
 use ted::update;
 use ted::utils;
