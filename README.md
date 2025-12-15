@@ -17,23 +17,39 @@ Ted is a fast, portable CLI tool that brings Claude's coding capabilities direct
 
 ## Installation
 
-### From Source
+### Quick Install (Recommended)
 
+**macOS / Linux:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/blackman-ai/ted/master/install.sh | sh
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/blackman-ai/ted/master/install.ps1 | iex
+```
+
+### Other Methods
+
+**Cargo (Rust users):**
+```bash
+cargo install --git https://github.com/blackman-ai/ted.git
+```
+
+**From Source:**
 ```bash
 git clone https://github.com/blackman-ai/ted.git
 cd ted
 cargo build --release
+# Binary at target/release/ted
 ```
 
-The binary will be at `target/release/ted`. Add it to your PATH or copy to `/usr/local/bin/`.
+**Pre-built Binaries:**
 
-### Pre-built Binaries
-
-Download the latest release for your platform from [GitHub Releases](https://github.com/blackman-ai/ted/releases):
-
-- **macOS**: `ted-x86_64-apple-darwin.tar.gz` or `ted-aarch64-apple-darwin.tar.gz` (Apple Silicon)
-- **Linux**: `ted-x86_64-unknown-linux-gnu.tar.gz` or `ted-aarch64-unknown-linux-gnu.tar.gz`
-- **Windows**: `ted-x86_64-pc-windows-msvc.zip`
+Download from [GitHub Releases](https://github.com/blackman-ai/ted/releases):
+- macOS: `ted-x86_64-apple-darwin.tar.gz` (Intel) or `ted-aarch64-apple-darwin.tar.gz` (Apple Silicon)
+- Linux: `ted-x86_64-unknown-linux-gnu.tar.gz` or `ted-aarch64-unknown-linux-gnu.tar.gz`
+- Windows: `ted-x86_64-pc-windows-msvc.zip`
 
 ### Requirements
 
