@@ -4,6 +4,8 @@
 
 Ted is a fast, portable CLI tool that brings Claude's coding capabilities directly to your command line. It features a unique "caps" system for stackable AI personas, persistent context management, and powerful tool use for file operations and shell commands.
 
+[![codecov](https://codecov.io/github/blackman-ai/ted/graph/badge.svg?token=fCa2LiHAMq)](https://codecov.io/github/blackman-ai/ted)
+
 ## Features
 
 - **Interactive Chat** - Conversational coding assistance with streaming responses
