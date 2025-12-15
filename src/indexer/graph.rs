@@ -575,10 +575,10 @@ mod tests {
         let roots = graph.root_files();
 
         // main.rs has no dependents (nothing imports it)
-        assert!(leaves.iter().any(|n| n.path == PathBuf::from("main.rs")));
+        assert!(leaves.iter().any(|n| n.path == Path::new("main.rs")));
 
         // utils.rs has no dependencies
-        assert!(roots.iter().any(|n| n.path == PathBuf::from("utils.rs")));
+        assert!(roots.iter().any(|n| n.path == Path::new("utils.rs")));
     }
 
     #[test]
