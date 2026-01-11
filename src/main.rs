@@ -892,6 +892,10 @@ blocked_commands = []
         let interrupted = Arc::new(AtomicBool::new(false));
         let interrupted_clone = interrupted.clone();
 
+        // Track conversation length before agent loop - needed for Ctrl+C cleanup
+        // since select! cancels the future and run_agent_loop's cleanup won't run
+        let conversation_len_before_agent = conversation.messages.len();
+
         // Run the agent loop with Ctrl+C handling
         let agent_future = run_agent_loop(
             &provider,
@@ -911,6 +915,12 @@ blocked_commands = []
             _ = tokio::signal::ctrl_c() => {
                 // Set the interrupted flag so any ongoing operations can check it
                 interrupted_clone.store(true, Ordering::SeqCst);
+
+                // Restore conversation to pre-agent-loop state
+                // This is critical because the future was cancelled and run_agent_loop's
+                // cleanup code won't run. Without this, the conversation could be left
+                // with incomplete tool_use/tool_result pairs.
+                conversation.messages.truncate(conversation_len_before_agent);
 
                 // Print interruption message
                 let mut stdout = io::stdout();
@@ -958,8 +968,9 @@ blocked_commands = []
             }
             Err(e) => {
                 eprintln!("\n{}", utils::format_error(&e));
-                // Remove the user message if we failed
-                conversation.messages.pop();
+                // Note: conversation is already restored to pre-call state by run_agent_loop
+                // which handles the complex case of multi-turn tool use where multiple
+                // messages (assistant with tool_use, user with tool_result) may have been added
             }
         }
     }
@@ -969,8 +980,52 @@ blocked_commands = []
 
 /// Run the agent loop - handles streaming, tool use, and multi-turn interactions
 /// Returns Ok(true) if completed normally, Ok(false) if interrupted by Ctrl+C
+/// On error or interruption, automatically restores conversation to its initial state.
 #[allow(clippy::too_many_arguments)]
 async fn run_agent_loop(
+    provider: &AnthropicProvider,
+    model: &str,
+    conversation: &mut Conversation,
+    tool_executor: &mut ToolExecutor,
+    settings: &Settings,
+    context_manager: &ContextManager,
+    stream: bool,
+    active_caps: &[String],
+    interrupted: Arc<AtomicBool>,
+) -> Result<bool> {
+    // Track the conversation length at the start so we can restore on error/interrupt
+    let initial_message_count = conversation.messages.len();
+
+    let result = run_agent_loop_inner(
+        provider,
+        model,
+        conversation,
+        tool_executor,
+        settings,
+        context_manager,
+        stream,
+        active_caps,
+        interrupted,
+    )
+    .await;
+
+    // On error OR interruption, restore conversation to its initial state
+    // This is critical for multi-turn tool use where multiple messages
+    // (assistant with tool_use, user with tool_result) may have been added
+    // before the failure/interruption occurred
+    match &result {
+        Err(_) | Ok(false) => {
+            conversation.messages.truncate(initial_message_count);
+        }
+        Ok(true) => {}
+    }
+
+    result
+}
+
+/// Inner implementation of the agent loop
+#[allow(clippy::too_many_arguments)]
+async fn run_agent_loop_inner(
     provider: &AnthropicProvider,
     model: &str,
     conversation: &mut Conversation,

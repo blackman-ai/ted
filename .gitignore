@@ -3,3 +3,4 @@
 # Ted local config and docs
 /.ted/
 tarpaulin-report.json
+.DS_Store
