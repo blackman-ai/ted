@@ -37,6 +37,10 @@ pub struct ProvidersConfig {
     #[serde(default)]
     pub anthropic: AnthropicConfig,
 
+    /// Ollama local model configuration
+    #[serde(default)]
+    pub ollama: OllamaConfig,
+
     /// OpenAI configuration (future)
     #[serde(default)]
     pub openai: Option<OpenAIConfig>,
@@ -64,6 +68,18 @@ pub struct AnthropicConfig {
     /// Base URL for API (for custom endpoints)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
+}
+
+/// Ollama local model configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OllamaConfig {
+    /// Base URL for Ollama API
+    #[serde(default = "default_ollama_base_url")]
+    pub base_url: String,
+
+    /// Default model to use with Ollama
+    #[serde(default = "default_ollama_model")]
+    pub default_model: String,
 }
 
 /// OpenAI configuration (placeholder for future)
@@ -151,6 +167,14 @@ fn default_anthropic_model() -> String {
     "claude-sonnet-4-20250514".to_string()
 }
 
+fn default_ollama_base_url() -> String {
+    "http://localhost:11434".to_string()
+}
+
+fn default_ollama_model() -> String {
+    "qwen2.5-coder:14b".to_string()
+}
+
 fn default_caps() -> Vec<String> {
     vec!["base".to_string()]
 }
@@ -197,6 +221,15 @@ impl Default for AnthropicConfig {
             api_key_env: default_anthropic_api_key_env(),
             default_model: default_anthropic_model(),
             base_url: None,
+        }
+    }
+}
+
+impl Default for OllamaConfig {
+    fn default() -> Self {
+        Self {
+            base_url: default_ollama_base_url(),
+            default_model: default_ollama_model(),
         }
     }
 }
@@ -602,5 +635,45 @@ mod tests {
         let path_str = config.storage_path.to_string_lossy();
         assert!(path_str.contains(".ted"));
         assert!(path_str.contains("context"));
+    }
+
+    #[test]
+    fn test_ollama_config_default() {
+        let config = OllamaConfig::default();
+        assert_eq!(config.base_url, "http://localhost:11434");
+        assert_eq!(config.default_model, "qwen2.5-coder:14b");
+    }
+
+    #[test]
+    fn test_ollama_config_serialization() {
+        let config = OllamaConfig {
+            base_url: "http://custom:8080".to_string(),
+            default_model: "llama3.2:latest".to_string(),
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: OllamaConfig = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.base_url, "http://custom:8080");
+        assert_eq!(parsed.default_model, "llama3.2:latest");
+    }
+
+    #[test]
+    fn test_ollama_default_functions() {
+        assert_eq!(default_ollama_base_url(), "http://localhost:11434");
+        assert_eq!(default_ollama_model(), "qwen2.5-coder:14b");
+    }
+
+    #[test]
+    fn test_settings_with_ollama_provider() {
+        let mut settings = Settings::default();
+        settings.providers.ollama.base_url = "http://custom:8080".to_string();
+        settings.providers.ollama.default_model = "codellama:latest".to_string();
+
+        let json = serde_json::to_string(&settings).unwrap();
+        let parsed: Settings = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.providers.ollama.base_url, "http://custom:8080");
+        assert_eq!(parsed.providers.ollama.default_model, "codellama:latest");
     }
 }

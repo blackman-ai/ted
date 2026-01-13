@@ -53,7 +53,8 @@ Download from [GitHub Releases](https://github.com/blackman-ai/ted/releases):
 
 ### Requirements
 
-- An Anthropic API key
+- An Anthropic API key (for Anthropic provider)
+- OR [Ollama](https://ollama.ai) installed locally (for local models)
 
 ## Quick Start
 
@@ -283,6 +284,89 @@ Ted supports these Claude models:
 | `claude-3-5-haiku-20241022` | Fastest, highest rate limits, cheapest |
 
 Switch models with `/model <name>` or `-m` flag.
+
+## Local Models with Ollama
+
+Ted supports running local models via [Ollama](https://ollama.ai), enabling fully offline AI coding assistance.
+
+### Setup
+
+1. **Install Ollama:**
+   - macOS/Linux: `curl -fsSL https://ollama.com/install.sh | sh`
+   - Or download from [ollama.ai](https://ollama.ai)
+
+2. **Start Ollama:**
+   ```bash
+   ollama serve
+   ```
+   (Or launch the Ollama desktop app)
+
+3. **Pull a model:**
+   ```bash
+   ollama pull qwen2.5-coder:14b
+   ```
+
+4. **Configure Ted to use Ollama:**
+   ```bash
+   ted settings set provider ollama
+   ```
+
+### Usage
+
+```bash
+# Start with Ollama provider
+ted --provider ollama
+
+# Use a specific model
+ted --provider ollama -m qwen2.5-coder:14b
+
+# Or set as default
+ted settings set provider ollama
+ted settings set ollama.model llama3.2:latest
+```
+
+### Recommended Models
+
+| Model | Description | Tool Support |
+|-------|-------------|--------------|
+| `qwen2.5-coder:14b` | Excellent coding, recommended (default) | Yes |
+| `qwen2.5-coder:7b` | Smaller, faster version | Yes |
+| `llama3.2:latest` | General purpose | Yes |
+| `codellama:latest` | Code focused | Limited |
+| `deepseek-coder-v2:latest` | Strong coding model | Yes |
+| `mistral:latest` | Fast general purpose | Yes |
+
+### Configuration
+
+Settings for Ollama can be configured via CLI or settings file:
+
+```bash
+ted settings set provider ollama           # Set as default provider
+ted settings set ollama.base_url http://localhost:11434  # Custom Ollama URL
+ted settings set ollama.model qwen2.5-coder:14b         # Default model
+```
+
+Or in `~/.ted/settings.json`:
+```json
+{
+  "providers": {
+    "ollama": {
+      "base_url": "http://localhost:11434",
+      "default_model": "qwen2.5-coder:14b"
+    }
+  },
+  "defaults": {
+    "provider": "ollama"
+  }
+}
+```
+
+### Notes
+
+- **Model storage**: Ollama stores models in `~/.ollama/models/`. Remove with `ollama rm <model>`.
+- **Tool calling**: Most modern models support tool calling. If a model doesn't support tools, Ted will still work but won't be able to read/write files.
+- **Context window**: Context limits depend on the model. Check model details with `ollama show <model>`.
+- **Error handling**: If Ollama isn't running, Ted will show a helpful message: "Start the Ollama app or run `ollama serve`"
 
 ## Updating Ted
 

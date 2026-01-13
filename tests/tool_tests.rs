@@ -104,3 +104,51 @@ fn test_tool_context_trust_mode() {
 
     assert!(context.trust_mode);
 }
+
+/// Test that simulates JSON tool call round-trip through streaming
+/// This test reproduces the Ollama JSON tool calling flow
+#[test]
+fn test_json_tool_call_roundtrip() {
+    // Simulate what the Ollama provider does:
+    // 1. Parse JSON tool call from text
+    let model_output = r#"{"name": "glob", "arguments": {"pattern": "**/*"}}"#;
+
+    // Parse it like try_parse_json_tool_call does
+    let parsed: serde_json::Value = serde_json::from_str(model_output).unwrap();
+    let name = parsed.get("name").and_then(|n| n.as_str()).unwrap();
+    let args = parsed.get("arguments").unwrap().clone();
+
+    assert_eq!(name, "glob");
+    assert_eq!(args["pattern"], "**/*");
+
+    // 2. Serialize args to string (like InputJsonDelta does)
+    let args_str = serde_json::to_string(&args).unwrap();
+    assert_eq!(args_str, r#"{"pattern":"**/*"}"#);
+
+    // 3. Parse it back (like ContentBlockStop handler does)
+    let final_input: serde_json::Value = serde_json::from_str(&args_str).unwrap();
+
+    // 4. Access the pattern parameter (like the glob tool does)
+    let pattern = final_input["pattern"].as_str().unwrap();
+    assert_eq!(pattern, "**/*");
+}
+
+/// Test glob tool input extraction
+#[test]
+fn test_glob_tool_input_extraction() {
+    // This is the exact input format the glob tool expects
+    let input = serde_json::json!({"pattern": "**/*.rs"});
+
+    // This is how the glob tool extracts the pattern
+    let pattern = input["pattern"].as_str();
+    assert!(pattern.is_some());
+    assert_eq!(pattern.unwrap(), "**/*.rs");
+}
+
+/// Test that empty object fails pattern extraction (as expected)
+#[test]
+fn test_glob_tool_empty_input_fails() {
+    let input = serde_json::json!({});
+    let pattern = input["pattern"].as_str();
+    assert!(pattern.is_none());
+}

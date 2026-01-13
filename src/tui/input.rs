@@ -519,7 +519,7 @@ mod tests {
         let settings = Settings::default();
         let mut app = App::new(settings);
         app.screen = Screen::Providers;
-        app.provider_index = 0; // API Key
+        app.provider_index = 1; // AnthropicApiKey
         app.input_mode = InputMode::Editing;
         app.input_buffer = "test-key".to_string();
 

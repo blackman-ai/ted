@@ -207,6 +207,8 @@ pub trait Tool: Send + Sync {
 /// Registry of available tools
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
+    /// Aliases mapping alternate names to canonical tool names
+    aliases: HashMap<String, String>,
 }
 
 impl ToolRegistry {
@@ -214,7 +216,33 @@ impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
+            aliases: HashMap::new(),
         }
+    }
+
+    /// Build the default tool aliases
+    fn default_aliases() -> HashMap<String, String> {
+        let mut aliases = HashMap::new();
+        // Common alternate names for file operations
+        aliases.insert("file".to_string(), "file_read".to_string());
+        aliases.insert("read".to_string(), "file_read".to_string());
+        aliases.insert("read_file".to_string(), "file_read".to_string());
+        aliases.insert("cat".to_string(), "file_read".to_string());
+        aliases.insert("write".to_string(), "file_write".to_string());
+        aliases.insert("write_file".to_string(), "file_write".to_string());
+        aliases.insert("edit".to_string(), "file_edit".to_string());
+        aliases.insert("edit_file".to_string(), "file_edit".to_string());
+        // Common alternate names for shell
+        aliases.insert("bash".to_string(), "shell".to_string());
+        aliases.insert("exec".to_string(), "shell".to_string());
+        aliases.insert("run".to_string(), "shell".to_string());
+        aliases.insert("command".to_string(), "shell".to_string());
+        aliases.insert("terminal".to_string(), "shell".to_string());
+        // Common alternate names for search tools
+        aliases.insert("search".to_string(), "grep".to_string());
+        aliases.insert("find".to_string(), "glob".to_string());
+        aliases.insert("ls".to_string(), "glob".to_string());
+        aliases
     }
 
     /// Create a registry with all built-in tools
@@ -229,6 +257,9 @@ impl ToolRegistry {
         registry.register(Arc::new(builtin::GlobTool));
         registry.register(Arc::new(builtin::GrepTool));
         registry.register(Arc::new(builtin::PlanUpdateTool));
+
+        // Add default aliases for common alternate tool names
+        registry.aliases = Self::default_aliases();
 
         registry
     }
@@ -267,9 +298,22 @@ impl ToolRegistry {
         self.tools.insert(arc.name().to_string(), arc);
     }
 
-    /// Get a tool by name
+    /// Get a tool by name, resolving aliases if needed
     pub fn get(&self, name: &str) -> Option<&Arc<dyn Tool>> {
-        self.tools.get(name)
+        // First try direct lookup
+        if let Some(tool) = self.tools.get(name) {
+            return Some(tool);
+        }
+        // Then try alias resolution
+        if let Some(canonical_name) = self.aliases.get(name) {
+            return self.tools.get(canonical_name);
+        }
+        None
+    }
+
+    /// Resolve an alias to the canonical tool name
+    pub fn resolve_alias<'a>(&'a self, name: &'a str) -> &'a str {
+        self.aliases.get(name).map(|s| s.as_str()).unwrap_or(name)
     }
 
     /// Get all tool definitions
@@ -608,5 +652,61 @@ mod tests {
         }
 
         assert!(registry.get("boxed_tool").is_some());
+    }
+
+    #[test]
+    fn test_tool_registry_alias_file_to_file_read() {
+        let registry = ToolRegistry::with_builtins();
+
+        // "file" should resolve to "file_read"
+        let tool = registry.get("file");
+        assert!(tool.is_some());
+        assert_eq!(tool.unwrap().name(), "file_read");
+    }
+
+    #[test]
+    fn test_tool_registry_alias_bash_to_shell() {
+        let registry = ToolRegistry::with_builtins();
+
+        // "bash" should resolve to "shell"
+        let tool = registry.get("bash");
+        assert!(tool.is_some());
+        assert_eq!(tool.unwrap().name(), "shell");
+    }
+
+    #[test]
+    fn test_tool_registry_alias_search_to_grep() {
+        let registry = ToolRegistry::with_builtins();
+
+        // "search" should resolve to "grep"
+        let tool = registry.get("search");
+        assert!(tool.is_some());
+        assert_eq!(tool.unwrap().name(), "grep");
+    }
+
+    #[test]
+    fn test_tool_registry_resolve_alias() {
+        let registry = ToolRegistry::with_builtins();
+
+        assert_eq!(registry.resolve_alias("file"), "file_read");
+        assert_eq!(registry.resolve_alias("bash"), "shell");
+        assert_eq!(registry.resolve_alias("search"), "grep");
+        // Non-aliases should return themselves
+        assert_eq!(registry.resolve_alias("file_read"), "file_read");
+        assert_eq!(registry.resolve_alias("nonexistent"), "nonexistent");
+    }
+
+    #[test]
+    fn test_tool_registry_direct_name_takes_precedence() {
+        let registry = ToolRegistry::with_builtins();
+
+        // Direct tool names should work
+        let tool = registry.get("file_read");
+        assert!(tool.is_some());
+        assert_eq!(tool.unwrap().name(), "file_read");
+
+        let tool = registry.get("shell");
+        assert!(tool.is_some());
+        assert_eq!(tool.unwrap().name(), "shell");
     }
 }

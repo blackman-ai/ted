@@ -37,7 +37,7 @@ args = ["build", "--release"]
 [tasks.install]
 description = "Install ted locally"
 command = "cargo"
-args = ["install", "--path", "."]
+args = ["install", "--path", ".", "--force"]
 
 # ==================== Testing ====================
 

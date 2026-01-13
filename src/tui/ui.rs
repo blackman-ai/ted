@@ -140,22 +140,23 @@ fn draw_main_menu(frame: &mut Frame, area: Rect, app: &App) {
 
 /// Draw the providers screen
 fn draw_providers(frame: &mut Frame, area: Rect, app: &App) {
-    let inner = centered_rect(70, 60, area);
+    let inner = centered_rect(75, 70, area);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2), // Provider name
+            Constraint::Length(2), // Header
             Constraint::Min(0),    // Settings list
         ])
         .split(inner);
 
-    // Provider header
-    let header = Paragraph::new("Anthropic Claude").style(
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
-    );
+    // Header showing current provider
+    let current_provider = &app.settings.defaults.provider;
+    let header = Paragraph::new(format!(
+        "LLM Providers (Enter to toggle/edit, current: {})",
+        current_provider
+    ))
+    .style(Style::default().fg(Color::Yellow));
     frame.render_widget(header, chunks[0]);
 
     // Settings list
@@ -174,17 +175,39 @@ fn draw_providers(frame: &mut Frame, area: Rect, app: &App) {
             } else {
                 "  "
             };
+
+            // Determine if this item belongs to the active provider
+            let is_active_provider_item = match item {
+                ProviderItem::DefaultProvider => true,
+                ProviderItem::AnthropicApiKey | ProviderItem::AnthropicModel => {
+                    current_provider == "anthropic"
+                }
+                ProviderItem::OllamaBaseUrl | ProviderItem::OllamaModel => {
+                    current_provider == "ollama"
+                }
+                ProviderItem::TestConnection | ProviderItem::Back => true,
+            };
+
             let style = if i == app.provider_index {
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD)
+            } else if !is_active_provider_item {
+                Style::default().fg(Color::DarkGray)
             } else {
                 Style::default()
             };
 
             let value = match item {
-                ProviderItem::ApiKey => api_key_display.to_string(),
-                ProviderItem::Model => app.settings.providers.anthropic.default_model.clone(),
+                ProviderItem::DefaultProvider => {
+                    format!("[{}]", current_provider)
+                }
+                ProviderItem::AnthropicApiKey => api_key_display.to_string(),
+                ProviderItem::AnthropicModel => {
+                    app.settings.providers.anthropic.default_model.clone()
+                }
+                ProviderItem::OllamaBaseUrl => app.settings.providers.ollama.base_url.clone(),
+                ProviderItem::OllamaModel => app.settings.providers.ollama.default_model.clone(),
                 ProviderItem::TestConnection => String::new(),
                 ProviderItem::Back => String::new(),
             };
@@ -192,7 +215,7 @@ fn draw_providers(frame: &mut Frame, area: Rect, app: &App) {
             let content = if value.is_empty() {
                 format!("{}{}", prefix, item.label())
             } else {
-                format!("{}{:<16} {}", prefix, item.label(), value)
+                format!("{}{:<20} {}", prefix, item.label(), value)
             };
 
             ListItem::new(content).style(style)
@@ -809,9 +832,10 @@ mod tests {
 
         // Should contain provider-related content
         assert!(content.contains("Providers"));
-        assert!(content.contains("Anthropic"));
-        assert!(content.contains("API Key"));
-        assert!(content.contains("Default Model"));
+        assert!(content.contains("Default Provider"));
+        assert!(content.contains("Anthropic API Key"));
+        assert!(content.contains("Anthropic Model"));
+        assert!(content.contains("Ollama"));
     }
 
     #[test]

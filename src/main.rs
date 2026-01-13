@@ -30,7 +30,7 @@ use ted::llm::provider::{
     CompletionRequest, ContentBlockDelta, ContentBlockResponse, LlmProvider, StopReason,
     StreamEvent,
 };
-use ted::llm::providers::AnthropicProvider;
+use ted::llm::providers::{AnthropicProvider, OllamaProvider};
 use ted::plans::PlanStore;
 use ted::tools::{ToolContext, ToolExecutor, ToolResult};
 use ted::update;
@@ -105,17 +105,168 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Run interactive chat mode
-async fn run_chat(args: ChatArgs, settings: Settings) -> Result<()> {
-    // Get API key
-    let api_key = settings.get_anthropic_api_key().ok_or_else(|| {
-        TedError::Config(
-            "No Anthropic API key found. Set ANTHROPIC_API_KEY environment variable or run 'ted settings'".to_string()
-        )
-    })?;
+/// Check if provider is configured and prompt user to set up if not
+fn check_provider_configuration(settings: &Settings, provider_name: &str) -> Result<Settings> {
+    match provider_name {
+        "ollama" => {
+            // Ollama doesn't require an API key, just needs to be running
+            // We'll check connectivity later
+            Ok(settings.clone())
+        }
+        _ => {
+            // Anthropic (default) requires an API key
+            if settings.get_anthropic_api_key().is_some() {
+                return Ok(settings.clone());
+            }
 
-    // Create provider
-    let provider = AnthropicProvider::new(api_key);
+            // No API key configured - prompt the user
+            let mut stdout = io::stdout();
+            println!();
+            stdout.execute(SetForegroundColor(Color::Cyan))?;
+            print!("Welcome to Ted!");
+            stdout.execute(ResetColor)?;
+            println!();
+            println!();
+            println!("No LLM provider is configured. You have two options:");
+            println!();
+            stdout.execute(SetForegroundColor(Color::Yellow))?;
+            print!("  1.");
+            stdout.execute(ResetColor)?;
+            println!(" Use Anthropic Claude (requires API key)");
+            println!("     Get your API key at: https://console.anthropic.com/");
+            println!();
+            stdout.execute(SetForegroundColor(Color::Yellow))?;
+            print!("  2.");
+            stdout.execute(ResetColor)?;
+            println!(" Use Ollama for local models (free, runs on your machine)");
+            println!("     Install from: https://ollama.ai");
+            println!();
+            print!("Choose an option [1/2], or 's' for settings: ");
+            stdout.flush()?;
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let choice = input.trim().to_lowercase();
+
+            let mut updated_settings = settings.clone();
+
+            match choice.as_str() {
+                "2" | "ollama" => {
+                    // Switch to Ollama
+                    updated_settings.defaults.provider = "ollama".to_string();
+                    updated_settings.save()?;
+                    println!();
+                    stdout.execute(SetForegroundColor(Color::Green))?;
+                    print!("Provider set to Ollama.");
+                    stdout.execute(ResetColor)?;
+                    println!();
+                    println!("Make sure Ollama is running: ollama serve");
+                    println!();
+                    Ok(updated_settings)
+                }
+                "1" | "anthropic" | "" => {
+                    // Prompt for API key
+                    println!();
+                    print!("Enter your Anthropic API key: ");
+                    stdout.flush()?;
+
+                    let mut api_key = String::new();
+                    io::stdin().read_line(&mut api_key)?;
+                    let api_key = api_key.trim().to_string();
+
+                    if api_key.is_empty() {
+                        return Err(TedError::Config(
+                            "No API key provided. Run 'ted settings' to configure.".to_string(),
+                        ));
+                    }
+
+                    // Validate key format (basic check)
+                    if !api_key.starts_with("sk-") {
+                        stdout.execute(SetForegroundColor(Color::Yellow))?;
+                        print!("Warning:");
+                        stdout.execute(ResetColor)?;
+                        println!(" API key doesn't start with 'sk-'. Saving anyway.");
+                    }
+
+                    updated_settings.providers.anthropic.api_key = Some(api_key);
+                    updated_settings.save()?;
+                    println!();
+                    stdout.execute(SetForegroundColor(Color::Green))?;
+                    print!("API key saved.");
+                    stdout.execute(ResetColor)?;
+                    println!(" Starting Ted...");
+                    println!();
+                    Ok(updated_settings)
+                }
+                "s" | "settings" => {
+                    // Launch settings TUI
+                    drop(input); // Release stdin
+                    run_settings_tui()?;
+                    // Reload settings after TUI
+                    let reloaded = Settings::load()?;
+                    // Check again if provider is now configured
+                    if reloaded.defaults.provider == "ollama"
+                        || reloaded.get_anthropic_api_key().is_some()
+                    {
+                        Ok(reloaded)
+                    } else {
+                        Err(TedError::Config(
+                            "No provider configured. Run 'ted' again after setting up.".to_string(),
+                        ))
+                    }
+                }
+                _ => Err(TedError::Config(
+                    "Invalid choice. Run 'ted' again to configure.".to_string(),
+                )),
+            }
+        }
+    }
+}
+
+/// Run interactive chat mode
+async fn run_chat(args: ChatArgs, mut settings: Settings) -> Result<()> {
+    // Determine which provider to use
+    let provider_name = args
+        .provider
+        .clone()
+        .unwrap_or_else(|| settings.defaults.provider.clone());
+
+    // Check provider configuration and prompt if needed
+    settings = check_provider_configuration(&settings, &provider_name)?;
+
+    // Re-determine provider in case it changed during setup
+    let provider_name = args
+        .provider
+        .clone()
+        .unwrap_or_else(|| settings.defaults.provider.clone());
+
+    // Create the appropriate provider
+    let provider: Box<dyn LlmProvider> = match provider_name.as_str() {
+        "ollama" => {
+            let ollama_provider =
+                OllamaProvider::with_base_url(&settings.providers.ollama.base_url);
+            // Perform health check
+            if let Err(e) = ollama_provider.health_check().await {
+                let mut stdout = io::stdout();
+                println!();
+                stdout.execute(SetForegroundColor(Color::Yellow))?;
+                print!("Ollama is not running.");
+                stdout.execute(ResetColor)?;
+                println!();
+                println!("Start Ollama with: ollama serve");
+                println!("Or switch to Anthropic: ted settings");
+                return Err(e);
+            }
+            Box::new(ollama_provider)
+        }
+        _ => {
+            // Get API key (anthropic is the default)
+            let api_key = settings.get_anthropic_api_key().ok_or_else(|| {
+                TedError::Config("No Anthropic API key found. Run 'ted' to configure.".to_string())
+            })?;
+            Box::new(AnthropicProvider::new(api_key))
+        }
+    };
 
     // Load and resolve caps
     let mut cap_names: Vec<String> = if args.cap.is_empty() {
@@ -133,7 +284,10 @@ async fn run_chat(args: ChatArgs, settings: Settings) -> Result<()> {
         .model
         .clone()
         .or_else(|| merged_cap.preferred_model().map(|s| s.to_string()))
-        .unwrap_or_else(|| settings.providers.anthropic.default_model.clone());
+        .unwrap_or_else(|| match provider_name.as_str() {
+            "ollama" => settings.providers.ollama.default_model.clone(),
+            _ => settings.providers.anthropic.default_model.clone(),
+        });
 
     // Create conversation with system prompt from caps
     let mut conversation = Conversation::new();
@@ -237,7 +391,13 @@ async fn run_chat(args: ChatArgs, settings: Settings) -> Result<()> {
     }
 
     // Print welcome message with cap info
-    print_welcome(&model, args.trust, &session_id, &merged_cap.source_caps)?;
+    print_welcome(
+        &provider_name,
+        &model,
+        args.trust,
+        &session_id,
+        &merged_cap.source_caps,
+    )?;
 
     // Main chat loop
     loop {
@@ -318,11 +478,21 @@ async fn run_chat(args: ChatArgs, settings: Settings) -> Result<()> {
                         println!("\n✓ Settings updated");
                         stdout.execute(ResetColor)?;
 
-                        // Check if model changed
-                        let new_model = new_settings.providers.anthropic.default_model.clone();
+                        // Check if model changed (use correct provider)
+                        let new_model = if new_settings.defaults.provider == "ollama" {
+                            new_settings.providers.ollama.default_model.clone()
+                        } else {
+                            new_settings.providers.anthropic.default_model.clone()
+                        };
                         if new_model != model {
                             model = new_model;
                             println!("  Model: {}", model);
+                        }
+
+                        // Check if provider changed
+                        if new_settings.defaults.provider != settings.defaults.provider {
+                            settings.defaults.provider = new_settings.defaults.provider.clone();
+                            println!("  Provider: {}", settings.defaults.provider);
                         }
 
                         // Check if default caps changed
@@ -898,7 +1068,7 @@ blocked_commands = []
 
         // Run the agent loop with Ctrl+C handling
         let agent_future = run_agent_loop(
-            &provider,
+            provider.as_ref(),
             &model,
             &mut conversation,
             &mut tool_executor,
@@ -983,7 +1153,7 @@ blocked_commands = []
 /// On error or interruption, automatically restores conversation to its initial state.
 #[allow(clippy::too_many_arguments)]
 async fn run_agent_loop(
-    provider: &AnthropicProvider,
+    provider: &dyn LlmProvider,
     model: &str,
     conversation: &mut Conversation,
     tool_executor: &mut ToolExecutor,
@@ -1026,7 +1196,7 @@ async fn run_agent_loop(
 /// Inner implementation of the agent loop
 #[allow(clippy::too_many_arguments)]
 async fn run_agent_loop_inner(
-    provider: &AnthropicProvider,
+    provider: &dyn LlmProvider,
     model: &str,
     conversation: &mut Conversation,
     tool_executor: &mut ToolExecutor,
@@ -1036,6 +1206,11 @@ async fn run_agent_loop_inner(
     active_caps: &[String],
     interrupted: Arc<AtomicBool>,
 ) -> Result<bool> {
+    // Track recent tool calls for loop detection
+    // Format: (tool_name, serialized_input)
+    let mut recent_tool_calls: Vec<(String, String)> = Vec::new();
+    const MAX_CONSECUTIVE_IDENTICAL_CALLS: usize = 2;
+
     loop {
         // Check if we were interrupted before starting a new iteration
         if interrupted.load(Ordering::SeqCst) {
@@ -1116,8 +1291,52 @@ async fn run_agent_loop_inner(
         if !tool_uses.is_empty() {
             println!(); // Newline before tool output
             let mut tool_results: Vec<ToolResult> = Vec::new();
+            let mut loop_detected = false;
 
             for (id, name, input) in &tool_uses {
+                // Serialize input for comparison
+                let input_str = serde_json::to_string(input).unwrap_or_default();
+                let current_call = (name.clone(), input_str.clone());
+
+                // Check for loop: count how many recent calls match this one
+                let consecutive_matches = recent_tool_calls
+                    .iter()
+                    .rev()
+                    .take_while(|call| *call == &current_call)
+                    .count();
+
+                if consecutive_matches >= MAX_CONSECUTIVE_IDENTICAL_CALLS {
+                    // Loop detected! Inject an error message instead of executing
+                    loop_detected = true;
+                    println!(
+                        "  ⚠️  Loop detected: '{}' called {} times with same arguments. Breaking loop.",
+                        name,
+                        consecutive_matches + 1
+                    );
+
+                    let error_result = ToolResult::error(
+                        id.clone(),
+                        format!(
+                            "LOOP DETECTED: You have called '{}' {} times in a row with the same arguments. \
+                            This appears to be a loop. Please try a DIFFERENT approach or tool. \
+                            If you were searching, try reading a specific file instead. \
+                            If you need more information, try asking the user for clarification.",
+                            name,
+                            consecutive_matches + 1
+                        ),
+                    );
+                    tool_results.push(error_result);
+                    recent_tool_calls.clear(); // Reset to give model a fresh start
+                    continue;
+                }
+
+                // Track this call
+                recent_tool_calls.push(current_call);
+                // Keep only the last 10 calls
+                if recent_tool_calls.len() > 10 {
+                    recent_tool_calls.remove(0);
+                }
+
                 // Display tool invocation
                 print_tool_invocation(name, input)?;
 
@@ -1163,6 +1382,12 @@ async fn run_agent_loop_inner(
                 token_count: None,
             });
 
+            // If we detected a loop, give the model one more chance to recover
+            // If it loops again, the next iteration will catch it
+            if loop_detected {
+                println!("\n  Giving model a chance to try a different approach...\n");
+            }
+
             // Add a small delay before the next API call to help with rate limiting
             // This is especially important for multi-tool responses
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1183,7 +1408,7 @@ async fn run_agent_loop_inner(
 
 /// Get response from LLM with retry logic for rate limits
 async fn get_response_with_retry(
-    provider: &AnthropicProvider,
+    provider: &dyn LlmProvider,
     request: CompletionRequest,
     stream: bool,
     active_caps: &[String],
@@ -1240,7 +1465,7 @@ async fn get_response_with_retry(
 
 /// Stream the response from the LLM and return content blocks
 async fn stream_response(
-    provider: &AnthropicProvider,
+    provider: &dyn LlmProvider,
     request: CompletionRequest,
     active_caps: &[String],
 ) -> Result<(Vec<ContentBlockResponse>, Option<StopReason>)> {
@@ -1336,14 +1561,33 @@ async fn stream_response(
 
 /// Run single question mode
 async fn run_ask(args: ted::cli::AskArgs, settings: Settings) -> Result<()> {
-    let api_key = settings
-        .get_anthropic_api_key()
-        .ok_or_else(|| TedError::Config("No Anthropic API key found.".to_string()))?;
+    // Determine which provider to use
+    let provider_name = args
+        .provider
+        .clone()
+        .unwrap_or_else(|| settings.defaults.provider.clone());
 
-    let provider = AnthropicProvider::new(api_key);
-    let model = args
-        .model
-        .unwrap_or_else(|| settings.providers.anthropic.default_model.clone());
+    // Create the appropriate provider
+    let provider: Box<dyn LlmProvider> = match provider_name.as_str() {
+        "ollama" => {
+            let ollama_provider =
+                OllamaProvider::with_base_url(&settings.providers.ollama.base_url);
+            // Perform health check
+            ollama_provider.health_check().await?;
+            Box::new(ollama_provider)
+        }
+        _ => {
+            let api_key = settings
+                .get_anthropic_api_key()
+                .ok_or_else(|| TedError::Config("No Anthropic API key found.".to_string()))?;
+            Box::new(AnthropicProvider::new(api_key))
+        }
+    };
+
+    let model = args.model.unwrap_or_else(|| match provider_name.as_str() {
+        "ollama" => settings.providers.ollama.default_model.clone(),
+        _ => settings.providers.anthropic.default_model.clone(),
+    });
 
     // Build prompt with any file contents
     let mut prompt = args.prompt;
@@ -1409,7 +1653,11 @@ fn run_settings_command(args: ted::cli::SettingsArgs, mut settings: Settings) ->
         Some(ted::cli::SettingsCommands::Set { key, value }) => {
             match key.as_str() {
                 "model" => {
-                    settings.providers.anthropic.default_model = value;
+                    // Set model for the current default provider
+                    match settings.defaults.provider.as_str() {
+                        "ollama" => settings.providers.ollama.default_model = value,
+                        _ => settings.providers.anthropic.default_model = value,
+                    }
                 }
                 "temperature" => {
                     settings.defaults.temperature = value.parse().map_err(|_| {
@@ -1421,6 +1669,24 @@ fn run_settings_command(args: ted::cli::SettingsArgs, mut settings: Settings) ->
                         .parse()
                         .map_err(|_| TedError::InvalidInput("Invalid boolean value".to_string()))?;
                 }
+                "provider" => {
+                    let valid_providers = ["anthropic", "ollama"];
+                    if valid_providers.contains(&value.as_str()) {
+                        settings.defaults.provider = value;
+                    } else {
+                        return Err(TedError::InvalidInput(format!(
+                            "Invalid provider '{}'. Valid providers: {}",
+                            value,
+                            valid_providers.join(", ")
+                        )));
+                    }
+                }
+                "ollama.base_url" => {
+                    settings.providers.ollama.base_url = value;
+                }
+                "ollama.model" => {
+                    settings.providers.ollama.default_model = value;
+                }
                 _ => {
                     return Err(TedError::InvalidInput(format!("Unknown setting: {}", key)));
                 }
@@ -1430,10 +1696,15 @@ fn run_settings_command(args: ted::cli::SettingsArgs, mut settings: Settings) ->
         }
         Some(ted::cli::SettingsCommands::Get { key }) => {
             let value = match key.as_str() {
-                "model" => settings.providers.anthropic.default_model.clone(),
+                "model" => match settings.defaults.provider.as_str() {
+                    "ollama" => settings.providers.ollama.default_model.clone(),
+                    _ => settings.providers.anthropic.default_model.clone(),
+                },
                 "temperature" => settings.defaults.temperature.to_string(),
                 "stream" => settings.defaults.stream.to_string(),
                 "provider" => settings.defaults.provider.clone(),
+                "ollama.base_url" => settings.providers.ollama.base_url.clone(),
+                "ollama.model" => settings.providers.ollama.default_model.clone(),
                 _ => {
                     return Err(TedError::InvalidInput(format!("Unknown setting: {}", key)));
                 }
@@ -1492,7 +1763,7 @@ async fn run_update_command(args: UpdateArgs) -> Result<()> {
     }
 
     // Check for specific version or latest
-    let release = if let Some(ref version) = args.version {
+    let release = if let Some(ref version) = args.target_version {
         println!("Checking for version {}...\n", version);
         match update::check_for_version(version).await {
             Ok(Some(r)) => r,
@@ -1595,6 +1866,7 @@ fn run_init() -> Result<()> {
 
 /// Print welcome message
 fn print_welcome(
+    provider: &str,
     model: &str,
     trust_mode: bool,
     session_id: &SessionId,
@@ -1605,6 +1877,7 @@ fn print_welcome(
     println!("ted v{}", env!("CARGO_PKG_VERSION"));
     stdout.execute(ResetColor)?;
     println!("AI coding assistant for your terminal");
+    println!("Provider: {}", provider);
     println!("Model: {}", model);
     println!("Session: {}", &session_id.as_str()[..8]); // Show first 8 chars of session ID
 

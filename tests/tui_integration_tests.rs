@@ -73,8 +73,8 @@ fn test_provider_settings_modification_flow() {
     // Navigate to Providers screen
     app.go_to(Screen::Providers);
 
-    // Select API Key (index 0)
-    app.provider_index = 0;
+    // Select API Key (index 1 - after DefaultProvider)
+    app.provider_index = 1;
     app.select();
     assert_eq!(app.input_mode, InputMode::Editing);
 
@@ -159,7 +159,7 @@ fn test_editing_cancellation_preserves_original_value() {
     let mut app = App::new(settings);
 
     app.go_to(Screen::Providers);
-    app.provider_index = 0;
+    app.provider_index = 1; // AnthropicApiKey
     app.select();
 
     // Start typing a new value
@@ -265,7 +265,7 @@ fn test_empty_input_handling() {
     app.go_to(Screen::Providers);
 
     // Clear the API key with empty input
-    app.provider_index = 0;
+    app.provider_index = 1; // AnthropicApiKey
     app.select();
     app.input_buffer = String::new();
     app.confirm_edit();
@@ -283,7 +283,7 @@ fn test_model_empty_input_ignored() {
     app.go_to(Screen::Providers);
 
     // Try to set model to empty
-    app.provider_index = 1;
+    app.provider_index = 2; // AnthropicModel
     app.select();
     app.input_buffer = String::new();
     app.confirm_edit();
@@ -345,7 +345,7 @@ fn test_main_menu_items_exhaustive() {
 #[test]
 fn test_provider_items_exhaustive() {
     let items = ProviderItem::all();
-    assert_eq!(items.len(), 4);
+    assert_eq!(items.len(), 7); // DefaultProvider, AnthropicApiKey, AnthropicModel, OllamaBaseUrl, OllamaModel, TestConnection, Back
 
     for item in items {
         assert!(!item.label().is_empty());
@@ -414,7 +414,7 @@ fn test_input_mode_transitions() {
 
     // Simulate confirming edit on providers screen
     app.screen = Screen::Providers;
-    app.provider_index = 0;
+    app.provider_index = 1; // AnthropicApiKey
     app.confirm_edit();
     assert_eq!(app.input_mode, InputMode::Normal);
 }
@@ -428,12 +428,12 @@ fn test_multiple_settings_modifications() {
 
     // Modify API key
     app.go_to(Screen::Providers);
-    app.provider_index = 0;
+    app.provider_index = 1; // AnthropicApiKey
     app.start_editing("test-api-key");
     app.confirm_edit();
 
     // Modify model
-    app.provider_index = 1;
+    app.provider_index = 2; // AnthropicModel
     app.start_editing("claude-3-5-haiku-20241022");
     app.confirm_edit();
 

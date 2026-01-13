@@ -94,8 +94,11 @@ impl MainMenuItem {
 /// Provider screen items
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderItem {
-    ApiKey,
-    Model,
+    DefaultProvider,
+    AnthropicApiKey,
+    AnthropicModel,
+    OllamaBaseUrl,
+    OllamaModel,
     TestConnection,
     Back,
 }
@@ -103,8 +106,11 @@ pub enum ProviderItem {
 impl ProviderItem {
     pub fn all() -> &'static [ProviderItem] {
         &[
-            ProviderItem::ApiKey,
-            ProviderItem::Model,
+            ProviderItem::DefaultProvider,
+            ProviderItem::AnthropicApiKey,
+            ProviderItem::AnthropicModel,
+            ProviderItem::OllamaBaseUrl,
+            ProviderItem::OllamaModel,
             ProviderItem::TestConnection,
             ProviderItem::Back,
         ]
@@ -112,8 +118,11 @@ impl ProviderItem {
 
     pub fn label(&self) -> &'static str {
         match self {
-            ProviderItem::ApiKey => "API Key",
-            ProviderItem::Model => "Default Model",
+            ProviderItem::DefaultProvider => "Default Provider",
+            ProviderItem::AnthropicApiKey => "Anthropic API Key",
+            ProviderItem::AnthropicModel => "Anthropic Model",
+            ProviderItem::OllamaBaseUrl => "Ollama Base URL",
+            ProviderItem::OllamaModel => "Ollama Model",
             ProviderItem::TestConnection => "Test Connection",
             ProviderItem::Back => "← Back",
         }
@@ -559,7 +568,19 @@ impl App {
             Screen::Providers => {
                 let item = ProviderItem::all()[self.provider_index];
                 match item {
-                    ProviderItem::ApiKey => {
+                    ProviderItem::DefaultProvider => {
+                        // Toggle between providers
+                        let current = &self.settings.defaults.provider;
+                        let new_provider = if current == "anthropic" {
+                            "ollama"
+                        } else {
+                            "anthropic"
+                        };
+                        self.settings.defaults.provider = new_provider.to_string();
+                        self.mark_modified();
+                        self.set_status(&format!("Provider set to: {}", new_provider), false);
+                    }
+                    ProviderItem::AnthropicApiKey => {
                         // Start editing API key
                         let current = self
                             .settings
@@ -570,17 +591,33 @@ impl App {
                             .unwrap_or_default();
                         self.start_editing(&current);
                     }
-                    ProviderItem::Model => {
-                        // Start editing model
+                    ProviderItem::AnthropicModel => {
+                        // Start editing Anthropic model
                         let current = self.settings.providers.anthropic.default_model.clone();
                         self.start_editing(&current);
                     }
+                    ProviderItem::OllamaBaseUrl => {
+                        // Start editing Ollama base URL
+                        let current = self.settings.providers.ollama.base_url.clone();
+                        self.start_editing(&current);
+                    }
+                    ProviderItem::OllamaModel => {
+                        // Start editing Ollama model
+                        let current = self.settings.providers.ollama.default_model.clone();
+                        self.start_editing(&current);
+                    }
                     ProviderItem::TestConnection => {
-                        // Test connection (placeholder)
-                        if self.settings.get_anthropic_api_key().is_some() {
-                            self.set_status("API key is configured", false);
+                        // Test connection based on current provider
+                        let provider = &self.settings.defaults.provider;
+                        if provider == "ollama" {
+                            self.set_status(
+                                "Ollama connection test not yet implemented. Ensure 'ollama serve' is running.",
+                                false,
+                            );
+                        } else if self.settings.get_anthropic_api_key().is_some() {
+                            self.set_status("Anthropic API key is configured", false);
                         } else {
-                            self.set_status("No API key configured", true);
+                            self.set_status("No Anthropic API key configured", true);
                         }
                     }
                     ProviderItem::Back => self.go_back(),
@@ -651,7 +688,7 @@ impl App {
             Screen::Providers => {
                 let item = ProviderItem::all()[self.provider_index];
                 match item {
-                    ProviderItem::ApiKey => {
+                    ProviderItem::AnthropicApiKey => {
                         if value.is_empty() {
                             self.settings.providers.anthropic.api_key = None;
                         } else {
@@ -659,9 +696,21 @@ impl App {
                         }
                         self.mark_modified();
                     }
-                    ProviderItem::Model => {
+                    ProviderItem::AnthropicModel => {
                         if !value.is_empty() {
                             self.settings.providers.anthropic.default_model = value;
+                            self.mark_modified();
+                        }
+                    }
+                    ProviderItem::OllamaBaseUrl => {
+                        if !value.is_empty() {
+                            self.settings.providers.ollama.base_url = value;
+                            self.mark_modified();
+                        }
+                    }
+                    ProviderItem::OllamaModel => {
+                        if !value.is_empty() {
+                            self.settings.providers.ollama.default_model = value;
                             self.mark_modified();
                         }
                     }
@@ -888,25 +937,31 @@ mod tests {
     #[test]
     fn test_provider_item_all() {
         let items = ProviderItem::all();
-        assert_eq!(items.len(), 4);
-        assert_eq!(items[0], ProviderItem::ApiKey);
-        assert_eq!(items[1], ProviderItem::Model);
-        assert_eq!(items[2], ProviderItem::TestConnection);
-        assert_eq!(items[3], ProviderItem::Back);
+        assert_eq!(items.len(), 7);
+        assert_eq!(items[0], ProviderItem::DefaultProvider);
+        assert_eq!(items[1], ProviderItem::AnthropicApiKey);
+        assert_eq!(items[2], ProviderItem::AnthropicModel);
+        assert_eq!(items[3], ProviderItem::OllamaBaseUrl);
+        assert_eq!(items[4], ProviderItem::OllamaModel);
+        assert_eq!(items[5], ProviderItem::TestConnection);
+        assert_eq!(items[6], ProviderItem::Back);
     }
 
     #[test]
     fn test_provider_item_label() {
-        assert_eq!(ProviderItem::ApiKey.label(), "API Key");
-        assert_eq!(ProviderItem::Model.label(), "Default Model");
+        assert_eq!(ProviderItem::DefaultProvider.label(), "Default Provider");
+        assert_eq!(ProviderItem::AnthropicApiKey.label(), "Anthropic API Key");
+        assert_eq!(ProviderItem::AnthropicModel.label(), "Anthropic Model");
+        assert_eq!(ProviderItem::OllamaBaseUrl.label(), "Ollama Base URL");
+        assert_eq!(ProviderItem::OllamaModel.label(), "Ollama Model");
         assert_eq!(ProviderItem::TestConnection.label(), "Test Connection");
         assert_eq!(ProviderItem::Back.label(), "← Back");
     }
 
     #[test]
     fn test_provider_item_equality() {
-        assert_eq!(ProviderItem::ApiKey, ProviderItem::ApiKey);
-        assert_ne!(ProviderItem::ApiKey, ProviderItem::Model);
+        assert_eq!(ProviderItem::DefaultProvider, ProviderItem::DefaultProvider);
+        assert_ne!(ProviderItem::DefaultProvider, ProviderItem::AnthropicApiKey);
     }
 
     // ===== ContextItem Tests =====
@@ -1275,9 +1330,23 @@ mod tests {
         let mut app = App::new(settings);
         app.screen = Screen::Providers;
 
-        app.provider_index = 3; // Back
+        app.provider_index = 6; // Back
         app.select();
         assert_eq!(app.screen, Screen::MainMenu);
+    }
+
+    #[test]
+    fn test_app_select_providers_default_provider_toggles() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::Providers;
+
+        app.provider_index = 0; // DefaultProvider
+        let original = app.settings.defaults.provider.clone();
+        app.select();
+        // Should toggle provider
+        assert_ne!(app.settings.defaults.provider, original);
+        assert!(app.settings_modified);
     }
 
     #[test]
@@ -1286,7 +1355,7 @@ mod tests {
         let mut app = App::new(settings);
         app.screen = Screen::Providers;
 
-        app.provider_index = 0; // API Key
+        app.provider_index = 1; // AnthropicApiKey
         app.select();
         assert_eq!(app.input_mode, InputMode::Editing);
     }
@@ -1297,7 +1366,29 @@ mod tests {
         let mut app = App::new(settings);
         app.screen = Screen::Providers;
 
-        app.provider_index = 1; // Model
+        app.provider_index = 2; // AnthropicModel
+        app.select();
+        assert_eq!(app.input_mode, InputMode::Editing);
+    }
+
+    #[test]
+    fn test_app_select_providers_ollama_base_url_starts_editing() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::Providers;
+
+        app.provider_index = 3; // OllamaBaseUrl
+        app.select();
+        assert_eq!(app.input_mode, InputMode::Editing);
+    }
+
+    #[test]
+    fn test_app_select_providers_ollama_model_starts_editing() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::Providers;
+
+        app.provider_index = 4; // OllamaModel
         app.select();
         assert_eq!(app.input_mode, InputMode::Editing);
     }
@@ -1308,7 +1399,7 @@ mod tests {
         let mut app = App::new(settings);
         app.screen = Screen::Providers;
 
-        app.provider_index = 2; // Test Connection
+        app.provider_index = 5; // Test Connection
         app.select();
         // Should set a status message
         assert!(app.status_message.is_some());
@@ -1375,7 +1466,7 @@ mod tests {
         let settings = Settings::default();
         let mut app = App::new(settings);
         app.screen = Screen::Providers;
-        app.provider_index = 0; // API Key
+        app.provider_index = 1; // AnthropicApiKey
 
         app.start_editing("sk-test-key");
         app.confirm_edit();
@@ -1394,7 +1485,7 @@ mod tests {
         settings.providers.anthropic.api_key = Some("old-key".to_string());
         let mut app = App::new(settings);
         app.screen = Screen::Providers;
-        app.provider_index = 0; // API Key
+        app.provider_index = 1; // AnthropicApiKey
 
         app.start_editing("");
         app.confirm_edit();
@@ -1407,7 +1498,7 @@ mod tests {
         let settings = Settings::default();
         let mut app = App::new(settings);
         app.screen = Screen::Providers;
-        app.provider_index = 1; // Model
+        app.provider_index = 2; // AnthropicModel
 
         app.start_editing("claude-3-5-haiku-20241022");
         app.confirm_edit();
@@ -1425,7 +1516,7 @@ mod tests {
         let original_model = settings.providers.anthropic.default_model.clone();
         let mut app = App::new(settings);
         app.screen = Screen::Providers;
-        app.provider_index = 1; // Model
+        app.provider_index = 2; // AnthropicModel
 
         app.start_editing("");
         app.confirm_edit();
@@ -1435,6 +1526,37 @@ mod tests {
             app.settings.providers.anthropic.default_model,
             original_model
         );
+    }
+
+    #[test]
+    fn test_app_confirm_edit_ollama_base_url() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::Providers;
+        app.provider_index = 3; // OllamaBaseUrl
+
+        app.start_editing("http://custom:8080");
+        app.confirm_edit();
+
+        assert_eq!(app.settings.providers.ollama.base_url, "http://custom:8080");
+        assert!(app.settings_modified);
+    }
+
+    #[test]
+    fn test_app_confirm_edit_ollama_model() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::Providers;
+        app.provider_index = 4; // OllamaModel
+
+        app.start_editing("llama3.2:latest");
+        app.confirm_edit();
+
+        assert_eq!(
+            app.settings.providers.ollama.default_model,
+            "llama3.2:latest"
+        );
+        assert!(app.settings_modified);
     }
 
     #[test]

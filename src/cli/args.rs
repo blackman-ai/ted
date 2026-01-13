@@ -78,8 +78,8 @@ pub struct UpdateArgs {
     pub check: bool,
 
     /// Update to a specific version (e.g., "v0.2.0")
-    #[arg(long)]
-    pub version: Option<String>,
+    #[arg(long = "target")]
+    pub target_version: Option<String>,
 
     /// Force update even if already on latest version
     #[arg(short, long)]
@@ -99,6 +99,10 @@ pub struct ChatArgs {
     /// Model to use
     #[arg(short, long)]
     pub model: Option<String>,
+
+    /// LLM provider to use (anthropic, ollama)
+    #[arg(short, long)]
+    pub provider: Option<String>,
 
     /// Resume a previous session
     #[arg(long)]
@@ -126,6 +130,10 @@ pub struct AskArgs {
     /// Model to use
     #[arg(short, long)]
     pub model: Option<String>,
+
+    /// LLM provider to use (anthropic, ollama)
+    #[arg(short, long)]
+    pub provider: Option<String>,
 
     /// Include file contents in context
     #[arg(short, long, num_args = 1..)]

@@ -1,6 +1,6 @@
 [package]
 name = "ted"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "The AI Coding Assistant you always wanted"
 license = "AGPL-3.0-or-later"
