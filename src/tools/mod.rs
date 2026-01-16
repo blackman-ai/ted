@@ -33,6 +33,19 @@ use std::sync::Arc;
 use crate::error::Result;
 use crate::indexer::RecallSender;
 use crate::llm::provider::ToolDefinition;
+use tokio::sync::mpsc;
+
+/// Shell output event for streaming command output
+#[derive(Debug, Clone)]
+pub struct ShellOutputEvent {
+    pub stream: String, // "stdout" or "stderr"
+    pub text: String,
+    pub done: bool,
+    pub exit_code: Option<i32>,
+}
+
+/// Sender for shell output events
+pub type ShellOutputSender = mpsc::UnboundedSender<ShellOutputEvent>;
 
 /// Context provided to tools during execution
 #[derive(Clone)]
@@ -47,6 +60,8 @@ pub struct ToolContext {
     pub trust_mode: bool,
     /// Optional recall sender for memory integration
     recall_sender: Option<RecallSender>,
+    /// Optional sender for shell output streaming
+    shell_output_sender: Option<ShellOutputSender>,
 }
 
 impl std::fmt::Debug for ToolContext {
@@ -57,6 +72,10 @@ impl std::fmt::Debug for ToolContext {
             .field("session_id", &self.session_id)
             .field("trust_mode", &self.trust_mode)
             .field("has_recall_sender", &self.recall_sender.is_some())
+            .field(
+                "has_shell_output_sender",
+                &self.shell_output_sender.is_some(),
+            )
             .finish()
     }
 }
@@ -75,6 +94,7 @@ impl ToolContext {
             session_id,
             trust_mode,
             recall_sender: None,
+            shell_output_sender: None,
         }
     }
 
@@ -82,6 +102,39 @@ impl ToolContext {
     pub fn with_recall_sender(mut self, sender: RecallSender) -> Self {
         self.recall_sender = Some(sender);
         self
+    }
+
+    /// Set the shell output sender for streaming command output.
+    pub fn with_shell_output_sender(mut self, sender: ShellOutputSender) -> Self {
+        self.shell_output_sender = Some(sender);
+        self
+    }
+
+    /// Emit shell output (for streaming command output).
+    pub fn emit_shell_output(
+        &self,
+        stream: &str,
+        text: String,
+        done: bool,
+        exit_code: Option<i32>,
+    ) {
+        eprintln!(
+            "[EMIT DEBUG] emit_shell_output called, has_sender={}",
+            self.shell_output_sender.is_some()
+        );
+        if let Some(sender) = &self.shell_output_sender {
+            let result = sender.send(ShellOutputEvent {
+                stream: stream.to_string(),
+                text: text.clone(),
+                done,
+                exit_code,
+            });
+            eprintln!(
+                "[EMIT DEBUG] send result: {:?}, text_len={}",
+                result.is_ok(),
+                text.len()
+            );
+        }
     }
 
     /// Emit a file read recall event.

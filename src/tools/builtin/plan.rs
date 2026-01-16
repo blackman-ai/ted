@@ -169,10 +169,14 @@ impl PlanUpdateTool {
             String::new()
         };
 
+        // Provide explicit instructions to the model about what to do next
         Ok(ToolResult::success(
             tool_use_id,
             format!(
-                "Created plan '{}' (ID: {}){}",
+                "Created plan '{}' (ID: {}){}\n\n\
+                 IMPORTANT: The plan is now created. Your next step is to START EXECUTING the plan.\n\
+                 Use file_write to create files, shell to run commands, etc.\n\
+                 Do NOT create another plan - start working on the first task!",
                 title, plan.info.id, task_info
             ),
         ))

@@ -1,0 +1,77 @@
+{
+  "name": "teddy",
+  "version": "0.1.0",
+  "description": "Offline-first AI coding environment powered by Ted",
+  "main": "out/main/index.js",
+  "author": "Blackman Artificial Intelligence Technologies Inc.",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build && electron-builder",
+    "build:dir": "electron-vite build && electron-builder --dir",
+    "preview": "electron-vite preview",
+    "lint": "eslint src --ext ts,tsx",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.6.0",
+    "electron-store": "^10.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.5",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.0",
+    "@typescript-eslint/eslint-plugin": "^6.19.0",
+    "@typescript-eslint/parser": "^6.19.0",
+    "@vitejs/plugin-react": "^4.3.3",
+    "electron": "^32.2.6",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^5.0.0",
+    "eslint": "^8.56.0",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "typescript": "^5.6.3"
+  },
+  "build": {
+    "appId": "com.blackman-ai.teddy",
+    "productName": "Teddy",
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "icon": "build/icon.icns"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development",
+      "icon": "build/icon.png"
+    },
+    "files": [
+      "out/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../target/release/ted${os==='win'?'.exe':''}",
+        "to": "bin/ted${os==='win'?'.exe':''}"
+      }
+    ],
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    }
+  }
+}

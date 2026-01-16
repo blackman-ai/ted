@@ -21,44 +21,64 @@ use crate::llm::provider::{
 
 const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 
-/// Regex pattern to match JSON tool calls in text content
-/// Matches patterns like: {"name": "tool_name", "arguments": {...}}
 use regex::Regex;
 use std::sync::LazyLock;
 
-static JSON_TOOL_CALL_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*(\{[^}]*\})\s*\}"#).unwrap()
-});
+/// Regex to extract JSON from markdown code blocks
+static MARKDOWN_JSON_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"```(?:json)?\s*\n?\s*(\{[\s\S]*?\})\s*\n?```").unwrap());
 
-/// Try to parse a JSON tool call from text content
-/// Returns (tool_name, arguments) if found, None otherwise
-fn try_parse_json_tool_call(text: &str) -> Option<(String, serde_json::Value)> {
-    // First try the simple regex pattern
-    if let Some(caps) = JSON_TOOL_CALL_PATTERN.captures(text) {
-        let name = caps.get(1)?.as_str().to_string();
-        let args_str = caps.get(2)?.as_str();
-        if let Ok(args) = serde_json::from_str(args_str) {
-            return Some((name, args));
-        }
-    }
+/// ChatML special tokens that models like Qwen output - need to filter these
+static CHATML_TOKENS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<\|im_(?:start|end)\|>(?:\w+)?").unwrap());
 
-    // Try to parse as a more complex JSON structure
-    // Some models wrap the tool call in other text
-    let trimmed = text.trim();
+/// Strip ChatML special tokens from text (like <|im_start|>, <|im_end|>assistant, etc.)
+fn strip_chatml_tokens(text: &str) -> String {
+    CHATML_TOKENS.replace_all(text, "").to_string()
+}
 
-    // Find the start of a JSON object that looks like a tool call
-    if let Some(start) = trimmed.find('{') {
-        // Try to find matching closing brace
-        let json_part = &trimmed[start..];
-        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_part) {
-            if let Some(name) = parsed.get("name").and_then(|n| n.as_str()) {
-                if let Some(args) = parsed.get("arguments") {
-                    return Some((name.to_string(), args.clone()));
+/// Try to parse ALL JSON tool calls from text content
+/// Returns vector of (tool_name, arguments) for all found tool calls
+/// DEDUPLICATES identical tool calls - if the model outputs the same call 3 times, we only return it once
+fn try_parse_all_json_tool_calls(text: &str) -> Vec<(String, serde_json::Value)> {
+    // First, strip any ChatML special tokens that models like Qwen output
+    let cleaned_text = strip_chatml_tokens(text);
+    let text = cleaned_text.as_str();
+
+    let mut results = Vec::new();
+    let mut seen_keys = std::collections::HashSet::new();
+
+    // First, check for JSON inside markdown code blocks (common pattern from LLMs)
+    for caps in MARKDOWN_JSON_PATTERN.captures_iter(text) {
+        if let Some(json_match) = caps.get(1) {
+            let json_str = json_match.as_str();
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
+                if let Some(name) = parsed.get("name").and_then(|n| n.as_str()) {
+                    if let Some(args) = parsed.get("arguments") {
+                        let key = format!("{}:{}", name, args);
+                        if seen_keys.insert(key) {
+                            results.push((name.to_string(), args.clone()));
+                        }
+                    }
                 }
             }
         }
+    }
 
-        // Try parsing with more lenient approach (find closing brace)
+    // If we found tool calls in code blocks, return them (already deduplicated)
+    if !results.is_empty() {
+        return results;
+    }
+
+    // Otherwise, try to find raw JSON tool calls
+    let trimmed = text.trim();
+    let mut search_start = 0;
+
+    while let Some(start) = trimmed[search_start..].find('{') {
+        let abs_start = search_start + start;
+        let json_part = &trimmed[abs_start..];
+
+        // Try parsing with brace matching
         let mut depth = 0;
         let mut end_idx = 0;
         for (i, c) in json_part.char_indices() {
@@ -80,14 +100,27 @@ fn try_parse_json_tool_call(text: &str) -> Option<(String, serde_json::Value)> {
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
                 if let Some(name) = parsed.get("name").and_then(|n| n.as_str()) {
                     if let Some(args) = parsed.get("arguments") {
-                        return Some((name.to_string(), args.clone()));
+                        let key = format!("{}:{}", name, args);
+                        if seen_keys.insert(key) {
+                            results.push((name.to_string(), args.clone()));
+                        }
                     }
                 }
             }
+            search_start = abs_start + end_idx;
+        } else {
+            search_start = abs_start + 1;
         }
     }
 
-    None
+    results
+}
+
+/// Try to parse a single JSON tool call from text content (for backwards compatibility)
+/// Returns (tool_name, arguments) if found, None otherwise
+#[cfg(test)]
+fn try_parse_json_tool_call(text: &str) -> Option<(String, serde_json::Value)> {
+    try_parse_all_json_tool_calls(text).into_iter().next()
 }
 
 /// Ollama local model provider
@@ -196,9 +229,10 @@ impl OllamaProvider {
                                 ContentBlock::ToolResult {
                                     tool_use_id: _,
                                     content,
-                                    is_error: _,
+                                    is_error,
                                 } => {
-                                    // For tool results, format as text content
+                                    // For tool results, format clearly so the model understands
+                                    // this is the result of its tool call
                                     let content_str = match content {
                                         ToolResultContent::Text(t) => t.clone(),
                                         ToolResultContent::Blocks(blocks) => blocks
@@ -216,7 +250,20 @@ impl OllamaProvider {
                                             .collect::<Vec<_>>()
                                             .join("\n"),
                                     };
-                                    text_parts.push(content_str);
+                                    // Format tool result clearly for Ollama models
+                                    // Make it VERY clear what to do next
+                                    let is_err = is_error.unwrap_or(false);
+                                    if is_err {
+                                        text_parts.push(format!(
+                                            "[TOOL RESULT - ERROR]\nThe tool call FAILED.\nError: {}\n\nYou should try a DIFFERENT approach.",
+                                            content_str
+                                        ));
+                                    } else {
+                                        text_parts.push(format!(
+                                            "[TOOL RESULT - SUCCESS]\nThe tool executed successfully!\nResult: {}\n\nThis step is COMPLETE. Now proceed to your NEXT task. Do NOT repeat this tool call.",
+                                            content_str
+                                        ));
+                                    }
                                 }
                             }
                         }
@@ -267,14 +314,44 @@ impl OllamaProvider {
         // Structure: PERSONA first (most important), then tools, then persona reminder
         let enhanced_system = if !request.tools.is_empty() {
             let tool_guidance = r#"
-TOOLS: You have access to: glob (find files), file_read (read files), grep (search), shell (run commands), file_write (create/overwrite files), file_edit (modify existing files).
-To use a tool, output ONLY: {"name": "tool_name", "arguments": {...}}
+YOU ARE A CODE GENERATOR. Your job is to CREATE working projects by writing actual files.
 
-CRITICAL RULES:
-- BEFORE answering questions about code, USE glob and file_read to explore first. Never give generic advice - base answers on actual code you've read.
-- When asked to make code changes, you MUST use file_write or file_edit tools - do NOT just output code snippets or say you cannot modify files. You CAN and MUST modify files directly.
-- To create a new file: {"name": "file_write", "arguments": {"path": "/full/path/to/file.rs", "content": "file content here"}}
-- To edit an existing file: {"name": "file_edit", "arguments": {"path": "/full/path/to/file.rs", "old_text": "text to replace", "new_text": "replacement text"}}"#;
+**CRITICAL RULES:**
+
+1. FIRST MESSAGE: Ask 1-2 brief clarifying questions (plain text, no tools)
+   - What style/look do they want?
+   - Any specific features needed?
+
+2. AFTER USER RESPONDS: Immediately start BUILDING with tools!
+   - Use file_write to create files
+   - Use shell to run setup commands (npm init, etc.)
+   - NEVER give manual instructions - YOU do the work
+
+3. NEVER suggest external platforms (WordPress.com, Wix, etc.)
+   - You CREATE the project yourself using your tools
+   - For blogs: create a simple HTML/CSS site or lightweight framework
+   - For apps: scaffold the project and write the code
+
+4. NEVER use shell/echo to communicate - just write text directly
+
+AVAILABLE TOOLS:
+- file_write: {"path": "file.html", "content": "..."} - Create/update files
+- shell: {"command": "npm init -y"} - Run commands (NOT for echo!)
+- plan_update: {"action": "create", "title": "...", "content": "- [ ] Task"}
+
+WORKFLOW EXAMPLE:
+User: Make me a blog
+Assistant: Great! Quick questions:
+- Do you want a minimalist or feature-rich design?
+- Any color preferences?
+
+User: Simple and clean, blue colors
+Assistant: [Uses file_write to create index.html, styles.css, etc.]
+[Uses shell to set up any needed dependencies]
+[Creates actual working files in the project directory]
+
+REMEMBER: You are a BUILDER, not an instructor. Create the actual files!
+"#;
 
             match &request.system {
                 Some(sys) => {
@@ -294,13 +371,10 @@ CRITICAL RULES:
             }
         } else {
             // No tools - just use the system prompt with persona emphasis
-            match &request.system {
-                Some(sys) => Some(format!(
-                    "IMPORTANT - YOUR PERSONALITY AND ROLE:\n{}\n\nREMEMBER: Stay in character as described above. Your personality should come through in ALL your responses.",
-                    sys
-                )),
-                None => None,
-            }
+            request.system.as_ref().map(|sys| format!(
+                "IMPORTANT - YOUR PERSONALITY AND ROLE:\n{}\n\nREMEMBER: Stay in character as described above. Your personality should come through in ALL your responses.",
+                sys
+            ))
         };
 
         OllamaRequest {
@@ -541,7 +615,7 @@ impl LlmProvider for OllamaProvider {
         let message_id = format!("ollama-{}", uuid::Uuid::new_v4());
 
         // Track state across the stream
-        // State: (buffer, message_started, content_block_idx, msg_id, model_name, accumulated_text, has_native_tool_calls, text_block_started)
+        // State: (buffer, message_started, content_block_idx, msg_id, model_name, accumulated_text, has_native_tool_calls, text_block_started, might_be_tool_call)
         let event_stream = byte_stream
             .map(|result| result.map_err(|e| TedError::Api(ApiError::StreamError(e.to_string()))))
             .scan(
@@ -554,6 +628,7 @@ impl LlmProvider for OllamaProvider {
                     String::new(),
                     false,
                     false, // text_block_started
+                    false, // might_be_tool_call - if true, buffer text instead of streaming
                 ),
                 |state, result| {
                     let (
@@ -565,6 +640,7 @@ impl LlmProvider for OllamaProvider {
                         accumulated_text,
                         has_native_tool_calls,
                         text_block_started,
+                        might_be_tool_call,
                     ) = state;
 
                     let chunk = match result {
@@ -629,79 +705,129 @@ impl LlmProvider for OllamaProvider {
                             if !chunk_response.message.content.is_empty() {
                                 accumulated_text.push_str(&chunk_response.message.content);
 
-                                // Start text block only once (not for every chunk!)
-                                if !*text_block_started {
-                                    *text_block_started = true;
-                                    events.push(Ok(StreamEvent::ContentBlockStart {
-                                        index: *content_block_idx,
-                                        content_block: ContentBlockResponse::Text {
-                                            text: String::new(),
-                                        },
-                                    }));
+                                // Check if this looks like it might be a JSON tool call
+                                // If so, buffer it instead of streaming to avoid showing raw JSON to user
+                                if !*might_be_tool_call {
+                                    let trimmed = accumulated_text.trim_start();
+                                    // If it starts with {, ```, or <|im_ it might be a tool call - buffer it
+                                    // <|im_start|> and <|im_end|> are ChatML tokens from Qwen models
+                                    if trimmed.starts_with('{')
+                                        || trimmed.starts_with("```")
+                                        || trimmed.starts_with("<|im_")
+                                    {
+                                        *might_be_tool_call = true;
+                                    }
                                 }
 
-                                events.push(Ok(StreamEvent::ContentBlockDelta {
-                                    index: *content_block_idx,
-                                    delta: ContentBlockDelta::TextDelta {
-                                        text: chunk_response.message.content,
-                                    },
-                                }));
+                                // Only stream text if it doesn't look like a tool call
+                                if !*might_be_tool_call {
+                                    // Start text block only once (not for every chunk!)
+                                    if !*text_block_started {
+                                        *text_block_started = true;
+                                        events.push(Ok(StreamEvent::ContentBlockStart {
+                                            index: *content_block_idx,
+                                            content_block: ContentBlockResponse::Text {
+                                                text: String::new(),
+                                            },
+                                        }));
+                                    }
+
+                                    // Strip ChatML tokens before emitting text
+                                    let cleaned_text =
+                                        strip_chatml_tokens(&chunk_response.message.content);
+                                    if !cleaned_text.is_empty() {
+                                        events.push(Ok(StreamEvent::ContentBlockDelta {
+                                            index: *content_block_idx,
+                                            delta: ContentBlockDelta::TextDelta {
+                                                text: cleaned_text,
+                                            },
+                                        }));
+                                    }
+                                }
                             }
 
                             // Handle done
                             if chunk_response.done {
-                                // Check if the text contains a JSON tool call that wasn't handled natively
+                                // Check if the text contains JSON tool calls that weren't handled natively
                                 // This handles models that output tool calls as JSON text
-                                let mut detected_tool_call = false;
+                                let mut detected_tool_calls = false;
 
                                 if !*has_native_tool_calls && !accumulated_text.is_empty() {
-                                    if let Some((tool_name, tool_args)) =
-                                        try_parse_json_tool_call(accumulated_text)
-                                    {
-                                        detected_tool_call = true;
+                                    let tool_calls =
+                                        try_parse_all_json_tool_calls(accumulated_text);
 
-                                        // Close the text block first
-                                        events.push(Ok(StreamEvent::ContentBlockStop {
-                                            index: *content_block_idx,
-                                        }));
-                                        *content_block_idx += 1;
+                                    if !tool_calls.is_empty() {
+                                        detected_tool_calls = true;
 
-                                        // Emit tool use events
-                                        events.push(Ok(StreamEvent::ContentBlockStart {
-                                            index: *content_block_idx,
-                                            content_block: ContentBlockResponse::ToolUse {
-                                                id: format!("tool_{}", *content_block_idx),
-                                                name: tool_name,
-                                                input: serde_json::Value::Object(
-                                                    serde_json::Map::new(),
-                                                ),
-                                            },
-                                        }));
+                                        // Close the text block if one was started
+                                        if *text_block_started {
+                                            events.push(Ok(StreamEvent::ContentBlockStop {
+                                                index: *content_block_idx,
+                                            }));
+                                            *content_block_idx += 1;
+                                        }
 
-                                        let args_str =
-                                            serde_json::to_string(&tool_args).unwrap_or_default();
-                                        events.push(Ok(StreamEvent::ContentBlockDelta {
-                                            index: *content_block_idx,
-                                            delta: ContentBlockDelta::InputJsonDelta {
-                                                partial_json: args_str,
-                                            },
-                                        }));
+                                        // Emit tool use events for ALL detected tool calls
+                                        for (tool_name, tool_args) in tool_calls {
+                                            events.push(Ok(StreamEvent::ContentBlockStart {
+                                                index: *content_block_idx,
+                                                content_block: ContentBlockResponse::ToolUse {
+                                                    id: format!("tool_{}", *content_block_idx),
+                                                    name: tool_name,
+                                                    input: serde_json::Value::Object(
+                                                        serde_json::Map::new(),
+                                                    ),
+                                                },
+                                            }));
 
+                                            let args_str = serde_json::to_string(&tool_args)
+                                                .unwrap_or_default();
+                                            events.push(Ok(StreamEvent::ContentBlockDelta {
+                                                index: *content_block_idx,
+                                                delta: ContentBlockDelta::InputJsonDelta {
+                                                    partial_json: args_str,
+                                                },
+                                            }));
+
+                                            events.push(Ok(StreamEvent::ContentBlockStop {
+                                                index: *content_block_idx,
+                                            }));
+
+                                            *content_block_idx += 1;
+                                        }
+                                    } else if *might_be_tool_call && !accumulated_text.is_empty() {
+                                        // We buffered text thinking it was a tool call, but it wasn't
+                                        // Now emit it as regular text (after cleaning ChatML tokens)
+                                        let cleaned = strip_chatml_tokens(accumulated_text);
+                                        if !cleaned.trim().is_empty() {
+                                            events.push(Ok(StreamEvent::ContentBlockStart {
+                                                index: *content_block_idx,
+                                                content_block: ContentBlockResponse::Text {
+                                                    text: String::new(),
+                                                },
+                                            }));
+                                            events.push(Ok(StreamEvent::ContentBlockDelta {
+                                                index: *content_block_idx,
+                                                delta: ContentBlockDelta::TextDelta {
+                                                    text: cleaned,
+                                                },
+                                            }));
+                                            *text_block_started = true;
+                                        }
+                                    }
+                                }
+
+                                if !detected_tool_calls {
+                                    // Close any open content block
+                                    if *text_block_started {
                                         events.push(Ok(StreamEvent::ContentBlockStop {
                                             index: *content_block_idx,
                                         }));
                                     }
                                 }
 
-                                if !detected_tool_call {
-                                    // Close any open content block
-                                    events.push(Ok(StreamEvent::ContentBlockStop {
-                                        index: *content_block_idx,
-                                    }));
-                                }
-
                                 // Determine stop reason
-                                let has_tools = detected_tool_call
+                                let has_tools = detected_tool_calls
                                     || *has_native_tool_calls
                                     || events.iter().any(|e| {
                                         matches!(
@@ -847,6 +973,58 @@ mod tests {
     use super::*;
     use crate::llm::message::Message;
     use crate::llm::provider::ToolInputSchema;
+
+    // ===== ChatML Token Stripping Tests =====
+
+    #[test]
+    fn test_strip_chatml_tokens_basic() {
+        let text = "<|im_start|>assistant\nHello world";
+        let result = strip_chatml_tokens(text);
+        assert_eq!(result, "\nHello world");
+    }
+
+    #[test]
+    fn test_strip_chatml_tokens_multiple() {
+        let text = "<|im_start|>assistant\n{\"name\": \"test\"}<|im_end|>";
+        let result = strip_chatml_tokens(text);
+        assert_eq!(result, "\n{\"name\": \"test\"}");
+    }
+
+    #[test]
+    fn test_strip_chatml_tokens_in_json() {
+        let text =
+            r#"<|im_start|>{"name": "plan_update", "arguments": {"action": "create"}}<|im_end|>"#;
+        let result = strip_chatml_tokens(text);
+        assert_eq!(
+            result,
+            r#"{"name": "plan_update", "arguments": {"action": "create"}}"#
+        );
+    }
+
+    #[test]
+    fn test_strip_chatml_tokens_empty_text() {
+        let text = "";
+        let result = strip_chatml_tokens(text);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_strip_chatml_tokens_no_tokens() {
+        let text = "This is regular text without any special tokens.";
+        let result = strip_chatml_tokens(text);
+        assert_eq!(result, text);
+    }
+
+    #[test]
+    fn test_parse_tool_call_with_chatml_tokens() {
+        // This is what Qwen actually outputs - should still parse the tool call
+        let text = r#"<|im_start|>{"name": "plan_update", "arguments": {"action": "create", "title": "Test", "content": "- [ ] Task 1"}}"#;
+        let result = try_parse_json_tool_call(text);
+        assert!(result.is_some());
+        let (name, args) = result.unwrap();
+        assert_eq!(name, "plan_update");
+        assert_eq!(args["action"], "create");
+    }
 
     // ===== JSON Tool Call Parsing Tests =====
 

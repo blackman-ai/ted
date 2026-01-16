@@ -115,6 +115,14 @@ pub struct ChatArgs {
     /// Disable streaming output
     #[arg(long)]
     pub no_stream: bool,
+
+    /// Embedded mode (output JSONL events for GUI integration)
+    #[arg(long, hide = true)]
+    pub embedded: bool,
+
+    /// Path to conversation history JSON file (for multi-turn embedded conversations)
+    #[arg(long, hide = true)]
+    pub history: Option<PathBuf>,
 }
 
 /// Arguments for the ask subcommand

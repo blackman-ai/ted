@@ -6,6 +6,16 @@ Ted is a fast, portable CLI tool that brings Claude's coding capabilities direct
 
 [![codecov](https://codecov.io/github/blackman-ai/ted/graph/badge.svg?token=fCa2LiHAMq)](https://codecov.io/github/blackman-ai/ted)
 
+---
+
+## 🧸 Looking for the Desktop App?
+
+**[Teddy](./teddy/)** is the desktop GUI for Ted - an offline-first AI coding environment built with Electron. Perfect for non-technical users who want AI-assisted coding without the terminal.
+
+[Get started with Teddy →](./teddy/README.md)
+
+---
+
 ## Features
 
 - **Interactive Chat** - Conversational coding assistance with streaming responses

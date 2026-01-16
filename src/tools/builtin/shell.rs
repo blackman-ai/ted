@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -42,7 +43,7 @@ impl ShellTool {
 
         Self {
             blocked_patterns,
-            default_timeout: 120,
+            default_timeout: 60, // 60 seconds default - enough for npm/build commands
         }
     }
 
@@ -99,24 +100,109 @@ impl Tool for ShellTool {
             ));
         }
 
-        // Execute the command
-        let result = timeout(
-            Duration::from_secs(timeout_secs),
-            Command::new("sh")
-                .arg("-c")
-                .arg(command)
-                .current_dir(&context.working_directory)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output(),
-        )
+        // Note: We previously blocked echo commands that looked like user communication,
+        // but this caused more issues than it solved. The model sometimes uses echo
+        // for status messages, and blocking them confused the model's flow.
+        // The system prompt already instructs the model not to use echo for communication.
+
+        // Spawn the command with piped stdout/stderr
+        // Use stdin(null) to prevent commands from waiting for input
+        let mut child = match Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .current_dir(&context.working_directory)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(e) => {
+                return Ok(ToolResult::error(
+                    tool_use_id,
+                    format!("Failed to spawn command: {}", e),
+                ));
+            }
+        };
+
+        // Get stdout and stderr handles
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+
+        // Collect output while streaming
+        let mut stdout_output = String::new();
+        let mut stderr_output = String::new();
+
+        // Create tasks to read stdout and stderr concurrently
+        // Use raw byte reading instead of lines() to handle npm-style progress (uses \r)
+
+        let stdout_task = async {
+            if let Some(mut stdout) = stdout {
+                let mut output = String::new();
+                let mut buf = [0u8; 1024];
+                loop {
+                    match stdout.read(&mut buf).await {
+                        Ok(0) => break, // EOF
+                        Ok(n) => {
+                            if let Ok(text) = std::str::from_utf8(&buf[..n]) {
+                                // Emit streaming output
+                                context.emit_shell_output("stdout", text.to_string(), false, None);
+                                output.push_str(text);
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                output
+            } else {
+                String::new()
+            }
+        };
+
+        let stderr_task = async {
+            if let Some(mut stderr) = stderr {
+                let mut output = String::new();
+                let mut buf = [0u8; 1024];
+                loop {
+                    match stderr.read(&mut buf).await {
+                        Ok(0) => break, // EOF
+                        Ok(n) => {
+                            if let Ok(text) = std::str::from_utf8(&buf[..n]) {
+                                // Emit streaming output
+                                context.emit_shell_output("stderr", text.to_string(), false, None);
+                                output.push_str(text);
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                output
+            } else {
+                String::new()
+            }
+        };
+
+        // Run with timeout
+        eprintln!("[SHELL DEBUG] Running with {}s timeout", timeout_secs);
+        let result = timeout(Duration::from_secs(timeout_secs), async {
+            // Read stdout and stderr concurrently
+            let (stdout_result, stderr_result) = tokio::join!(stdout_task, stderr_task);
+            stdout_output = stdout_result;
+            stderr_output = stderr_result;
+
+            eprintln!("[SHELL DEBUG] Output reading complete, waiting for process");
+            // Wait for the process to exit
+            child.wait().await
+        })
         .await;
+        eprintln!("[SHELL DEBUG] Command finished or timed out");
 
         match result {
-            Ok(Ok(output)) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let exit_code = output.status.code().unwrap_or(-1);
+            Ok(Ok(status)) => {
+                let exit_code = status.code().unwrap_or(-1);
+
+                // Emit completion event
+                context.emit_shell_output("stdout", String::new(), true, Some(exit_code));
 
                 let mut result_text = String::new();
 
@@ -124,25 +210,25 @@ impl Tool for ShellTool {
                 result_text.push_str(&format!("Exit code: {}\n", exit_code));
 
                 // Add stdout if present
-                if !stdout.is_empty() {
+                if !stdout_output.is_empty() {
                     result_text.push_str("\n--- stdout ---\n");
                     // Truncate if too long
-                    if stdout.len() > 30000 {
-                        result_text.push_str(&stdout[..30000]);
+                    if stdout_output.len() > 30000 {
+                        result_text.push_str(&stdout_output[..30000]);
                         result_text.push_str("\n... (output truncated)");
                     } else {
-                        result_text.push_str(&stdout);
+                        result_text.push_str(&stdout_output);
                     }
                 }
 
                 // Add stderr if present
-                if !stderr.is_empty() {
+                if !stderr_output.is_empty() {
                     result_text.push_str("\n--- stderr ---\n");
-                    if stderr.len() > 10000 {
-                        result_text.push_str(&stderr[..10000]);
+                    if stderr_output.len() > 10000 {
+                        result_text.push_str(&stderr_output[..10000]);
                         result_text.push_str("\n... (output truncated)");
                     } else {
-                        result_text.push_str(&stderr);
+                        result_text.push_str(&stderr_output);
                     }
                 }
 
@@ -152,9 +238,9 @@ impl Tool for ShellTool {
                 let mut found_paths: Vec<PathBuf> = Vec::new();
 
                 // Extract from stdout
-                found_paths.extend(extract_paths_from_text(&stdout, project_root));
+                found_paths.extend(extract_paths_from_text(&stdout_output, project_root));
                 // Extract from stderr (errors often mention file paths)
-                found_paths.extend(extract_paths_from_text(&stderr, project_root));
+                found_paths.extend(extract_paths_from_text(&stderr_output, project_root));
 
                 // Deduplicate
                 let unique_paths: Vec<PathBuf> = found_paths
@@ -167,22 +253,29 @@ impl Tool for ShellTool {
                     context.emit_search_match(unique_paths);
                 }
 
-                if exit_code == 0 {
-                    Ok(ToolResult::success(tool_use_id, result_text))
-                } else {
-                    // Non-zero exit is still a "success" in terms of execution,
-                    // but we include the error in the output
-                    Ok(ToolResult::success(tool_use_id, result_text))
-                }
+                Ok(ToolResult::success(tool_use_id, result_text))
             }
-            Ok(Err(e)) => Ok(ToolResult::error(
-                tool_use_id,
-                format!("Failed to execute command: {}", e),
-            )),
-            Err(_) => Ok(ToolResult::error(
-                tool_use_id,
-                format!("Command timed out after {} seconds", timeout_secs),
-            )),
+            Ok(Err(e)) => {
+                context.emit_shell_output("stderr", format!("Error: {}\n", e), true, Some(-1));
+                Ok(ToolResult::error(
+                    tool_use_id,
+                    format!("Failed to execute command: {}", e),
+                ))
+            }
+            Err(_) => {
+                // Kill the process on timeout
+                let _ = child.kill().await;
+                context.emit_shell_output(
+                    "stderr",
+                    format!("Command timed out after {} seconds\n", timeout_secs),
+                    true,
+                    Some(-1),
+                );
+                Ok(ToolResult::error(
+                    tool_use_id,
+                    format!("Command timed out after {} seconds", timeout_secs),
+                ))
+            }
         }
     }
 
@@ -362,6 +455,69 @@ mod tests {
 
         assert!(result.is_error());
         assert!(result.output_text().contains("blocked"));
+    }
+
+    #[tokio::test]
+    async fn test_blocks_echo_for_communication() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = ShellTool::new();
+        let context = create_test_context(&temp_dir);
+
+        // Should block echo commands that look like user communication
+        let result = tool
+            .execute(
+                "test-id".to_string(),
+                serde_json::json!({"command": "echo \"Which framework would you prefer?\""}),
+                &context,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error());
+        assert!(result.output_text().contains("Do NOT use echo"));
+    }
+
+    #[tokio::test]
+    async fn test_allows_legitimate_echo() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = ShellTool::new();
+        let context = create_test_context(&temp_dir);
+
+        // Should allow simple echo commands
+        let result = tool
+            .execute(
+                "test-id".to_string(),
+                serde_json::json!({"command": "echo hello"}),
+                &context,
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error());
+
+        // Should allow echo with redirection
+        let result = tool
+            .execute(
+                "test-id".to_string(),
+                serde_json::json!({"command": "echo 'content' > test.txt"}),
+                &context,
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error());
+
+        // Should allow echo with variables
+        let result = tool
+            .execute(
+                "test-id".to_string(),
+                serde_json::json!({"command": "echo $HOME"}),
+                &context,
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error());
     }
 
     #[tokio::test]

@@ -1,0 +1,59 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/* Copyright (C) 2025 Blackman Artificial Intelligence Technologies Inc. */
+
+.editor-container {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--bg-primary);
+}
+
+.editor-header {
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.editor-filename {
+  font-size: 13px;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.btn-small {
+  padding: 4px 12px;
+  font-size: 12px;
+}
+
+.editor-content {
+  flex: 1;
+  overflow: hidden;
+}
+
+.editor-empty {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--bg-primary);
+}
+
+.empty-state {
+  text-align: center;
+}
+
+.empty-state p {
+  font-size: 16px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.empty-hint {
+  font-size: 13px !important;
+  color: var(--text-secondary);
+  opacity: 0.7;
+}

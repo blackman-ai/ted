@@ -225,6 +225,11 @@ fn check_provider_configuration(settings: &Settings, provider_name: &str) -> Res
 
 /// Run interactive chat mode
 async fn run_chat(args: ChatArgs, mut settings: Settings) -> Result<()> {
+    // Check for embedded mode (JSONL output for GUI integration)
+    if args.embedded {
+        return ted::embedded_runner::run_embedded_chat(args, settings).await;
+    }
+
     // Determine which provider to use
     let provider_name = args
         .provider

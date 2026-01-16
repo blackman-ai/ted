@@ -4,3 +4,4 @@
 /.ted/
 tarpaulin-report.json
 .DS_Store
+/tmp/
