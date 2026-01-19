@@ -8,7 +8,6 @@
  * or are auto-downloaded on first use.
  */
 
-import { app } from 'electron';
 import { existsSync, chmodSync, mkdirSync } from 'fs';
 import { chmod, mkdir, writeFile, unlink } from 'fs/promises';
 import path from 'path';
@@ -22,6 +21,15 @@ import * as tar from 'tar';
 
 const execAsync = promisify(exec);
 
+// Lazy load electron app to avoid issues during bundling
+let _app: typeof import('electron').app | undefined;
+function getApp(): typeof import('electron').app {
+  if (!_app) {
+    _app = require('electron').app;
+  }
+  return _app;
+}
+
 export interface BundledBinary {
   name: string;
   version: string;
@@ -34,6 +42,7 @@ export interface BundledBinary {
  * Get the bundled resources directory
  */
 export function getBundledResourcesDir(): string {
+  const app = getApp();
   if (app.isPackaged) {
     // In production, bundled resources are in the app.asar.unpacked/resources
     return path.join(process.resourcesPath, 'bin');

@@ -1,6 +1,6 @@
 # Ted & Teddy - Product Roadmap
 
-**Last Updated**: 2026-01-15
+**Last Updated**: 2026-01-19
 **Vision**: A fully local, offline-first AI coding environment that adapts to any hardware
 **Mission**: Disrupt billion-dollar companies for free. Make app building accessible to everyone—including grandma.
 
@@ -559,12 +559,12 @@ model Favorite {
 | **Cloudflare Tunnel sharing** | P0 | 3 days | ✅ Done | Instant share links via cloudflared, auto-download, auto-copy to clipboard |
 | **ARM64 builds** | P0 | 3 days | ✅ Done | Raspberry Pi 5 support - electron-builder config, cross-compile script, GitHub Actions |
 | **Bundled dependencies** | P0 | 2 days | ✅ Done | Auto-download cloudflared, no manual installs needed, batteries-included |
-| Blackman AI provider | P1 | 2 days | 🔴 Not started | OpenAI-compatible |
+| Blackman AI provider | P1 | 2 days | ✅ Done | OpenAI-compatible, full streaming support |
 | Netlify deploy | P1 | 2 days | 🔴 Not started | Alternative deploy |
-| Multi-session support | P1 | 3 days | 🔴 Not started | Work on multiple tasks |
-| File watching (chokidar) | P2 | 2 days | 🔴 Not started | Detect external changes |
-| teddy.rocks subdomain service | P2 | 4 days | 🔴 Not started | CF Workers + KV |
-| Acquire Raspberry Pi 5 for testing | P2 | 1 day | 🔴 Not started | $125 budget (8GB + NVMe HAT + SSD) |
+| Multi-session support | P1 | 3 days | ✅ Done | Full session CRUD, UI, backend storage |
+| File watching (chokidar) | P2 | 2 days | ✅ Done | Full chokidar implementation with ignore patterns |
+| teddy.rocks subdomain service | P2 | 4 days | 🔶 In progress | CF Workers + KV |
+| Acquire Raspberry Pi 5 for testing | P2 | 1 day | ✅ Done | Have hardware |
 
 **Phase 2 Deliverable**: User can deploy to Vercel with one click, share preview links, use MCP tools. **Works on Raspberry Pi 5 (ARM64).**
 
@@ -576,8 +576,8 @@ model Favorite {
 |------|----------|--------|--------|-------|
 | **Tool output streaming** | P0 | 2 days | ✅ Done | Real-time command output in chat (already complete in codebase) |
 | **Error recovery + retry** | P0 | 2 days | ✅ Done | Exponential backoff, circuit breaker, smart defaults |
-| **Multi-file context** | P0 | 3 days | 🟡 In progress | Atomic/incremental edit modes, file grouping |
-| **Conversation memory/RAG** | P0 | 5 days | 🔴 Not started | Semantic search with Ollama embeddings |
+| **Multi-file context** | P0 | 3 days | ✅ Done | FileChangeSetTool with atomic/incremental modes, integrated with embedded_runner |
+| **Conversation memory/RAG** | P0 | 5 days | ✅ Done | Embeddings, SQLite storage, summarization, recall integration complete |
 | **LSP integration** | P0 | 1 week | 🔴 Not started | Autocomplete, go-to-def |
 | **VS Code extension** | P0 | 1 week | 🔴 Not started | IDE integration |
 | Thermal monitoring (Pi) | P1 | 2 days | 🔴 Not started | Pause inference at 80°C, UltraTiny tier |

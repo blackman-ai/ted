@@ -16,6 +16,8 @@ export interface TedRunnerOptions {
   caps?: string[];          // Active caps
   historyFile?: string;     // Path to conversation history JSON file
   reviewMode?: boolean;     // Review mode - emit file events but don't execute modifications
+  sessionId?: string;       // Resume a specific session by ID
+  projectHasFiles?: boolean; // Whether the project has existing files (for enforcement)
 }
 
 /**
@@ -137,13 +139,14 @@ export class TedRunner extends EventEmitter {
 
     // In development: use cargo-built binary from parent ted repo
     // __dirname is out/main/ so we go up to teddy/, then up to ted/
-    // Note: Also check for Electron's app.isPackaged equivalent
-    const isProduction = process.env.NODE_ENV === 'production' ||
-                         (process.resourcesPath && process.resourcesPath.includes('.app'));
+    // Note: Check if we're in dev mode by looking for local cargo builds first
+    // The old check for '.app' in resourcesPath was wrong because Electron's dev
+    // resourcesPath also contains '.app' (the Electron framework bundle)
+    const isDevelopment = process.env.NODE_ENV !== 'production';
 
-    console.log('[TED_RUNNER] isProduction:', isProduction);
+    console.log('[TED_RUNNER] isDevelopment:', isDevelopment);
 
-    if (!isProduction) {
+    if (isDevelopment) {
       // Try debug build first (faster compilation), fall back to release
       const debugBinary = path.join(__dirname, '../../../target/debug/ted');
       const releaseBinary = path.join(__dirname, '../../../target/release/ted');
@@ -219,6 +222,16 @@ export class TedRunner extends EventEmitter {
     // Add review mode flag if enabled
     if (this.options.reviewMode) {
       args.push('--review-mode');
+    }
+
+    // Add session ID for resuming sessions
+    if (this.options.sessionId) {
+      args.push('--resume', this.options.sessionId);
+    }
+
+    // Tell Ted if the project has existing files (for enforcement logic)
+    if (this.options.projectHasFiles) {
+      args.push('--project-has-files');
     }
 
     // Add the prompt as the final argument

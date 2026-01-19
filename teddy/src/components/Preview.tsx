@@ -18,6 +18,7 @@ let globalProjectType: ProjectType = 'unknown';
 
 export function Preview({ projectPath }: PreviewProps) {
   const [url, setUrl] = useState(`http://localhost:${globalServerPort}`);
+  const [iframeSrc, setIframeSrc] = useState(`http://localhost:${globalServerPort}?_t=${Date.now()}`);
   const [isRunning, setIsRunning] = useState(globalServerRunning);
   const [serverOutput, setServerOutput] = useState('');
   const [port, setPort] = useState(globalServerPort);
@@ -34,14 +35,45 @@ export function Preview({ projectPath }: PreviewProps) {
     detectProjectType();
   }, [projectPath]);
 
-  // Sync with global state on mount
+  // Sync with global state on mount and refresh with cache-busting
   useEffect(() => {
     setIsRunning(globalServerRunning);
-    setUrl(`http://localhost:${globalServerPort}`);
+    const baseUrl = `http://localhost:${globalServerPort}`;
+    setUrl(baseUrl);
+    // Always refresh iframe with cache-busting when component mounts
+    setIframeSrc(`${baseUrl}?_t=${Date.now()}`);
     if (globalServerRunning) {
       setServerOutput(`Server running on port ${globalServerPort}`);
     }
   }, []);
+
+  // Auto-refresh preview when files change
+  useEffect(() => {
+    let debounceTimer: NodeJS.Timeout | null = null;
+
+    const unsubscribe = window.teddy.onFileExternalChange((event) => {
+      // Only refresh for actual file changes (not directories)
+      if (isRunning && (event.type === 'change' || event.type === 'add' || event.type === 'unlink')) {
+        console.log('[Preview] File changed, refreshing preview:', event.relativePath);
+
+        // Debounce refresh to avoid multiple rapid refreshes
+        if (debounceTimer) {
+          clearTimeout(debounceTimer);
+        }
+        debounceTimer = setTimeout(() => {
+          const baseUrl = `http://localhost:${port}`;
+          setIframeSrc(`${baseUrl}?_t=${Date.now()}`);
+        }, 300);
+      }
+    });
+
+    return () => {
+      unsubscribe();
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+      }
+    };
+  }, [isRunning, port]);
 
   const detectProjectType = useCallback(async () => {
     setDetecting(true);
@@ -171,24 +203,26 @@ export function Preview({ projectPath }: PreviewProps) {
     }
   }, [isRunning, port, projectType]);
 
-  const refreshPreview = useCallback(() => {
-    if (iframeRef.current) {
-      // Force reload by setting src to empty then back
-      const currentSrc = iframeRef.current.src;
-      iframeRef.current.src = '';
-      setTimeout(() => {
-        if (iframeRef.current) {
-          iframeRef.current.src = currentSrc;
-        }
-      }, 100);
+  const refreshPreview = useCallback(async () => {
+    // Clear Electron's HTTP cache first
+    try {
+      await window.teddy.clearCache();
+      console.log('[Preview] Cache cleared');
+    } catch (err) {
+      console.error('[Preview] Failed to clear cache:', err);
     }
-  }, []);
+
+    // Force hard reload by clearing iframe first, then loading with cache-busting
+    setIframeSrc('about:blank');
+    setTimeout(() => {
+      const baseUrl = `http://localhost:${port}`;
+      setIframeSrc(`${baseUrl}?_nocache=${Date.now()}`);
+    }, 100);
+  }, [port]);
 
   const handleUrlKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
-      if (iframeRef.current) {
-        iframeRef.current.src = url;
-      }
+      setIframeSrc(`${url}?_t=${Date.now()}`);
     }
   }, [url]);
 
@@ -196,7 +230,9 @@ export function Preview({ projectPath }: PreviewProps) {
     const newPort = parseInt(e.target.value) || 8080;
     setPort(newPort);
     globalServerPort = newPort;
-    setUrl(`http://localhost:${newPort}`);
+    const newUrl = `http://localhost:${newPort}`;
+    setUrl(newUrl);
+    setIframeSrc(`${newUrl}?_t=${Date.now()}`);
   }, []);
 
   const getProjectTypeLabel = () => {
@@ -249,14 +285,14 @@ export function Preview({ projectPath }: PreviewProps) {
 
   const shareViaTunnel = useCallback(async () => {
     if (tunnelUrl) {
-      // Already sharing - stop tunnel
+      // Already sharing - stop sharing
       try {
-        await window.teddy.tunnelStop(port);
+        await window.teddy.shareStop(port);
         setTunnelUrl(null);
         setSharingTunnel(false);
-        setServerOutput('Tunnel stopped');
+        setServerOutput('Sharing stopped');
       } catch (err) {
-        console.error('Failed to stop tunnel:', err);
+        console.error('Failed to stop sharing:', err);
       }
       return;
     }
@@ -267,7 +303,7 @@ export function Preview({ projectPath }: PreviewProps) {
     }
 
     setSharingTunnel(true);
-    setServerOutput('Creating Cloudflare Tunnel...');
+    setServerOutput('Creating share link...');
 
     try {
       // Check if cloudflared is installed
@@ -301,24 +337,25 @@ export function Preview({ projectPath }: PreviewProps) {
         setServerOutput(`✓ cloudflared installed to ${installResult.path}`);
         // Give user a moment to see the success message
         await new Promise(resolve => setTimeout(resolve, 1000));
-        setServerOutput('Creating Cloudflare Tunnel...');
+        setServerOutput('Creating share link...');
       }
 
-      const result = await window.teddy.tunnelStart({ port });
+      // Use shareStart to get a teddy.rocks subdomain
+      const result = await window.teddy.shareStart({ port });
 
-      if (result.success && result.url) {
-        setTunnelUrl(result.url);
-        setServerOutput(`✓ Sharing at: ${result.url}`);
+      if (result.success && result.previewUrl) {
+        setTunnelUrl(result.previewUrl);
+        setServerOutput(`✓ Sharing at: ${result.previewUrl}`);
         // Copy to clipboard
-        navigator.clipboard.writeText(result.url).catch(() => {});
+        navigator.clipboard.writeText(result.previewUrl).catch(() => {});
       } else {
-        setServerOutput(`✗ Failed to create tunnel: ${result.error}`);
-        alert(`Failed to create tunnel: ${result.error}`);
+        setServerOutput(`✗ Failed to create share link: ${result.error}`);
+        alert(`Failed to create share link: ${result.error}`);
       }
     } catch (err) {
-      console.error('Tunnel error:', err);
-      setServerOutput(`✗ Tunnel failed: ${err}`);
-      alert(`Tunnel failed: ${err}`);
+      console.error('Share error:', err);
+      setServerOutput(`✗ Share failed: ${err}`);
+      alert(`Share failed: ${err}`);
     } finally {
       setSharingTunnel(false);
     }
@@ -391,8 +428,9 @@ export function Preview({ projectPath }: PreviewProps) {
 
       <div className="preview-content">
         <iframe
+          key={iframeSrc}
           ref={iframeRef}
-          src={url}
+          src={iframeSrc}
           title="Preview"
           className="preview-frame"
           sandbox="allow-same-origin allow-scripts allow-forms allow-popups"

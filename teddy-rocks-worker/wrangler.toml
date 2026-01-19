@@ -1,0 +1,44 @@
+# Cloudflare Worker configuration for teddy.rocks subdomain service
+name = "teddy-rocks"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+# Disable workers.dev since we're using teddy.rocks
+workers_dev = false
+
+# KV namespace for storing subdomain → tunnel mappings
+# Create with: wrangler kv:namespace create "SUBDOMAINS"
+[[kv_namespaces]]
+binding = "SUBDOMAINS"
+id = "442ad27737b14fa4acedce92da3a83b6"  # Replace after creating namespace
+preview_id = "e504c803d24b46c2a4626943907fd9e6"
+
+# KV namespace for rate limiting
+# Create with: wrangler kv:namespace create "RATE_LIMITS"
+[[kv_namespaces]]
+binding = "RATE_LIMITS"
+id = "68ac78ff355c4618bdeb94a4bc5a614d"  # Replace after creating namespace
+preview_id = "0ad8d362a3c34fc5a1241a42458a71d1"
+
+# Routes - handle all *.teddy.rocks requests
+[[routes]]
+pattern = "teddy.rocks/*"
+zone_name = "teddy.rocks"
+
+[[routes]]
+pattern = "*.teddy.rocks/*"
+zone_name = "teddy.rocks"
+
+# Environment variables (non-secret)
+[vars]
+ENVIRONMENT = "production"
+
+# Secrets (set via wrangler secret put):
+# - API_SECRET: Bearer token for API authentication
+#   Run: wrangler secret put API_SECRET
+#   Then enter a secure random string (e.g., from: openssl rand -hex 32)
+
+# Development settings
+[dev]
+port = 8787
+local_protocol = "http"

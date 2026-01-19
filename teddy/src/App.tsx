@@ -10,9 +10,11 @@ import { Preview } from './components/Preview';
 import { ProjectPicker } from './components/ProjectPicker';
 import { DiffViewer, PendingChange } from './components/DiffViewer';
 import { Settings } from './components/Settings';
+import { SessionManager, Session } from './components/SessionManager';
 import { useTed } from './hooks/useTed';
 import { useProject } from './hooks/useProject';
 import { usePendingChanges } from './hooks/usePendingChanges';
+import { useSession } from './hooks/useSession';
 import './App.css';
 
 type EditorTab = 'editor' | 'preview' | 'review';
@@ -24,6 +26,8 @@ function App() {
   const [activeTab, setActiveTab] = useState<EditorTab>('editor');
   const [fileTreeKey, setFileTreeKey] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
+  const [currentSession, setCurrentSession] = useState<Session | null>(null);
+  const [sessions, setSessions] = useState<Session[]>([]);
 
   // Track which events we've already processed
   const processedEventsRef = useRef<Set<string>>(new Set());
@@ -94,36 +98,46 @@ function App() {
           // Mark as processed
           processedEventsRef.current.add(eventKey);
 
-          // For edits, we need to read the current file content
+          // For edits, we need to read the current file content (if it exists)
+          let originalContent = '';
           try {
             const result = await window.teddy.readFile(data.path);
             console.log('[APP] Read file for diff, content length:', result.content?.length || 0);
-            let newContent = result.content;
-
-            if (data.operation === 'replace' && data.old_text && data.new_text !== undefined) {
-              console.log('[APP] Applying replace: old_text length:', data.old_text.length, 'new_text length:', data.new_text.length);
-              newContent = result.content.replace(data.old_text, data.new_text);
-            } else {
-              console.log('[APP] Not applying replace - operation:', data.operation, 'has old_text:', !!data.old_text, 'has new_text:', data.new_text !== undefined);
-            }
-
-            const exists = pendingChanges.some(
-              (c) => c.path === data.path && c.type === 'edit'
-            );
-            console.log('[APP] Change already exists?', exists);
-            if (!exists) {
-              console.log('[APP] Adding pending change for:', data.path);
-              addPendingChange({
-                type: 'edit',
-                path: data.path,
-                operation: data.operation,
-                originalContent: result.content,
-                newContent: newContent,
-                timestamp: event.timestamp,
-              });
-            }
+            originalContent = result.content || '';
           } catch (err) {
-            console.error('[APP] Failed to read file for diff:', err);
+            // File doesn't exist yet - this is fine for new file creation
+            console.log('[APP] File does not exist yet:', data.path);
+          }
+
+          let newContent = originalContent;
+
+          if (data.operation === 'replace' && data.new_text !== undefined) {
+            // If old_text is empty string or undefined, it means replace entire file content
+            if (data.old_text === '' || data.old_text === undefined) {
+              console.log('[APP] Applying full file replacement, new_text length:', data.new_text.length);
+              newContent = data.new_text;
+            } else {
+              console.log('[APP] Applying replace: old_text length:', data.old_text.length, 'new_text length:', data.new_text.length);
+              newContent = originalContent.replace(data.old_text, data.new_text);
+            }
+          } else {
+            console.log('[APP] Not applying replace - operation:', data.operation, 'has old_text:', data.old_text !== undefined, 'has new_text:', data.new_text !== undefined);
+          }
+
+          const exists = pendingChanges.some(
+            (c) => c.path === data.path && c.type === 'edit'
+          );
+          console.log('[APP] Change already exists?', exists);
+          if (!exists) {
+            console.log('[APP] Adding pending change for:', data.path);
+            addPendingChange({
+              type: 'edit',
+              path: data.path,
+              operation: data.operation,
+              originalContent: originalContent,
+              newContent: newContent,
+              timestamp: event.timestamp,
+            });
           }
         } else if (event.type === 'file_delete') {
           const data = event.data as { path: string };
@@ -163,6 +177,27 @@ function App() {
     }
   }, [hasPendingChanges, activeTab]);
 
+  // Listen for external file changes (from file watcher)
+  useEffect(() => {
+    const unsubscribe = window.teddy.onFileExternalChange((event) => {
+      console.log('[APP] External file change detected:', event.type, event.relativePath);
+
+      // Refresh file tree when files are added/changed/deleted
+      if (event.type === 'add' || event.type === 'unlink' || event.type === 'addDir' || event.type === 'unlinkDir') {
+        console.log('[APP] Refreshing file tree due to external change');
+        setFileTreeKey((prev) => prev + 1);
+      }
+
+      // If the currently open file was modified externally, we could show a notification
+      if (selectedFile && event.relativePath === selectedFile && event.type === 'change') {
+        console.log('[APP] Currently open file was modified externally');
+        // TODO: Show notification or auto-reload option
+      }
+    });
+
+    return () => unsubscribe();
+  }, [selectedFile]);
+
   // Refresh file tree after accepting changes
   const handleAcceptChange = useCallback(async (changeId: string) => {
     const success = await acceptChange(changeId);
@@ -175,8 +210,98 @@ function App() {
     const success = await acceptAllChanges();
     if (success) {
       setFileTreeKey((prev) => prev + 1); // Force refresh
+      setActiveTab('preview'); // Switch to preview after accepting changes
     }
   }, [acceptAllChanges]);
+
+  // Load sessions when project changes
+  useEffect(() => {
+    if (project) {
+      loadSessions();
+    }
+  }, [project]);
+
+  const loadSessions = async () => {
+    try {
+      const sessionList = await window.teddy.listSessions();
+      const sessionInfos: Session[] = sessionList.map(s => ({
+        id: s.id,
+        name: s.name,
+        lastActive: new Date(s.lastActive).toISOString(),
+        messageCount: s.messageCount,
+        summary: s.summary,
+        isActive: false,
+      }));
+
+      // Get current session
+      const current = await window.teddy.getCurrentSession();
+      if (current) {
+        const currentSessionInfo: Session = {
+          id: current.id,
+          name: current.name,
+          lastActive: new Date(current.lastActive).toISOString(),
+          messageCount: current.messageCount,
+          summary: current.summary,
+          isActive: true,
+        };
+        setCurrentSession(currentSessionInfo);
+
+        // Mark as active in list
+        const updated = sessionInfos.map(s => ({
+          ...s,
+          isActive: s.id === current.id,
+        }));
+        setSessions(updated);
+      } else {
+        setSessions(sessionInfos);
+      }
+    } catch (err) {
+      console.error('Failed to load sessions:', err);
+    }
+  };
+
+  const handleNewSession = async () => {
+    try {
+      const result = await window.teddy.createSession();
+      console.log('Created new session:', result.id);
+
+      // Clear events for new session
+      clearEvents();
+      await window.teddy.clearHistory();
+
+      // Reload sessions
+      await loadSessions();
+    } catch (err) {
+      console.error('Failed to create session:', err);
+    }
+  };
+
+  const handleSessionSwitch = async (sessionId: string) => {
+    try {
+      const result = await window.teddy.switchSession(sessionId);
+      console.log('Switched to session:', result.id);
+
+      // Clear current events
+      clearEvents();
+
+      // Reload sessions to update UI
+      await loadSessions();
+    } catch (err) {
+      console.error('Failed to switch session:', err);
+    }
+  };
+
+  const handleDeleteSession = async (sessionId: string) => {
+    try {
+      await window.teddy.deleteSession(sessionId);
+      console.log('Deleted session:', sessionId);
+
+      // Reload sessions to update UI
+      await loadSessions();
+    } catch (err) {
+      console.error('Failed to delete session:', err);
+    }
+  };
 
   if (!project) {
     return <ProjectPicker onProjectSelected={setProject} />;
@@ -188,6 +313,13 @@ function App() {
         <div className="titlebar-left">
           <span className="app-title">Teddy</span>
           <span className="project-name">{project.name}</span>
+          <SessionManager
+            currentSession={currentSession}
+            sessions={sessions}
+            onSessionSwitch={handleSessionSwitch}
+            onNewSession={handleNewSession}
+            onDeleteSession={handleDeleteSession}
+          />
         </div>
         <div className="titlebar-right">
           <label className="review-toggle" title="Review changes before applying">
@@ -281,7 +413,7 @@ function App() {
           )}
 
           {activeTab === 'preview' && (
-            <Preview projectPath={project.path} />
+            <Preview projectPath={project.path} key={fileTreeKey} />
           )}
 
           {activeTab === 'review' && (

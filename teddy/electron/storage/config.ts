@@ -48,6 +48,16 @@ export interface ProjectContext {
   lastScanned: number;
 }
 
+export interface SessionInfo {
+  id: string;
+  projectPath: string;
+  name: string;
+  lastActive: number;
+  created: number;
+  messageCount: number;
+  summary?: string;
+}
+
 const DEFAULT_CONFIG: AppConfig = {
   lastProjectPath: null,
   recentProjects: [],
@@ -62,10 +72,13 @@ class TeddyStorage {
   private projectsDir: string;
   private config: AppConfig | null = null;
 
+  private sessionsDir: string;
+
   constructor() {
     this.configDir = path.join(os.homedir(), '.teddy');
     this.configPath = path.join(this.configDir, 'config.json');
     this.projectsDir = path.join(this.configDir, 'projects');
+    this.sessionsDir = path.join(this.configDir, 'sessions');
   }
 
   /**
@@ -78,6 +91,9 @@ class TeddyStorage {
     }
     if (!existsSync(this.projectsDir)) {
       mkdirSync(this.projectsDir, { recursive: true });
+    }
+    if (!existsSync(this.sessionsDir)) {
+      mkdirSync(this.sessionsDir, { recursive: true });
     }
 
     // Load or create config
@@ -326,6 +342,147 @@ class TeddyStorage {
       }
     } catch (err) {
       console.error('[STORAGE] Failed to load context:', err);
+    }
+
+    return null;
+  }
+
+  /**
+   * Session management
+   */
+
+  /**
+   * Create a new session
+   */
+  async createSession(sessionId: string, projectPath: string): Promise<SessionInfo> {
+    const session: SessionInfo = {
+      id: sessionId,
+      projectPath,
+      name: `Session ${new Date().toLocaleString()}`,
+      lastActive: Date.now(),
+      created: Date.now(),
+      messageCount: 0,
+    };
+
+    const sessionPath = path.join(this.sessionsDir, `${sessionId}.json`);
+    writeFileSync(sessionPath, JSON.stringify(session, null, 2), 'utf-8');
+
+    return session;
+  }
+
+  /**
+   * Get a session by ID
+   */
+  async getSession(sessionId: string): Promise<SessionInfo | null> {
+    const sessionPath = path.join(this.sessionsDir, `${sessionId}.json`);
+
+    try {
+      if (existsSync(sessionPath)) {
+        const data = readFileSync(sessionPath, 'utf-8');
+        return JSON.parse(data);
+      }
+    } catch (err) {
+      console.error('[STORAGE] Failed to load session:', err);
+    }
+
+    return null;
+  }
+
+  /**
+   * Get all sessions for a project
+   */
+  async getProjectSessions(projectPath: string): Promise<SessionInfo[]> {
+    const sessions: SessionInfo[] = [];
+
+    try {
+      const files = await fs.readdir(this.sessionsDir);
+
+      for (const file of files) {
+        if (file.endsWith('.json')) {
+          const sessionPath = path.join(this.sessionsDir, file);
+          const data = readFileSync(sessionPath, 'utf-8');
+          const session: SessionInfo = JSON.parse(data);
+
+          if (session.projectPath === projectPath) {
+            sessions.push(session);
+          }
+        }
+      }
+
+      // Sort by last active (most recent first)
+      sessions.sort((a, b) => b.lastActive - a.lastActive);
+    } catch (err) {
+      console.error('[STORAGE] Failed to load project sessions:', err);
+    }
+
+    return sessions;
+  }
+
+  /**
+   * Update session metadata
+   */
+  async updateSession(sessionId: string, updates: Partial<SessionInfo>): Promise<void> {
+    const session = await this.getSession(sessionId);
+    if (!session) return;
+
+    const updated = { ...session, ...updates, lastActive: Date.now() };
+    const sessionPath = path.join(this.sessionsDir, `${sessionId}.json`);
+    writeFileSync(sessionPath, JSON.stringify(updated, null, 2), 'utf-8');
+  }
+
+  /**
+   * Delete a session
+   */
+  async deleteSession(sessionId: string): Promise<void> {
+    const sessionPath = path.join(this.sessionsDir, `${sessionId}.json`);
+    const historyPath = path.join(this.sessionsDir, `${sessionId}-history.json`);
+
+    try {
+      if (existsSync(sessionPath)) {
+        await fs.unlink(sessionPath);
+      }
+      if (existsSync(historyPath)) {
+        await fs.unlink(historyPath);
+      }
+    } catch (err) {
+      console.error('[STORAGE] Failed to delete session:', err);
+    }
+  }
+
+  /**
+   * Save conversation history for a session
+   */
+  async saveSessionHistory(
+    sessionId: string,
+    messages: Array<{ role: 'user' | 'assistant'; content: string }>
+  ): Promise<void> {
+    const historyPath = path.join(this.sessionsDir, `${sessionId}-history.json`);
+
+    try {
+      writeFileSync(historyPath, JSON.stringify(messages, null, 2), 'utf-8');
+
+      // Update session message count
+      await this.updateSession(sessionId, { messageCount: messages.length });
+    } catch (err) {
+      console.error('[STORAGE] Failed to save session history:', err);
+    }
+  }
+
+  /**
+   * Load conversation history for a session
+   */
+  async loadSessionHistory(
+    sessionId: string
+  ): Promise<Array<{ role: 'user' | 'assistant'; content: string }> | null> {
+    const historyPath = path.join(this.sessionsDir, `${sessionId}-history.json`);
+
+    try {
+      if (existsSync(historyPath)) {
+        const data = readFileSync(historyPath, 'utf-8');
+        return JSON.parse(data);
+      }
+    } catch (err) {
+      console.error('[STORAGE] Failed to load session history:', err);
     }
 
     return null;

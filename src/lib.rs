@@ -12,6 +12,7 @@ pub mod config;
 pub mod context;
 pub mod embedded;
 pub mod embedded_runner;
+pub mod embeddings;
 pub mod error;
 pub mod hardware;
 pub mod history;

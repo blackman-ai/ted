@@ -9,7 +9,8 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: path.resolve(__dirname, 'electron/main.ts')
-        }
+        },
+        external: ['electron', 'chokidar', 'tar']  // Externalize to avoid bundling issues
       }
     }
   },

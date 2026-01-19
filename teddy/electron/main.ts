@@ -6,6 +6,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import { appendFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
 import os from 'os';
+import crypto from 'crypto';
 import { TedRunner } from './ted/runner';
 import { FileApplier } from './operations/file-applier';
 import { AutoCommit } from './git/auto-commit';
@@ -13,7 +14,35 @@ import { TedEvent, ConversationHistoryEvent } from './types/protocol';
 import { storage, ProjectContext } from './storage/config';
 import { loadTedSettings, saveTedSettings, detectHardware } from './settings/ted-settings';
 import { deployProject, verifyToken, getDeploymentStatus } from './deploy/vercel';
-import { startTunnel, stopTunnel, getTunnelUrl, isCloudflaredInstalled, getInstallInstructions } from './deploy/cloudflare-tunnel';
+
+// Lazy-loaded module references to avoid electron app access at module load time
+let cloudfareTunnel: typeof import('./deploy/cloudflare-tunnel') | null = null;
+async function getCloudflareTunnel() {
+  if (!cloudfareTunnel) {
+    cloudfareTunnel = await import('./deploy/cloudflare-tunnel');
+  }
+  return cloudfareTunnel;
+}
+
+let shareModule: typeof import('./share') | null = null;
+async function getShareModule() {
+  if (!shareModule) {
+    shareModule = await import('./share');
+  }
+  return shareModule;
+}
+
+let fileWatcherModule: typeof import('./file-watcher') | null = null;
+async function getFileWatcherModule() {
+  if (!fileWatcherModule) {
+    fileWatcherModule = await import('./file-watcher');
+  }
+  return fileWatcherModule;
+}
+
+// Type imports for file watcher
+type FileWatcherType = import('./file-watcher').FileWatcher;
+type FileChangeEventType = import('./file-watcher').FileChangeEvent;
 
 // Debug logging to file for Claude Code integration
 const LOG_FILE = '/tmp/teddy-debug.log';
@@ -31,6 +60,7 @@ let mainWindow: BrowserWindow | null = null;
 let tedRunner: TedRunner | null = null;
 let fileApplier: FileApplier | null = null;
 let autoCommit: AutoCommit | null = null;
+let fileWatcher: FileWatcherType | null = null;
 let currentProjectRoot: string | null = null;
 
 // Review mode - when enabled, file operations are sent to renderer for review instead of auto-applying
@@ -86,6 +116,18 @@ app.on('window-all-closed', () => {
   }
 });
 
+// Cleanup shares and tunnels when app is quitting
+app.on('before-quit', async () => {
+  log('[APP] Cleaning up before quit...');
+  try {
+    const share = await getShareModule();
+    await share.stopAllShares();
+    log('[APP] All shares stopped');
+  } catch (err) {
+    log('[APP] Error stopping shares:', err);
+  }
+});
+
 app.on('activate', () => {
   if (mainWindow === null) {
     createWindow();
@@ -122,6 +164,34 @@ ipcMain.handle('project:set', async (_, projectPath: string) => {
 
   // Initialize git repo if needed
   await autoCommit.init();
+
+  // Stop previous file watcher if exists
+  if (fileWatcher) {
+    await fileWatcher.stop();
+    fileWatcher = null;
+  }
+
+  // Start file watcher for this project
+  try {
+    const fwModule = await getFileWatcherModule();
+    fileWatcher = new fwModule.FileWatcher({ projectPath });
+
+    // Forward file change events to renderer
+    fileWatcher.on('change', (event: FileChangeEventType) => {
+      log('[FILE_WATCHER] File changed:', event.type, event.relativePath);
+      mainWindow?.webContents.send('file:externalChange', event);
+    });
+
+    fileWatcher.on('error', (error) => {
+      log('[FILE_WATCHER] Error:', error);
+    });
+
+    // Start watching
+    await fileWatcher.start();
+    log('[FILE_WATCHER] Started watching:', projectPath);
+  } catch (err) {
+    log('[FILE_WATCHER] Failed to start watcher:', err);
+  }
 
   // Add to recent projects
   await storage.addRecentProject(projectPath);
@@ -204,6 +274,98 @@ ipcMain.handle('project:getContext', async () => {
 });
 
 /**
+ * Session management
+ */
+
+// Store session ID for current project
+let currentSessionId: string | null = null;
+
+/**
+ * Get sessions for current project
+ */
+ipcMain.handle('session:list', async () => {
+  if (!currentProjectRoot) {
+    return [];
+  }
+
+  const sessions = await storage.getProjectSessions(currentProjectRoot);
+  return sessions;
+});
+
+/**
+ * Create a new session
+ */
+ipcMain.handle('session:create', async () => {
+  if (!currentProjectRoot) {
+    throw new Error('No project selected');
+  }
+
+  // Generate new session ID
+  currentSessionId = crypto.randomUUID();
+
+  // Clear conversation history for new session
+  conversationHistory = [];
+
+  // Store session info
+  await storage.createSession(currentSessionId, currentProjectRoot);
+
+  log('[SESSION] Created new session:', currentSessionId);
+  return {
+    id: currentSessionId,
+    projectPath: currentProjectRoot,
+  };
+});
+
+/**
+ * Switch to an existing session
+ */
+ipcMain.handle('session:switch', async (_, sessionId: string) => {
+  if (!currentProjectRoot) {
+    throw new Error('No project selected');
+  }
+
+  currentSessionId = sessionId;
+
+  // Load conversation history for this session
+  const history = await storage.loadSessionHistory(sessionId);
+  conversationHistory = history || [];
+
+  log('[SESSION] Switched to session:', sessionId, 'history length:', conversationHistory.length);
+  return {
+    id: currentSessionId,
+    historyLength: conversationHistory.length,
+  };
+});
+
+/**
+ * Get current session
+ */
+ipcMain.handle('session:getCurrent', async () => {
+  if (!currentSessionId) {
+    return null;
+  }
+
+  const sessionInfo = await storage.getSession(currentSessionId);
+  return sessionInfo;
+});
+
+/**
+ * Delete a session
+ */
+ipcMain.handle('session:delete', async (_, sessionId: string) => {
+  await storage.deleteSession(sessionId);
+
+  // If we deleted the current session, clear it
+  if (currentSessionId === sessionId) {
+    currentSessionId = null;
+    conversationHistory = [];
+  }
+
+  log('[SESSION] Deleted session:', sessionId);
+  return { success: true };
+});
+
+/**
  * Run Ted with a prompt
  */
 ipcMain.handle('ted:run', async (_, prompt: string, options?: {
@@ -237,14 +399,17 @@ ipcMain.handle('ted:run', async (_, prompt: string, options?: {
 
   // If this is a new conversation (no history), inject project context into the prompt
   let finalPrompt = prompt;
-  if (conversationHistory.length === 0) {
-    const context = await storage.loadProjectContext(currentProjectRoot);
-    if (context && context.fileTree.length > 0) {
+  let projectHasFiles = false;
+  const context = await storage.loadProjectContext(currentProjectRoot);
+  if (context && context.fileTree.length > 0) {
+    projectHasFiles = true;
+    if (conversationHistory.length === 0) {
       const contextPrefix = buildContextPrefix(context);
       finalPrompt = contextPrefix + prompt;
       log('[TED:RUN] Injected project context into prompt');
     }
   }
+  log('[TED:RUN] Project has files:', projectHasFiles);
 
   // Write history to temp file if we have previous turns
   if (conversationHistory.length > 0) {
@@ -265,6 +430,8 @@ ipcMain.handle('ted:run', async (_, prompt: string, options?: {
     caps: options?.caps,
     historyFile: historyFilePath ?? undefined,
     reviewMode: reviewModeEnabled,  // Pass review mode to Ted - it will emit events but skip file execution
+    sessionId: currentSessionId ?? undefined,  // Pass session ID to resume
+    projectHasFiles,  // Tell Ted if project has files (for enforcement logic)
   });
 
   // Forward events to renderer
@@ -399,13 +566,14 @@ ipcMain.handle('ted:stop', async () => {
 /**
  * Read a file from the project
  */
-ipcMain.handle('file:read', async (_, relativePath: string) => {
+ipcMain.handle('file:read', async (_, filePath: string) => {
   if (!currentProjectRoot) {
     throw new Error('No project selected');
   }
 
   const fs = require('fs/promises');
-  const fullPath = path.join(currentProjectRoot, relativePath);
+  // Handle both absolute and relative paths
+  const fullPath = path.isAbsolute(filePath) ? filePath : path.join(currentProjectRoot, filePath);
   const content = await fs.readFile(fullPath, 'utf-8');
 
   return { content };
@@ -414,13 +582,14 @@ ipcMain.handle('file:read', async (_, relativePath: string) => {
 /**
  * Write a file to the project
  */
-ipcMain.handle('file:write', async (_, relativePath: string, content: string) => {
+ipcMain.handle('file:write', async (_, filePath: string, content: string) => {
   if (!currentProjectRoot) {
     throw new Error('No project selected');
   }
 
   const fs = require('fs/promises');
-  const fullPath = path.join(currentProjectRoot, relativePath);
+  // Handle both absolute and relative paths
+  const fullPath = path.isAbsolute(filePath) ? filePath : path.join(currentProjectRoot, filePath);
 
   // Ensure directory exists
   await fs.mkdir(path.dirname(fullPath), { recursive: true });
@@ -434,12 +603,13 @@ ipcMain.handle('file:write', async (_, relativePath: string, content: string) =>
 /**
  * Delete a file from the project
  */
-ipcMain.handle('file:delete', async (_, relativePath: string) => {
+ipcMain.handle('file:delete', async (_, filePath: string) => {
   if (!currentProjectRoot) {
     throw new Error('No project selected');
   }
 
-  const fullPath = path.join(currentProjectRoot, relativePath);
+  // Handle both absolute and relative paths
+  const fullPath = path.isAbsolute(filePath) ? filePath : path.join(currentProjectRoot, filePath);
 
   // Security check: ensure path is within project root
   if (!fullPath.startsWith(currentProjectRoot)) {
@@ -615,6 +785,24 @@ ipcMain.handle('settings:detectHardware', async () => {
 });
 
 /**
+ * Clear HTTP cache for preview iframe
+ */
+ipcMain.handle('cache:clear', async () => {
+  log('[CACHE:CLEAR]');
+  try {
+    if (mainWindow) {
+      await mainWindow.webContents.session.clearCache();
+      log('[CACHE:CLEAR] Success');
+      return { success: true };
+    }
+    return { success: false, error: 'No main window' };
+  } catch (err) {
+    log('[CACHE:CLEAR] Failed:', err);
+    return { success: false, error: String(err) };
+  }
+});
+
+/**
  * Deploy project to Vercel
  */
 ipcMain.handle('deploy:vercel', async (_, options) => {
@@ -677,7 +865,8 @@ ipcMain.handle('deploy:getVercelStatus', async (_, deploymentId, token) => {
 ipcMain.handle('tunnel:isInstalled', async () => {
   log('[TUNNEL:IS_INSTALLED]');
   try {
-    const installed = isCloudflaredInstalled();
+    const tunnel = await getCloudflareTunnel();
+    const installed = tunnel.isCloudflaredInstalled();
     return { installed };
   } catch (err) {
     log('[TUNNEL:IS_INSTALLED] Failed:', err);
@@ -691,7 +880,8 @@ ipcMain.handle('tunnel:isInstalled', async () => {
 ipcMain.handle('tunnel:getInstallInstructions', async () => {
   log('[TUNNEL:GET_INSTALL_INSTRUCTIONS]');
   try {
-    const instructions = getInstallInstructions();
+    const tunnel = await getCloudflareTunnel();
+    const instructions = tunnel.getInstallInstructions();
     return { instructions };
   } catch (err) {
     log('[TUNNEL:GET_INSTALL_INSTRUCTIONS] Failed:', err);
@@ -705,8 +895,8 @@ ipcMain.handle('tunnel:getInstallInstructions', async () => {
 ipcMain.handle('tunnel:autoInstall', async () => {
   log('[TUNNEL:AUTO_INSTALL]');
   try {
-    const { autoInstallCloudflared } = await import('./deploy/cloudflare-tunnel');
-    const result = await autoInstallCloudflared();
+    const tunnel = await getCloudflareTunnel();
+    const result = await tunnel.autoInstallCloudflared();
     return result;
   } catch (err) {
     log('[TUNNEL:AUTO_INSTALL] Failed:', err);
@@ -720,7 +910,8 @@ ipcMain.handle('tunnel:autoInstall', async () => {
 ipcMain.handle('tunnel:start', async (_, options) => {
   log('[TUNNEL:START]', { port: options.port });
   try {
-    const result = await startTunnel(options);
+    const tunnel = await getCloudflareTunnel();
+    const result = await tunnel.startTunnel(options);
 
     if (result.success && mainWindow) {
       mainWindow.webContents.send('tunnel:started', { port: options.port, url: result.url });
@@ -739,7 +930,8 @@ ipcMain.handle('tunnel:start', async (_, options) => {
 ipcMain.handle('tunnel:stop', async (_, port) => {
   log('[TUNNEL:STOP]', port);
   try {
-    const result = await stopTunnel(port);
+    const tunnel = await getCloudflareTunnel();
+    const result = await tunnel.stopTunnel(port);
 
     if (result.success && mainWindow) {
       mainWindow.webContents.send('tunnel:stopped', { port });
@@ -758,12 +950,95 @@ ipcMain.handle('tunnel:stop', async (_, port) => {
 ipcMain.handle('tunnel:getUrl', async (_, port) => {
   log('[TUNNEL:GET_URL]', port);
   try {
-    const url = getTunnelUrl(port);
+    const tunnel = await getCloudflareTunnel();
+    const url = tunnel.getTunnelUrl(port);
     return { url };
   } catch (err) {
     log('[TUNNEL:GET_URL] Failed:', err);
     throw err;
   }
+});
+
+/**
+ * teddy.rocks Share Service
+ */
+
+/**
+ * Start sharing a port via teddy.rocks
+ */
+ipcMain.handle('share:start', async (_, options: { port: number; projectName?: string; customSlug?: string }) => {
+  log('[SHARE:START]', options);
+  try {
+    const share = await getShareModule();
+    const result = await share.startShare(options);
+
+    if (result.success && mainWindow) {
+      mainWindow.webContents.send('share:started', {
+        port: options.port,
+        slug: result.slug,
+        previewUrl: result.previewUrl,
+      });
+    }
+
+    return result;
+  } catch (err) {
+    log('[SHARE:START] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Stop sharing a port
+ */
+ipcMain.handle('share:stop', async (_, port: number) => {
+  log('[SHARE:STOP]', port);
+  try {
+    const share = await getShareModule();
+    const success = await share.stopShare(port);
+
+    if (success && mainWindow) {
+      mainWindow.webContents.send('share:stopped', { port });
+    }
+
+    return { success };
+  } catch (err) {
+    log('[SHARE:STOP] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Get active share for a port
+ */
+ipcMain.handle('share:get', async (_, port: number) => {
+  log('[SHARE:GET]', port);
+  const share = await getShareModule();
+  return share.getActiveShare(port);
+});
+
+/**
+ * Get all active shares
+ */
+ipcMain.handle('share:getAll', async () => {
+  log('[SHARE:GET_ALL]');
+  const share = await getShareModule();
+  return share.getAllActiveShares();
+});
+
+/**
+ * Generate a slug for preview
+ */
+ipcMain.handle('share:generateSlug', async (_, projectName?: string) => {
+  const share = await getShareModule();
+  return share.generateSlug(projectName);
+});
+
+/**
+ * Check if a slug is available
+ */
+ipcMain.handle('share:checkSlug', async (_, slug: string) => {
+  const share = await getShareModule();
+  return await share.checkSlugAvailability(slug);
 });
 
 /**

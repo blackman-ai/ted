@@ -5,3 +5,5 @@
 tarpaulin-report.json
 .DS_Store
 /tmp/
+
+*/node_modules/

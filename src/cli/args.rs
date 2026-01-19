@@ -154,6 +154,10 @@ pub struct ChatArgs {
     /// Review mode - emit file events but don't execute file modifications (for GUI review before applying)
     #[arg(long, hide = true)]
     pub review_mode: bool,
+
+    /// Project has existing files - used by enforcement logic to determine if editing is expected
+    #[arg(long, hide = true)]
+    pub project_has_files: bool,
 }
 
 /// Arguments for the ask subcommand

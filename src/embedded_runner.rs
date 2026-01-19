@@ -13,6 +13,9 @@ use tokio::sync::mpsc;
 use crate::caps::{CapLoader, CapResolver};
 use crate::cli::ChatArgs;
 use crate::config::Settings;
+use crate::context::{recall, summarizer};
+use crate::embeddings::EmbeddingGenerator;
+use crate::context::memory::MemoryStore;
 use crate::embedded::{HistoryMessageData, JsonLEmitter, PlanStep};
 use crate::error::{Result, TedError};
 use crate::llm::message::{ContentBlock, Message, MessageContent};
@@ -20,7 +23,7 @@ use crate::llm::provider::{
     CompletionRequest, ContentBlockDelta, ContentBlockResponse, LlmProvider, StreamEvent,
     ToolChoice,
 };
-use crate::llm::providers::{AnthropicProvider, OllamaProvider, OpenRouterProvider};
+use crate::llm::providers::{AnthropicProvider, BlackmanProvider, OllamaProvider, OpenRouterProvider};
 use crate::tools::{ShellOutputEvent, ToolContext, ToolExecutor};
 
 /// Simple message struct for history serialization
@@ -295,6 +298,12 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
             };
             Box::new(provider)
         }
+        "blackman" => {
+            let api_key = std::env::var("BLACKMAN_API_KEY")
+                .or_else(|_| std::env::var("BLACKMAN_AI_API_KEY"))
+                .map_err(|_| TedError::Config("No Blackman AI API key found. Set BLACKMAN_API_KEY environment variable.".to_string()))?;
+            Box::new(BlackmanProvider::new(api_key))
+        }
         _ => {
             let api_key = settings
                 .get_anthropic_api_key()
@@ -322,6 +331,7 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
         .unwrap_or_else(|| match provider_name.as_str() {
             "ollama" => settings.providers.ollama.default_model.clone(),
             "openrouter" => settings.providers.openrouter.default_model.clone(),
+            "blackman" => "gpt-4o-mini".to_string(), // Default Blackman model
             _ => settings.providers.anthropic.default_model.clone(),
         });
 
@@ -345,6 +355,30 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
     )
     .with_shell_output_sender(shell_tx);
     let mut tool_executor = ToolExecutor::new(tool_context, args.trust);
+
+    // Initialize conversation memory (if Ollama is available)
+    let memory_store = if provider_name == "ollama" || std::env::var("TEDDY_ENABLE_MEMORY").is_ok() {
+        let memory_path = dirs::home_dir()
+            .ok_or_else(|| TedError::Config("Could not determine home directory".to_string()))?
+            .join(".teddy")
+            .join("memory.db");
+
+        // Ensure directory exists
+        if let Some(parent) = memory_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let embedding_generator = EmbeddingGenerator::new();
+        match MemoryStore::open(&memory_path, embedding_generator.clone()) {
+            Ok(store) => Some((store, embedding_generator)),
+            Err(e) => {
+                eprintln!("[MEMORY] Failed to open memory store: {}. Memory disabled.", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // Spawn a task to forward shell output events to JSONL emitter
     let emitter_for_shell = Arc::new(emitter);
@@ -414,6 +448,23 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
 
     // Add user message
     messages.push(Message::user(prompt.clone()));
+
+    // Memory recall: Search for relevant past conversations and inject into system prompt
+    let mut merged_cap = merged_cap; // Make mutable
+    if let Some((ref memory_store, _)) = memory_store {
+        match recall::recall_relevant_context(&prompt, memory_store, 3).await {
+            Ok(Some(context)) => {
+                eprintln!("[MEMORY] Recalled relevant context from past conversations");
+                merged_cap.system_prompt.push_str(&context);
+            }
+            Ok(None) => {
+                eprintln!("[MEMORY] No relevant past conversations found");
+            }
+            Err(e) => {
+                eprintln!("[MEMORY] Error recalling context: {}", e);
+            }
+        }
+    }
 
     // Emit initial status
     emitter.emit_status("thinking", "Processing your request...".to_string(), None)?;
@@ -624,54 +675,11 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
         // ENFORCEMENT: On first turn with Ollama, enforce appropriate behavior based on tools used
         // Read-only tools (glob, grep, read_file, list_directory) are allowed for exploration
         // Write tools (file_create, file_edit, file_delete, shell) require asking questions first
-        // EXCEPTION: If user request implies EXISTING content (modify, adjust, change, fix, update, add to)
-        //            then model should explore first, not ask questions
-        let user_text_lower = prompt.to_lowercase();
-        let implies_existing = user_text_lower.contains("adjust")
-            || user_text_lower.contains("modify")
-            || user_text_lower.contains("change")
-            || user_text_lower.contains("fix")
-            || user_text_lower.contains("update")
-            || user_text_lower.contains("add")
-            || user_text_lower.contains("remove")
-            || user_text_lower.contains("edit")
-            || user_text_lower.contains("tweak")
-            || user_text_lower.contains("move")
-            || user_text_lower.contains("the header")
-            || user_text_lower.contains("the button")
-            || user_text_lower.contains("the game")
-            || user_text_lower.contains("the app")
-            || user_text_lower.contains("the page")
-            || user_text_lower.contains("the site")
-            || user_text_lower.contains("the website")
-            || user_text_lower.contains("the style")
-            || user_text_lower.contains("the css")
-            || user_text_lower.contains("the color")
-            || user_text_lower.contains("my app")
-            || user_text_lower.contains("my game")
-            || user_text_lower.contains("my page")
-            || user_text_lower.contains("my site")
-            || user_text_lower.contains("my project")
-            || user_text_lower.contains("isnt updating")
-            || user_text_lower.contains("isn't updating")
-            || user_text_lower.contains("not updating")
-            || user_text_lower.contains("this file")
-            || user_text_lower.contains("this page")
-            || user_text_lower.contains("colorful")
-            || user_text_lower.contains("more color")
-            || user_text_lower.contains("why is")  // debugging questions imply existing content
-            || user_text_lower.contains("why does")
-            || user_text_lower.contains("why doesn't")
-            || user_text_lower.contains("why isn't")
-            || user_text_lower.contains("not working")
-            || user_text_lower.contains("not showing")
-            || user_text_lower.contains("congrats") // "make it say congrats when..."
-            || user_text_lower.contains("when someone wins")
-            || user_text_lower.contains("stylish")  // "make it more stylish"
-            || user_text_lower.contains("modern")   // "make it more modern"
-            || user_text_lower.contains("look better")
-            || user_text_lower.contains("look nicer")
-            || user_text_lower.contains("more attractive");
+        // EXCEPTION: If the project has existing files (tracked by Teddy), the model should explore first
+        //
+        // The `project_has_files` flag is set by Teddy based on the project's actual file tree.
+        // This replaces brittle keyword matching with real project state tracking.
+        let implies_existing = args.project_has_files;
 
         eprintln!("[ENFORCEMENT DEBUG] is_first_turn={}, is_ollama={}, tool_uses.len()={}, has_history={}, implies_existing={}, has_explored={}, has_made_edits={}",
             is_first_turn, is_ollama, tool_uses.len(), has_history, implies_existing, has_explored, has_made_edits);
@@ -796,47 +804,72 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
 
             // Check if model is giving instructions instead of building
             // Model should be using tools, not explaining steps or just outputting plans
-            let giving_instructions = assistant_text.contains("you need to")
-                || assistant_text.contains("you can")
-                || assistant_text.contains("you'll need")
-                || assistant_text.contains("first, install")
-                || assistant_text.contains("install ruby")
-                || assistant_text.contains("install jekyll")
-                || assistant_text.contains("install hugo")
-                || assistant_text.contains("download")
-                || assistant_text.contains("follow the")
-                || assistant_text.contains("step 1")
-                || assistant_text.contains("### step")
-                || assistant_text.contains("here's how")
-                || assistant_text.contains("here are the steps")
-                || assistant_text.contains("let's proceed")
-                || assistant_text.contains("how we can proceed")
+            // Convert to lowercase for case-insensitive matching
+            let assistant_lower = assistant_text.to_lowercase();
+            let giving_instructions = assistant_lower.contains("you need to")
+                || assistant_lower.contains("you can")
+                || assistant_lower.contains("you'll need")
+                || assistant_lower.contains("first, install")
+                || assistant_lower.contains("install ruby")
+                || assistant_lower.contains("install jekyll")
+                || assistant_lower.contains("install hugo")
+                || assistant_lower.contains("download")
+                || assistant_lower.contains("follow the")
+                || assistant_lower.contains("step 1")
+                || assistant_lower.contains("step 2")
+                || assistant_lower.contains("step 3")
+                || assistant_lower.contains("### step")
+                || assistant_lower.contains("here's how")
+                || assistant_lower.contains("here are the steps")
+                || assistant_lower.contains("let's proceed")
+                || assistant_lower.contains("how we can proceed")
                 // Catch when model outputs a plan but doesn't actually build
-                || assistant_text.contains("here's a plan")
-                || assistant_text.contains("#### tasks")
-                || assistant_text.contains("### plan")
-                || assistant_text.contains("- [ ]") // Task list without execution
+                || assistant_lower.contains("here's a plan")
+                || assistant_lower.contains("#### tasks")
+                || assistant_lower.contains("### plan")
+                || assistant_lower.contains("- [ ]") // Task list without execution
                 // Catch when model asks for confirmation instead of just building
-                || assistant_text.contains("should i create")
-                || assistant_text.contains("should i start")
-                || assistant_text.contains("would you like me to")
-                || assistant_text.contains("do you want me to")
-                || assistant_text.contains("shall i")
-                || assistant_text.contains("ready to start")
-                || assistant_text.contains("let me know when")
+                || assistant_lower.contains("should i create")
+                || assistant_lower.contains("should i start")
+                || assistant_lower.contains("would you like me to")
+                || assistant_lower.contains("do you want me to")
+                || assistant_lower.contains("shall i")
+                || assistant_lower.contains("ready to start")
+                || assistant_lower.contains("let me know when")
+                // Catch when model gives tutorial-style instructions
+                || assistant_lower.contains("open your")
+                || assistant_lower.contains("update the")
+                || assistant_lower.contains("verify the changes")
+                || assistant_lower.contains("test in browser")
+                || assistant_lower.contains("open in a web browser")
+                || assistant_lower.contains("i'll guide you")
+                || assistant_lower.contains("let's update")
+                || assistant_lower.contains("certainly!")
+                || assistant_lower.contains("feel free to proceed")
+                || assistant_lower.contains("feel free to")
+                || assistant_lower.contains("if you need")
+                || assistant_lower.contains("if you encounter")
+                // Catch when model shows code blocks instead of executing tools
+                || assistant_lower.contains("```html")
+                || assistant_lower.contains("```json")
+                || assistant_lower.contains("```css")
+                || assistant_lower.contains("```javascript")
+                || assistant_lower.contains("```js")
                 // Catch when model asks clarifying questions instead of working on existing files
-                || (implies_existing && assistant_text.contains("clarifying questions"))
-                || (implies_existing && assistant_text.contains("what style"))
-                || (implies_existing && assistant_text.contains("what features"))
-                || (implies_existing && assistant_text.contains("who is the intended"));
+                || (implies_existing && assistant_lower.contains("clarifying questions"))
+                || (implies_existing && assistant_lower.contains("what style"))
+                || (implies_existing && assistant_lower.contains("what features"))
+                || (implies_existing && assistant_lower.contains("who is the intended"));
 
-            eprintln!("[ENFORCEMENT DEBUG] Build enforcement: user_wants_build={}, giving_instructions={}",
-                user_wants_build, giving_instructions);
+            eprintln!("[ENFORCEMENT DEBUG] Build enforcement: user_wants_build={}, giving_instructions={}, tool_uses.is_empty()={}",
+                user_wants_build, giving_instructions, tool_uses.is_empty());
             eprintln!("[ENFORCEMENT DEBUG] User text: {}", user_text);
             eprintln!(
-                "[ENFORCEMENT DEBUG] Assistant text (first 200): {}",
-                &assistant_text[..assistant_text.len().min(200)]
+                "[ENFORCEMENT DEBUG] Assistant text (first 500): {}",
+                &assistant_text[..assistant_text.len().min(500)]
             );
+            eprintln!("[ENFORCEMENT DEBUG] implies_existing={}, has_made_edits={}, has_explored={}",
+                implies_existing, has_made_edits, has_explored);
 
             // Only enforce if model hasn't already made edits - allow summary responses after edits
             if user_wants_build && giving_instructions && !has_made_edits {
@@ -883,9 +916,9 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
 
         // ENFORCEMENT: Model is using tools but ONLY read-only tools even after exploring
         // If the request implies existing content and model keeps exploring without editing, force edits
-        if !is_first_turn && is_ollama && has_explored && implies_existing && !has_made_edits && !tool_uses.is_empty() {
+        if !is_first_turn && is_ollama && implies_existing && !has_made_edits && !tool_uses.is_empty() {
             // Check if current turn uses ONLY read-only tools (no write tools)
-            let read_only_tools = ["glob", "grep", "read_file", "list_directory", "search"];
+            let read_only_tools = ["glob", "grep", "read_file", "file_read", "list_directory", "search"];
             let write_tools = ["file_write", "file_edit", "file_delete", "create_file", "edit_file", "delete_file", "shell"];
             let has_write_tool = tool_uses.iter().any(|(_, name, _)| {
                 let name_lower = name.to_lowercase();
@@ -897,22 +930,49 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
             });
 
             // If model is giving instructions while only using read tools (not making changes)
-            let is_giving_instructions = current_text.contains("you might consider")
-                || current_text.contains("here's how")
-                || current_text.contains("you can approach")
-                || current_text.contains("you could")
-                || current_text.contains("I recommend")
-                || current_text.contains("I suggest")
-                || current_text.contains("steps to")
-                || current_text.contains("1. Open")
-                || current_text.contains("1. Replace");
+            let current_lower = current_text.to_lowercase();
+            let is_giving_instructions = current_lower.contains("you might consider")
+                || current_lower.contains("here's how")
+                || current_lower.contains("you can approach")
+                || current_lower.contains("you could")
+                || current_lower.contains("i recommend")
+                || current_lower.contains("i suggest")
+                || current_lower.contains("steps to")
+                || current_lower.contains("1. open")
+                || current_lower.contains("1. replace")
+                || current_lower.contains("step 1")
+                || current_lower.contains("step 2")
+                || current_lower.contains("step 3")
+                || current_lower.contains("### step")
+                || current_lower.contains("i'll guide")
+                || current_lower.contains("open your")
+                || current_lower.contains("update your")
+                || current_lower.contains("update the")
+                || current_lower.contains("verify")
+                || current_lower.contains("test in browser")
+                || current_lower.contains("open in a web browser")
+                || current_lower.contains("let's update")
+                || current_lower.contains("certainly!")
+                || current_lower.contains("to verify")
+                || current_lower.contains("feel free to proceed")
+                || current_lower.contains("feel free to")
+                || current_lower.contains("if you need")
+                || current_lower.contains("if you encounter")
+                || current_lower.contains("### next step")
+                || current_lower.contains("```html")  // Showing code blocks instead of editing
+                || current_lower.contains("```json"); // Showing JSON instead of executing
+
+            eprintln!("[ENFORCEMENT DEBUG] Post-tool check: only_read_tools={}, has_write_tool={}, is_giving_instructions={}",
+                only_read_tools, has_write_tool, is_giving_instructions);
 
             if only_read_tools && !has_write_tool && is_giving_instructions {
                 eprintln!("[ENFORCEMENT] Model is giving instructions while still exploring. Forcing immediate edits.");
 
                 let edit_message = "STOP! Do NOT give instructions. The user wants you to make changes, not describe how they could do it themselves.\n\n\
                     You've already read the files. Now use file_edit to make the changes yourself.\n\n\
-                    Do it NOW - call file_edit with the specific changes.";
+                    For example, to change the header text, call:\n\
+                    file_edit with path=\"index.html\", old_string=\"<header>Tic Tac Toe</header>\", new_string=\"<header>Let's Play a Game</header>\"\n\n\
+                    Do it NOW - call file_edit with the specific changes. Do NOT show me JSON or code blocks - USE THE TOOL.";
 
                 messages.push(Message::user(edit_message.to_string()));
                 continue;
@@ -1056,6 +1116,52 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
                 "shell" => {
                     if let Some(command) = input.get("command").and_then(|v| v.as_str()) {
                         emitter.emit_command(command.to_string(), None, None)?;
+                    }
+                }
+                "propose_file_changes" => {
+                    // Extract operations from the changeset
+                    if let Some(operations) = input.get("operations").and_then(|v| v.as_array()) {
+                        for op in operations {
+                            if let Some(op_type) = op.get("type").and_then(|v| v.as_str()) {
+                                if let Some(path) = op.get("path").and_then(|v| v.as_str()) {
+                                    match op_type {
+                                        "edit" => {
+                                            let old_text = op.get("old_string").and_then(|v| v.as_str());
+                                            let new_text = op.get("new_string").and_then(|v| v.as_str());
+                                            emitter.emit_file_edit(
+                                                path.to_string(),
+                                                "replace".to_string(),
+                                                old_text.map(|s| s.to_string()),
+                                                new_text.map(|s| s.to_string()),
+                                                None,
+                                                None,
+                                            )?;
+                                            if !files_changed.contains(&path.to_string()) {
+                                                files_changed.push(path.to_string());
+                                            }
+                                        }
+                                        "write" => {
+                                            if let Some(content) = op.get("content").and_then(|v| v.as_str()) {
+                                                emitter.emit_file_create(path.to_string(), content.to_string(), None)?;
+                                                if !files_changed.contains(&path.to_string()) {
+                                                    files_changed.push(path.to_string());
+                                                }
+                                            }
+                                        }
+                                        "delete" => {
+                                            // Emit file deletion event (we'll need to add this to emitter if not exists)
+                                            if !files_changed.contains(&path.to_string()) {
+                                                files_changed.push(path.to_string());
+                                            }
+                                        }
+                                        "read" => {
+                                            // Read operations don't change files
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 "plan_update" => {
@@ -1208,7 +1314,65 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
     // Emit final conversation history for multi-turn persistence
     emitter.emit_conversation_history(extract_history_messages(&messages))?;
 
-    emitter.emit_completion(is_task_complete, completion_message, files_changed)?;
+    emitter.emit_completion(is_task_complete, completion_message.clone(), files_changed.clone())?;
+
+    // Store conversation in memory (if enabled)
+    if let Some((ref memory_store, ref embedding_generator)) = memory_store {
+        eprintln!("[MEMORY] Storing conversation in memory...");
+
+        // Generate summary
+        let summary = match summarizer::summarize_conversation(&messages, provider.as_ref()).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[MEMORY] Failed to generate summary: {}", e);
+                format!("{} - {}", prompt.chars().take(100).collect::<String>(), completion_message)
+            }
+        };
+
+        // Extract metadata
+        let files = summarizer::extract_files_changed(&messages);
+        let tags = summarizer::extract_tags(&messages);
+
+        // Format full content
+        let content = messages.iter()
+            .map(|m| {
+                let role = match m.role {
+                    crate::llm::message::Role::User => "User",
+                    crate::llm::message::Role::Assistant => "Assistant",
+                    crate::llm::message::Role::System => "System",
+                };
+                match &m.content {
+                    MessageContent::Text(t) => format!("{}: {}", role, t),
+                    MessageContent::Blocks(blocks) => {
+                        let text_parts: Vec<String> = blocks.iter()
+                            .filter_map(|b| match b {
+                                ContentBlock::Text { text } => Some(text.clone()),
+                                ContentBlock::ToolUse { name, .. } => Some(format!("[tool: {}]", name)),
+                                _ => None,
+                            })
+                            .collect();
+                        format!("{}: {}", role, text_parts.join(" "))
+                    }
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Store in memory
+        if let Err(e) = recall::store_conversation(
+            session_id,
+            summary.clone(),
+            files,
+            tags,
+            content,
+            embedding_generator,
+            memory_store,
+        ).await {
+            eprintln!("[MEMORY] Failed to store conversation: {}", e);
+        } else {
+            eprintln!("[MEMORY] Conversation stored successfully. Summary: {}", summary);
+        }
+    }
 
     Ok(())
 }

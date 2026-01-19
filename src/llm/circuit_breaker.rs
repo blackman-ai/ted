@@ -4,7 +4,7 @@
 //! Circuit breaker pattern for LLM provider resilience
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Circuit breaker states
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +112,7 @@ impl CircuitBreaker {
 mod tests {
     use super::*;
     use std::thread::sleep;
+    use std::time::Duration;
 
     #[test]
     fn test_circuit_breaker_initial_state() {

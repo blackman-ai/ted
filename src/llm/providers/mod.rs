@@ -4,9 +4,11 @@
 //! LLM provider implementations
 
 pub mod anthropic;
+pub mod blackman;
 pub mod ollama;
 pub mod openrouter;
 
 pub use anthropic::AnthropicProvider;
+pub use blackman::BlackmanProvider;
 pub use ollama::OllamaProvider;
 pub use openrouter::OpenRouterProvider;

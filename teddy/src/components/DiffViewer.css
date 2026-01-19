@@ -284,3 +284,116 @@
 .btn-icon:hover {
   background: var(--bg-hover, #2a2a2a);
 }
+
+/* Grouped changes */
+.diff-group {
+  border-bottom: 1px solid var(--border-color, #3c3c3c);
+}
+
+.diff-group-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  background: var(--bg-secondary, #252526);
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.diff-group-header:hover {
+  background: var(--bg-hover, #2a2a2a);
+}
+
+.diff-group-toggle {
+  font-size: 0.7rem;
+  color: var(--text-secondary, #888);
+  width: 1rem;
+}
+
+.diff-group-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.diff-group-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary, #e0e0e0);
+}
+
+.diff-group-count {
+  font-size: 0.75rem;
+  color: var(--text-secondary, #888);
+}
+
+.diff-group-actions {
+  display: flex;
+  gap: 0.25rem;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.diff-group-header:hover .diff-group-actions {
+  opacity: 1;
+}
+
+.diff-item-grouped {
+  padding-left: 2rem;
+  background: var(--bg-primary, #1e1e1e);
+}
+
+/* Related files panel */
+.related-files-panel {
+  background: var(--bg-secondary, #252526);
+  border-bottom: 1px solid var(--border-color, #3c3c3c);
+  padding: 0.75rem 1rem;
+}
+
+.related-files-header {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-primary, #e0e0e0);
+  margin-bottom: 0.5rem;
+}
+
+.related-files-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.related-file-item {
+  font-size: 0.75rem;
+  font-family: monospace;
+  color: var(--text-secondary, #888);
+  padding: 0.25rem 0;
+  padding-left: 1rem;
+  position: relative;
+}
+
+.related-file-item::before {
+  content: '→';
+  position: absolute;
+  left: 0;
+  color: var(--accent, #007acc);
+}
+
+.btn-related-files {
+  background: transparent;
+  border: 1px solid var(--border-color, #3c3c3c);
+  color: var(--text-secondary, #888);
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+  cursor: pointer;
+  margin-left: 0.75rem;
+  transition: all 0.15s;
+}
+
+.btn-related-files:hover {
+  background: var(--bg-hover, #2a2a2a);
+  border-color: var(--accent, #007acc);
+  color: var(--accent, #007acc);
+}

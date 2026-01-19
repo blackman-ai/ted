@@ -47,6 +47,56 @@ pub struct ShellOutputEvent {
 /// Sender for shell output events
 pub type ShellOutputSender = mpsc::UnboundedSender<ShellOutputEvent>;
 
+/// Mode for file change sets
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeSetMode {
+    /// All changes applied together atomically
+    Atomic,
+    /// Changes applied one at a time incrementally
+    Incremental,
+}
+
+/// A single file operation within a change set
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum FileOperation {
+    /// Read a file
+    Read {
+        path: String,
+    },
+    /// Edit a file (find and replace)
+    Edit {
+        path: String,
+        old_string: String,
+        new_string: String,
+    },
+    /// Write/create a new file
+    Write {
+        path: String,
+        content: String,
+    },
+    /// Delete a file
+    Delete {
+        path: String,
+    },
+}
+
+/// A set of related file changes
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FileChangeSet {
+    /// Unique identifier for this change set
+    pub id: String,
+    /// List of file operations
+    pub files: Vec<FileOperation>,
+    /// Description of what this change set accomplishes
+    pub description: String,
+    /// Related files that may be affected (for dependency tracking)
+    pub related_files: Vec<String>,
+    /// Mode: atomic or incremental
+    pub mode: ChangeSetMode,
+}
+
 /// Context provided to tools during execution
 #[derive(Clone)]
 pub struct ToolContext {
@@ -306,6 +356,7 @@ impl ToolRegistry {
         registry.register(Arc::new(builtin::FileReadTool));
         registry.register(Arc::new(builtin::FileWriteTool));
         registry.register(Arc::new(builtin::FileEditTool));
+        registry.register(Arc::new(builtin::FileChangeSetTool));
         registry.register(Arc::new(builtin::ShellTool::new()));
         registry.register(Arc::new(builtin::GlobTool));
         registry.register(Arc::new(builtin::GrepTool));
@@ -623,7 +674,7 @@ mod tests {
     #[test]
     fn test_tool_registry_len() {
         let registry = ToolRegistry::with_builtins();
-        assert_eq!(registry.len(), 11); // 11 built-in tools (7 core + 4 database)
+        assert_eq!(registry.len(), 12); // 12 built-in tools (8 core + 4 database)
     }
 
     #[test]

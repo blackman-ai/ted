@@ -16,7 +16,10 @@ pub mod backends;
 pub mod chunk;
 pub mod cold;
 pub mod filetree;
+pub mod memory;
+pub mod recall;
 pub mod store;
+pub mod summarizer;
 pub mod wal;
 
 use std::path::PathBuf;

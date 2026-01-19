@@ -50,6 +50,16 @@ export interface TedSettings {
   hardware: HardwareInfo | null;
 }
 
+export interface SessionInfo {
+  id: string;
+  projectPath: string;
+  name: string;
+  lastActive: number;
+  created: number;
+  messageCount: number;
+  summary?: string;
+}
+
 export interface DeploymentOptions {
   projectPath: string;
   vercelToken: string;
@@ -88,6 +98,13 @@ export interface TeddyAPI {
   setReviewMode: (enabled: boolean) => Promise<{ success: boolean }>;
   getReviewMode: () => Promise<{ enabled: boolean }>;
 
+  // Session management
+  listSessions: () => Promise<SessionInfo[]>;
+  createSession: () => Promise<{ id: string; projectPath: string }>;
+  switchSession: (sessionId: string) => Promise<{ id: string; historyLength: number }>;
+  getCurrentSession: () => Promise<SessionInfo | null>;
+  deleteSession: (sessionId: string) => Promise<{ success: boolean }>;
+
   // Ted
   runTed: (prompt: string, options?: {
     trust?: boolean;
@@ -114,6 +131,9 @@ export interface TeddyAPI {
   runShell: (command: string) => Promise<{ success: boolean; pid?: number }>;
   killShell: (pid: number) => Promise<{ success: boolean }>;
 
+  // Cache operations
+  clearCache: () => Promise<{ success: boolean; error?: string }>;
+
   // Settings
   getSettings: () => Promise<TedSettings>;
   saveSettings: (settings: TedSettings) => Promise<{ success: boolean }>;
@@ -132,12 +152,27 @@ export interface TeddyAPI {
   tunnelStop: (port: number) => Promise<{ success: boolean }>;
   tunnelGetUrl: (port: number) => Promise<{ url: string | null }>;
 
+  // teddy.rocks Share Service
+  shareStart: (options: { port: number; projectName?: string; customSlug?: string }) => Promise<{
+    success: boolean;
+    slug?: string;
+    previewUrl?: string;
+    tunnelUrl?: string;
+    error?: string;
+  }>;
+  shareStop: (port: number) => Promise<{ success: boolean }>;
+  shareGet: (port: number) => Promise<{ slug: string; previewUrl: string } | null>;
+  shareGetAll: () => Promise<Array<{ port: number; slug: string; previewUrl: string }>>;
+  shareGenerateSlug: (projectName?: string) => Promise<string>;
+  shareCheckSlug: (slug: string) => Promise<boolean>;
+
   // Event listeners
   onTedEvent: (callback: (event: TedEvent) => void) => () => void;
   onTedStderr: (callback: (text: string) => void) => () => void;
   onTedError: (callback: (error: string) => void) => () => void;
   onTedExit: (callback: (info: { code: number | null; signal: string | null }) => void) => () => void;
   onFileChanged: (callback: (info: { type: string; path: string }) => void) => () => void;
+  onFileExternalChange: (callback: (event: { type: string; path: string; relativePath: string }) => void) => () => void;
   onGitCommitted: (callback: (info: { files: string[]; summary: string }) => void) => () => void;
 }
 
@@ -157,6 +192,13 @@ const api: TeddyAPI = {
   setReviewMode: (enabled: boolean) => ipcRenderer.invoke('review:set', enabled),
   getReviewMode: () => ipcRenderer.invoke('review:get'),
 
+  // Session management
+  listSessions: () => ipcRenderer.invoke('session:list'),
+  createSession: () => ipcRenderer.invoke('session:create'),
+  switchSession: (sessionId: string) => ipcRenderer.invoke('session:switch', sessionId),
+  getCurrentSession: () => ipcRenderer.invoke('session:getCurrent'),
+  deleteSession: (sessionId: string) => ipcRenderer.invoke('session:delete', sessionId),
+
   // Ted
   runTed: (prompt: string, options) => ipcRenderer.invoke('ted:run', prompt, options),
   stopTed: () => ipcRenderer.invoke('ted:stop'),
@@ -172,6 +214,9 @@ const api: TeddyAPI = {
   // Shell operations
   runShell: (command: string) => ipcRenderer.invoke('shell:run', command),
   killShell: (pid: number) => ipcRenderer.invoke('shell:kill', pid),
+
+  // Cache operations
+  clearCache: () => ipcRenderer.invoke('cache:clear'),
 
   // Settings
   getSettings: () => ipcRenderer.invoke('settings:get'),
@@ -191,6 +236,14 @@ const api: TeddyAPI = {
   tunnelStart: (options) => ipcRenderer.invoke('tunnel:start', options),
   tunnelStop: (port: number) => ipcRenderer.invoke('tunnel:stop', port),
   tunnelGetUrl: (port: number) => ipcRenderer.invoke('tunnel:getUrl', port),
+
+  // teddy.rocks Share Service
+  shareStart: (options) => ipcRenderer.invoke('share:start', options),
+  shareStop: (port: number) => ipcRenderer.invoke('share:stop', port),
+  shareGet: (port: number) => ipcRenderer.invoke('share:get', port),
+  shareGetAll: () => ipcRenderer.invoke('share:getAll'),
+  shareGenerateSlug: (projectName?: string) => ipcRenderer.invoke('share:generateSlug', projectName),
+  shareCheckSlug: (slug: string) => ipcRenderer.invoke('share:checkSlug', slug),
 
   // Event listeners
   onTedEvent: (callback) => {
@@ -221,6 +274,12 @@ const api: TeddyAPI = {
     const listener = (_: any, info: { type: string; path: string }) => callback(info);
     ipcRenderer.on('file:changed', listener);
     return () => ipcRenderer.removeListener('file:changed', listener);
+  },
+
+  onFileExternalChange: (callback) => {
+    const listener = (_: any, event: { type: string; path: string; relativePath: string }) => callback(event);
+    ipcRenderer.on('file:externalChange', listener);
+    return () => ipcRenderer.removeListener('file:externalChange', listener);
   },
 
   onGitCommitted: (callback) => {

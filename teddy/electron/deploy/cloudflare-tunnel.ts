@@ -8,7 +8,6 @@
  */
 
 import { spawn, ChildProcess } from 'child_process';
-import { platform } from 'os';
 import * as bundled from '../bundled/manager';
 
 export interface TunnelOptions {
@@ -48,30 +47,10 @@ function getCloudflaredPath(): string {
 }
 
 /**
- * Start a Cloudflare Tunnel for a local port
+ * Start a Cloudflare Tunnel for a local port (single attempt)
  */
-export async function startTunnel(options: TunnelOptions): Promise<TunnelResult> {
+async function startTunnelOnce(options: TunnelOptions): Promise<TunnelResult> {
   const { port, subdomain } = options;
-
-  // Check if tunnel already exists for this port
-  if (activeTunnels.has(port)) {
-    const existing = activeTunnels.get(port)!;
-    if (existing.url) {
-      return {
-        success: true,
-        url: existing.url,
-        tunnelId: `tunnel-${port}`,
-      };
-    }
-  }
-
-  // Check if cloudflared is installed
-  if (!isCloudflaredInstalled()) {
-    return {
-      success: false,
-      error: 'cloudflared is not installed. Install it from https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/',
-    };
-  }
 
   return new Promise((resolve) => {
     const cloudflaredPath = getCloudflaredPath();
@@ -184,6 +163,67 @@ export async function startTunnel(options: TunnelOptions): Promise<TunnelResult>
       }
     }, 10000);
   });
+}
+
+/**
+ * Start a Cloudflare Tunnel for a local port with retry logic
+ */
+export async function startTunnel(options: TunnelOptions): Promise<TunnelResult> {
+  const { port } = options;
+
+  // Check if tunnel already exists for this port
+  if (activeTunnels.has(port)) {
+    const existing = activeTunnels.get(port)!;
+    if (existing.url) {
+      return {
+        success: true,
+        url: existing.url,
+        tunnelId: `tunnel-${port}`,
+      };
+    }
+  }
+
+  // Check if cloudflared is installed
+  if (!isCloudflaredInstalled()) {
+    return {
+      success: false,
+      error: 'cloudflared is not installed. Install it from https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/',
+    };
+  }
+
+  // Retry up to 3 times with exponential backoff for transient Cloudflare errors
+  const maxRetries = 3;
+  let lastError: string | undefined;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    console.log(`[CF Tunnel] Attempt ${attempt}/${maxRetries}`);
+    const result = await startTunnelOnce(options);
+
+    if (result.success) {
+      return result;
+    }
+
+    lastError = result.error;
+
+    // Check if it's a retryable error (Cloudflare service issues)
+    const isRetryable = lastError?.includes('invalid UUID') ||
+                        lastError?.includes('failed to parse') ||
+                        lastError?.includes('Tunnel ID');
+
+    if (!isRetryable || attempt === maxRetries) {
+      return result;
+    }
+
+    // Wait before retrying (exponential backoff: 1s, 2s, 4s)
+    const delay = Math.pow(2, attempt - 1) * 1000;
+    console.log(`[CF Tunnel] Retryable error, waiting ${delay}ms before retry...`);
+    await new Promise(resolve => setTimeout(resolve, delay));
+  }
+
+  return {
+    success: false,
+    error: lastError || 'Failed to start tunnel after retries',
+  };
 }
 
 /**

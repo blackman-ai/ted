@@ -1,0 +1,24 @@
+{
+  "name": "teddy-rocks-worker",
+  "version": "0.1.0",
+  "description": "Cloudflare Worker for teddy.rocks subdomain routing",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "keywords": [
+    "cloudflare",
+    "worker",
+    "teddy",
+    "subdomain"
+  ],
+  "author": "Blackman AI",
+  "license": "AGPL-3.0-or-later",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240117.0",
+    "typescript": "^5.3.3",
+    "wrangler": "^4.59.2"
+  }
+}
