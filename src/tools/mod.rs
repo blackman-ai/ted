@@ -311,6 +311,12 @@ impl ToolRegistry {
         registry.register(Arc::new(builtin::GrepTool));
         registry.register(Arc::new(builtin::PlanUpdateTool));
 
+        // Database tools
+        registry.register(Arc::new(builtin::DatabaseInitTool));
+        registry.register(Arc::new(builtin::DatabaseMigrateTool));
+        registry.register(Arc::new(builtin::DatabaseQueryTool));
+        registry.register(Arc::new(builtin::DatabaseSeedTool));
+
         // Add default aliases for common alternate tool names
         registry.aliases = Self::default_aliases();
 
@@ -617,7 +623,7 @@ mod tests {
     #[test]
     fn test_tool_registry_len() {
         let registry = ToolRegistry::with_builtins();
-        assert_eq!(registry.len(), 7); // 7 built-in tools
+        assert_eq!(registry.len(), 11); // 11 built-in tools (7 core + 4 database)
     }
 
     #[test]
@@ -676,7 +682,7 @@ mod tests {
         // Note: This test depends on whether ~/.ted/tools/ exists
         // It should at least have the built-in tools
         let registry = ToolRegistry::with_all();
-        assert!(registry.len() >= 7);
+        assert!(registry.len() >= 11);
     }
 
     #[test]

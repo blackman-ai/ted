@@ -61,3 +61,91 @@
   color: var(--text-secondary);
   margin-bottom: 8px;
 }
+
+.preview-port {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.preview-port label {
+  margin: 0;
+}
+
+.preview-port input {
+  width: 70px;
+  padding: 4px 8px;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-align: center;
+}
+
+.preview-port input:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+}
+
+.preview-port input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.server-running {
+  background-color: var(--accent-danger, #dc3545) !important;
+  border-color: var(--accent-danger, #dc3545) !important;
+}
+
+.server-running:hover {
+  background-color: #c82333 !important;
+}
+
+.preview-status {
+  padding: 8px 16px;
+  background-color: var(--bg-tertiary);
+  border-top: 1px solid var(--border-color);
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: monospace;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-running {
+  color: var(--accent-success, #28a745);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  background-color: var(--accent-success, #28a745);
+  border-radius: 50%;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.project-type-badge {
+  padding: 4px 10px;
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  cursor: default;
+  user-select: none;
+}

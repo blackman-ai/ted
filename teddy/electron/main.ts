@@ -4,12 +4,16 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import path from 'path';
 import fs from 'fs/promises';
-import { appendFileSync, writeFileSync } from 'fs';
+import { appendFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
 import os from 'os';
 import { TedRunner } from './ted/runner';
 import { FileApplier } from './operations/file-applier';
 import { AutoCommit } from './git/auto-commit';
 import { TedEvent, ConversationHistoryEvent } from './types/protocol';
+import { storage, ProjectContext } from './storage/config';
+import { loadTedSettings, saveTedSettings, detectHardware } from './settings/ted-settings';
+import { deployProject, verifyToken, getDeploymentStatus } from './deploy/vercel';
+import { startTunnel, stopTunnel, getTunnelUrl, isCloudflaredInstalled, getInstallInstructions } from './deploy/cloudflare-tunnel';
 
 // Debug logging to file for Claude Code integration
 const LOG_FILE = '/tmp/teddy-debug.log';
@@ -28,6 +32,9 @@ let tedRunner: TedRunner | null = null;
 let fileApplier: FileApplier | null = null;
 let autoCommit: AutoCommit | null = null;
 let currentProjectRoot: string | null = null;
+
+// Review mode - when enabled, file operations are sent to renderer for review instead of auto-applying
+let reviewModeEnabled: boolean = true; // Default to review mode ON
 
 // Conversation history for multi-turn chats
 interface HistoryMessage {
@@ -66,7 +73,12 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(async () => {
+  // Initialize storage before creating window
+  await storage.init();
+  log('[STORAGE] Initialized ~/.teddy storage');
+  createWindow();
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
@@ -111,7 +123,25 @@ ipcMain.handle('project:set', async (_, projectPath: string) => {
   // Initialize git repo if needed
   await autoCommit.init();
 
-  return { success: true, path: projectPath };
+  // Add to recent projects
+  await storage.addRecentProject(projectPath);
+  log('[PROJECT] Set project and added to recent:', projectPath);
+
+  // Load saved conversation history for this project
+  const savedHistory = await storage.loadProjectHistory(projectPath);
+  if (savedHistory && savedHistory.length > 0) {
+    conversationHistory = savedHistory;
+    log('[PROJECT] Loaded saved history:', conversationHistory.length, 'messages');
+  } else {
+    conversationHistory = [];
+  }
+
+  // Scan and cache project context
+  const context = await scanProjectContext(projectPath);
+  await storage.saveProjectContext(projectPath, context);
+  log('[PROJECT] Scanned and cached project context');
+
+  return { success: true, path: projectPath, historyLength: conversationHistory.length };
 });
 
 /**
@@ -122,6 +152,55 @@ ipcMain.handle('project:get', async () => {
     path: currentProjectRoot,
     hasProject: currentProjectRoot !== null,
   };
+});
+
+/**
+ * Get recent projects list
+ */
+ipcMain.handle('project:getRecent', async () => {
+  const recentProjects = await storage.getRecentProjects();
+  // Filter out projects that no longer exist
+  const validProjects = recentProjects.filter(p => existsSync(p.path));
+  return validProjects;
+});
+
+/**
+ * Get last opened project (for auto-load)
+ */
+ipcMain.handle('project:getLast', async () => {
+  const lastPath = await storage.getLastProject();
+  if (lastPath) {
+    return { path: lastPath, name: path.basename(lastPath) };
+  }
+  return null;
+});
+
+/**
+ * Remove a project from recent list
+ */
+ipcMain.handle('project:removeRecent', async (_, projectPath: string) => {
+  await storage.removeRecentProject(projectPath);
+  return { success: true };
+});
+
+/**
+ * Get project context (file tree, readme, etc.)
+ */
+ipcMain.handle('project:getContext', async () => {
+  if (!currentProjectRoot) {
+    return null;
+  }
+
+  // Try to load cached context first
+  let context = await storage.loadProjectContext(currentProjectRoot);
+
+  // If no cache or stale (older than 5 minutes), rescan
+  if (!context || Date.now() - context.lastScanned > 5 * 60 * 1000) {
+    context = await scanProjectContext(currentProjectRoot);
+    await storage.saveProjectContext(currentProjectRoot, context);
+  }
+
+  return context;
 });
 
 /**
@@ -156,6 +235,17 @@ ipcMain.handle('ted:run', async (_, prompt: string, options?: {
     conversationHistory = [];
   }
 
+  // If this is a new conversation (no history), inject project context into the prompt
+  let finalPrompt = prompt;
+  if (conversationHistory.length === 0) {
+    const context = await storage.loadProjectContext(currentProjectRoot);
+    if (context && context.fileTree.length > 0) {
+      const contextPrefix = buildContextPrefix(context);
+      finalPrompt = contextPrefix + prompt;
+      log('[TED:RUN] Injected project context into prompt');
+    }
+  }
+
   // Write history to temp file if we have previous turns
   if (conversationHistory.length > 0) {
     historyFilePath = path.join(os.tmpdir(), `ted-history-${Date.now()}.json`);
@@ -174,11 +264,16 @@ ipcMain.handle('ted:run', async (_, prompt: string, options?: {
     model: options?.model,
     caps: options?.caps,
     historyFile: historyFilePath ?? undefined,
+    reviewMode: reviewModeEnabled,  // Pass review mode to Ted - it will emit events but skip file execution
   });
 
   // Forward events to renderer
   tedRunner.on('event', (event: TedEvent) => {
-    log('[TED:EVENT]', event.type, event.type === 'message' ? (event as any).data?.content?.substring(0, 50) : '');
+    if (event.type === 'file_edit' || event.type === 'file_create' || event.type === 'file_delete') {
+      log('[TED:EVENT]', event.type, 'data:', JSON.stringify(event.data));
+    } else {
+      log('[TED:EVENT]', event.type, event.type === 'message' ? (event as any).data?.content?.substring(0, 50) : '');
+    }
     mainWindow?.webContents.send('ted:event', event);
   });
 
@@ -197,50 +292,73 @@ ipcMain.handle('ted:run', async (_, prompt: string, options?: {
     mainWindow?.webContents.send('ted:exit', info);
   });
 
-  // Apply file operations automatically
+  // Apply file operations - either auto-apply or send to renderer for review
   tedRunner.on('file_create', async (event) => {
-    try {
-      await fileApplier?.applyCreate(event);
-      mainWindow?.webContents.send('file:changed', {
-        type: 'create',
-        path: event.data.path,
-      });
-    } catch (err) {
-      console.error('Failed to apply file create:', err);
+    if (reviewModeEnabled) {
+      // In review mode, just forward the event - don't apply
+      log('[FILE_CREATE] Review mode - forwarding to renderer:', event.data.path);
+      // The event is already forwarded via 'event' listener above
+    } else {
+      // Auto-apply when review mode is off
+      try {
+        await fileApplier?.applyCreate(event);
+        mainWindow?.webContents.send('file:changed', {
+          type: 'create',
+          path: event.data.path,
+        });
+      } catch (err) {
+        console.error('Failed to apply file create:', err);
+      }
     }
   });
 
   tedRunner.on('file_edit', async (event) => {
-    try {
-      await fileApplier?.applyEdit(event);
-      mainWindow?.webContents.send('file:changed', {
-        type: 'edit',
-        path: event.data.path,
-      });
-    } catch (err) {
-      console.error('Failed to apply file edit:', err);
+    if (reviewModeEnabled) {
+      // In review mode, just forward the event - don't apply
+      log('[FILE_EDIT] Review mode - forwarding to renderer:', event.data.path);
+    } else {
+      try {
+        await fileApplier?.applyEdit(event);
+        mainWindow?.webContents.send('file:changed', {
+          type: 'edit',
+          path: event.data.path,
+        });
+      } catch (err) {
+        console.error('Failed to apply file edit:', err);
+      }
     }
   });
 
   tedRunner.on('file_delete', async (event) => {
-    try {
-      await fileApplier?.applyDelete(event);
-      mainWindow?.webContents.send('file:changed', {
-        type: 'delete',
-        path: event.data.path,
-      });
-    } catch (err) {
-      console.error('Failed to apply file delete:', err);
+    if (reviewModeEnabled) {
+      // In review mode, just forward the event - don't apply
+      log('[FILE_DELETE] Review mode - forwarding to renderer:', event.data.path);
+    } else {
+      try {
+        await fileApplier?.applyDelete(event);
+        mainWindow?.webContents.send('file:changed', {
+          type: 'delete',
+          path: event.data.path,
+        });
+      } catch (err) {
+        console.error('Failed to apply file delete:', err);
+      }
     }
   });
 
-  // Update conversation history when Ted sends it
-  tedRunner.on('conversation_history', (event: ConversationHistoryEvent) => {
+  // Update conversation history when Ted sends it and persist to disk
+  tedRunner.on('conversation_history', async (event: ConversationHistoryEvent) => {
     conversationHistory = event.data.messages.map(m => ({
       role: m.role,
       content: m.content,
     }));
-    console.log('[HISTORY] Updated conversation history:', conversationHistory.length, 'messages');
+    log('[HISTORY] Updated conversation history:', conversationHistory.length, 'messages');
+
+    // Persist to disk for this project
+    if (currentProjectRoot) {
+      await storage.saveProjectHistory(currentProjectRoot, conversationHistory);
+      log('[HISTORY] Saved to disk');
+    }
   });
 
   // Auto-commit on completion
@@ -261,8 +379,8 @@ ipcMain.handle('ted:run', async (_, prompt: string, options?: {
     }
   });
 
-  // Start Ted
-  await tedRunner.run(prompt);
+  // Start Ted with the final prompt (which may include context)
+  await tedRunner.run(finalPrompt);
 
   return { success: true };
 });
@@ -314,6 +432,26 @@ ipcMain.handle('file:write', async (_, relativePath: string, content: string) =>
 });
 
 /**
+ * Delete a file from the project
+ */
+ipcMain.handle('file:delete', async (_, relativePath: string) => {
+  if (!currentProjectRoot) {
+    throw new Error('No project selected');
+  }
+
+  const fullPath = path.join(currentProjectRoot, relativePath);
+
+  // Security check: ensure path is within project root
+  if (!fullPath.startsWith(currentProjectRoot)) {
+    throw new Error('Path escapes project root');
+  }
+
+  await fs.unlink(fullPath);
+
+  return { success: true };
+});
+
+/**
  * List files in project
  */
 ipcMain.handle('file:list', async (_, dirPath: string = '.') => {
@@ -321,7 +459,6 @@ ipcMain.handle('file:list', async (_, dirPath: string = '.') => {
     throw new Error('No project selected');
   }
 
-  const fs = require('fs/promises');
   const fullPath = path.join(currentProjectRoot, dirPath);
   const entries = await fs.readdir(fullPath, { withFileTypes: true });
 
@@ -350,11 +487,34 @@ function cleanupTed() {
 }
 
 /**
+ * Set review mode (enable/disable file operation review)
+ */
+ipcMain.handle('review:set', async (_, enabled: boolean) => {
+  reviewModeEnabled = enabled;
+  log('[REVIEW_MODE] Set to:', enabled);
+  return { success: true };
+});
+
+/**
+ * Get current review mode status
+ */
+ipcMain.handle('review:get', async () => {
+  return { enabled: reviewModeEnabled };
+});
+
+/**
  * Clear conversation history (start fresh)
  */
 ipcMain.handle('ted:clearHistory', async () => {
   conversationHistory = [];
-  console.log('[HISTORY] Cleared conversation history');
+  log('[HISTORY] Cleared conversation history');
+
+  // Also clear from disk
+  if (currentProjectRoot) {
+    await storage.clearProjectHistory(currentProjectRoot);
+    log('[HISTORY] Cleared from disk');
+  }
+
   return { success: true };
 });
 
@@ -364,3 +524,377 @@ ipcMain.handle('ted:clearHistory', async () => {
 ipcMain.handle('ted:getHistoryLength', async () => {
   return { length: conversationHistory.length };
 });
+
+// Track running shell processes
+const runningShells: Map<number, import('child_process').ChildProcess> = new Map();
+
+/**
+ * Run a shell command directly (without Ted)
+ */
+ipcMain.handle('shell:run', async (_, command: string) => {
+  if (!currentProjectRoot) {
+    throw new Error('No project selected');
+  }
+
+  const { spawn } = await import('child_process');
+
+  log('[SHELL:RUN]', command);
+
+  const child = spawn('sh', ['-c', command], {
+    cwd: currentProjectRoot,
+    detached: true,
+    stdio: 'ignore',
+  });
+
+  child.unref();
+
+  if (child.pid) {
+    runningShells.set(child.pid, child);
+    log('[SHELL:STARTED] PID:', child.pid);
+  }
+
+  return { success: true, pid: child.pid };
+});
+
+/**
+ * Kill a running shell process
+ */
+ipcMain.handle('shell:kill', async (_, pid: number) => {
+  log('[SHELL:KILL] PID:', pid);
+
+  try {
+    process.kill(pid, 'SIGTERM');
+    runningShells.delete(pid);
+    return { success: true };
+  } catch (err) {
+    log('[SHELL:KILL] Failed:', err);
+    return { success: false };
+  }
+});
+
+/**
+ * Get Ted settings
+ */
+ipcMain.handle('settings:get', async () => {
+  log('[SETTINGS:GET]');
+  try {
+    const settings = await loadTedSettings();
+    return settings;
+  } catch (err) {
+    log('[SETTINGS:GET] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Save Ted settings
+ */
+ipcMain.handle('settings:save', async (_, settings) => {
+  log('[SETTINGS:SAVE]', settings);
+  try {
+    await saveTedSettings(settings);
+    return { success: true };
+  } catch (err) {
+    log('[SETTINGS:SAVE] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Detect hardware profile
+ */
+ipcMain.handle('settings:detectHardware', async () => {
+  log('[SETTINGS:DETECT_HARDWARE]');
+  try {
+    const hardware = await detectHardware();
+    return hardware;
+  } catch (err) {
+    log('[SETTINGS:DETECT_HARDWARE] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Deploy project to Vercel
+ */
+ipcMain.handle('deploy:vercel', async (_, options) => {
+  log('[DEPLOY:VERCEL]', { projectPath: options.projectPath });
+  try {
+    // Send progress update to renderer
+    if (mainWindow) {
+      mainWindow.webContents.send('deploy:progress', { status: 'starting', message: 'Preparing deployment...' });
+    }
+
+    const result = await deployProject(options);
+
+    if (result.success && mainWindow) {
+      mainWindow.webContents.send('deploy:success', { url: result.url, deploymentId: result.deploymentId });
+    } else if (!result.success && mainWindow) {
+      mainWindow.webContents.send('deploy:error', { error: result.error });
+    }
+
+    return result;
+  } catch (err) {
+    log('[DEPLOY:VERCEL] Failed:', err);
+    if (mainWindow) {
+      mainWindow.webContents.send('deploy:error', { error: String(err) });
+    }
+    throw err;
+  }
+});
+
+/**
+ * Verify Vercel token
+ */
+ipcMain.handle('deploy:verifyVercelToken', async (_, token) => {
+  log('[DEPLOY:VERIFY_TOKEN]');
+  try {
+    const result = await verifyToken(token);
+    return result;
+  } catch (err) {
+    log('[DEPLOY:VERIFY_TOKEN] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Get Vercel deployment status
+ */
+ipcMain.handle('deploy:getVercelStatus', async (_, deploymentId, token) => {
+  log('[DEPLOY:GET_STATUS]', deploymentId);
+  try {
+    const status = await getDeploymentStatus(deploymentId, token);
+    return status;
+  } catch (err) {
+    log('[DEPLOY:GET_STATUS] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Check if cloudflared is installed
+ */
+ipcMain.handle('tunnel:isInstalled', async () => {
+  log('[TUNNEL:IS_INSTALLED]');
+  try {
+    const installed = isCloudflaredInstalled();
+    return { installed };
+  } catch (err) {
+    log('[TUNNEL:IS_INSTALLED] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Get cloudflared installation instructions
+ */
+ipcMain.handle('tunnel:getInstallInstructions', async () => {
+  log('[TUNNEL:GET_INSTALL_INSTRUCTIONS]');
+  try {
+    const instructions = getInstallInstructions();
+    return { instructions };
+  } catch (err) {
+    log('[TUNNEL:GET_INSTALL_INSTRUCTIONS] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Auto-install cloudflared
+ */
+ipcMain.handle('tunnel:autoInstall', async () => {
+  log('[TUNNEL:AUTO_INSTALL]');
+  try {
+    const { autoInstallCloudflared } = await import('./deploy/cloudflare-tunnel');
+    const result = await autoInstallCloudflared();
+    return result;
+  } catch (err) {
+    log('[TUNNEL:AUTO_INSTALL] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Start Cloudflare Tunnel
+ */
+ipcMain.handle('tunnel:start', async (_, options) => {
+  log('[TUNNEL:START]', { port: options.port });
+  try {
+    const result = await startTunnel(options);
+
+    if (result.success && mainWindow) {
+      mainWindow.webContents.send('tunnel:started', { port: options.port, url: result.url });
+    }
+
+    return result;
+  } catch (err) {
+    log('[TUNNEL:START] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Stop Cloudflare Tunnel
+ */
+ipcMain.handle('tunnel:stop', async (_, port) => {
+  log('[TUNNEL:STOP]', port);
+  try {
+    const result = await stopTunnel(port);
+
+    if (result.success && mainWindow) {
+      mainWindow.webContents.send('tunnel:stopped', { port });
+    }
+
+    return result;
+  } catch (err) {
+    log('[TUNNEL:STOP] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Get tunnel URL for a port
+ */
+ipcMain.handle('tunnel:getUrl', async (_, port) => {
+  log('[TUNNEL:GET_URL]', port);
+  try {
+    const url = getTunnelUrl(port);
+    return { url };
+  } catch (err) {
+    log('[TUNNEL:GET_URL] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Scan project to build context (file tree, readme, package.json)
+ */
+async function scanProjectContext(projectRoot: string): Promise<ProjectContext> {
+  const context: ProjectContext = {
+    fileTree: [],
+    readme: null,
+    packageJson: null,
+    lastScanned: Date.now(),
+  };
+
+  // Directories to skip
+  const skipDirs = new Set([
+    'node_modules', '.git', 'dist', 'build', 'target', '.next',
+    '__pycache__', '.venv', 'venv', '.idea', '.vscode', 'coverage',
+  ]);
+
+  // File extensions to include
+  const includeExts = new Set([
+    '.js', '.jsx', '.ts', '.tsx', '.py', '.rs', '.go', '.java',
+    '.html', '.css', '.scss', '.json', '.yaml', '.yml', '.toml',
+    '.md', '.txt', '.sql', '.sh', '.prisma',
+  ]);
+
+  // Recursively scan directory (max depth 4)
+  function scanDir(dir: string, relativePath: string, depth: number): void {
+    if (depth > 4) return;
+
+    try {
+      const entries = readdirSync(dir, { withFileTypes: true });
+
+      for (const entry of entries) {
+        const entryPath = path.join(relativePath, entry.name);
+
+        if (entry.isDirectory()) {
+          if (!skipDirs.has(entry.name) && !entry.name.startsWith('.')) {
+            context.fileTree.push(entryPath + '/');
+            scanDir(path.join(dir, entry.name), entryPath, depth + 1);
+          }
+        } else {
+          const ext = path.extname(entry.name).toLowerCase();
+          if (includeExts.has(ext) || entry.name === 'Makefile' || entry.name === 'Cargo.toml') {
+            context.fileTree.push(entryPath);
+          }
+        }
+      }
+    } catch (err) {
+      // Skip directories we can't read
+    }
+  }
+
+  scanDir(projectRoot, '', 0);
+
+  // Read README if exists
+  const readmeNames = ['README.md', 'readme.md', 'README.txt', 'readme.txt', 'README'];
+  for (const name of readmeNames) {
+    const readmePath = path.join(projectRoot, name);
+    if (existsSync(readmePath)) {
+      try {
+        const content = require('fs').readFileSync(readmePath, 'utf-8');
+        // Limit to first 2000 chars
+        context.readme = content.length > 2000 ? content.slice(0, 2000) + '...' : content;
+        break;
+      } catch (err) {
+        // Skip
+      }
+    }
+  }
+
+  // Read package.json if exists
+  const packagePath = path.join(projectRoot, 'package.json');
+  if (existsSync(packagePath)) {
+    try {
+      const content = require('fs').readFileSync(packagePath, 'utf-8');
+      context.packageJson = JSON.parse(content);
+    } catch (err) {
+      // Skip
+    }
+  }
+
+  log('[CONTEXT] Scanned project:', context.fileTree.length, 'files');
+  return context;
+}
+
+/**
+ * Build a context prefix to inject into the first prompt of a conversation.
+ * This gives Ted awareness of the project structure without explicit exploration.
+ */
+function buildContextPrefix(context: ProjectContext): string {
+  const parts: string[] = [];
+
+  parts.push('[PROJECT CONTEXT]');
+  parts.push('This project has the following files:');
+  parts.push('');
+
+  // Show file tree (limit to first 50 files to avoid overwhelming)
+  const filesToShow = context.fileTree.slice(0, 50);
+  for (const file of filesToShow) {
+    parts.push(`  ${file}`);
+  }
+  if (context.fileTree.length > 50) {
+    parts.push(`  ... and ${context.fileTree.length - 50} more files`);
+  }
+  parts.push('');
+
+  // Include README summary if available
+  if (context.readme) {
+    parts.push('README:');
+    parts.push(context.readme);
+    parts.push('');
+  }
+
+  // Include package.json info if available
+  if (context.packageJson) {
+    const pkg = context.packageJson;
+    parts.push('package.json info:');
+    if (pkg.name) parts.push(`  Name: ${pkg.name}`);
+    if (pkg.description) parts.push(`  Description: ${pkg.description}`);
+    if (pkg.scripts) {
+      parts.push('  Scripts:');
+      for (const [name, cmd] of Object.entries(pkg.scripts).slice(0, 10)) {
+        parts.push(`    ${name}: ${cmd}`);
+      }
+    }
+    parts.push('');
+  }
+
+  parts.push('[USER REQUEST]');
+  parts.push('');
+
+  return parts.join('\n');
+}

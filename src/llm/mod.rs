@@ -5,9 +5,13 @@
 //!
 //! Provides abstraction over different LLM providers.
 
+pub mod circuit_breaker;
 pub mod message;
 pub mod provider;
 pub mod providers;
+pub mod retry;
 
+pub use circuit_breaker::*;
 pub use message::*;
 pub use provider::*;
+pub use retry::*;

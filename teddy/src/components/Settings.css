@@ -1,0 +1,296 @@
+/* Settings Modal */
+.settings-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.settings-modal {
+  background: #1e1e1e;
+  border-radius: 8px;
+  width: 90%;
+  max-width: 700px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+.settings-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px;
+  border-bottom: 1px solid #333;
+}
+
+.settings-header h2 {
+  margin: 0;
+  font-size: 1.5rem;
+  color: #e0e0e0;
+}
+
+.close-button {
+  background: none;
+  border: none;
+  font-size: 2rem;
+  color: #999;
+  cursor: pointer;
+  padding: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.2s;
+}
+
+.close-button:hover {
+  color: #fff;
+}
+
+.settings-tabs {
+  display: flex;
+  border-bottom: 1px solid #333;
+  background: #252525;
+}
+
+.settings-tab {
+  flex: 1;
+  padding: 12px 20px;
+  background: none;
+  border: none;
+  color: #999;
+  cursor: pointer;
+  font-size: 1rem;
+  transition: all 0.2s;
+  border-bottom: 2px solid transparent;
+}
+
+.settings-tab:hover {
+  color: #fff;
+  background: #2a2a2a;
+}
+
+.settings-tab.active {
+  color: #4a9eff;
+  border-bottom-color: #4a9eff;
+  background: #1e1e1e;
+}
+
+.settings-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+.settings-section {
+  max-width: 600px;
+}
+
+.settings-section h3 {
+  margin: 0 0 20px 0;
+  color: #e0e0e0;
+  font-size: 1.25rem;
+}
+
+.settings-section h4 {
+  margin: 24px 0 12px 0;
+  color: #ccc;
+  font-size: 1.1rem;
+}
+
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 8px;
+  color: #ccc;
+  font-weight: 500;
+}
+
+.form-group input,
+.form-group select {
+  width: 100%;
+  padding: 10px 12px;
+  background: #2a2a2a;
+  border: 1px solid #444;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 0.95rem;
+  transition: border-color 0.2s;
+}
+
+.form-group input:focus,
+.form-group select:focus {
+  outline: none;
+  border-color: #4a9eff;
+}
+
+.form-group input::placeholder {
+  color: #666;
+}
+
+.form-group small {
+  display: block;
+  margin-top: 6px;
+  color: #888;
+  font-size: 0.85rem;
+}
+
+.settings-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 20px;
+  border-top: 1px solid #333;
+}
+
+.btn-primary,
+.btn-secondary {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 4px;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-primary {
+  background: #4a9eff;
+  color: #fff;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #3a8eef;
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  background: #444;
+  color: #e0e0e0;
+}
+
+.btn-secondary:hover {
+  background: #555;
+}
+
+.settings-loading,
+.settings-error {
+  padding: 40px;
+  text-align: center;
+  color: #999;
+  font-size: 1.1rem;
+}
+
+.settings-error {
+  color: #ff6b6b;
+}
+
+/* Hardware Section */
+.hardware-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.hardware-header h3 {
+  margin: 0;
+}
+
+.hardware-info {
+  background: #252525;
+  padding: 20px;
+  border-radius: 6px;
+}
+
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 0;
+  border-bottom: 1px solid #333;
+}
+
+.info-row:last-child {
+  border-bottom: none;
+}
+
+.info-row .label {
+  color: #999;
+  font-weight: 500;
+  min-width: 140px;
+}
+
+.info-row .value {
+  color: #e0e0e0;
+  text-align: right;
+  flex: 1;
+}
+
+.capabilities-list {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0;
+}
+
+.capabilities-list li {
+  padding: 6px 0;
+  color: #e0e0e0;
+}
+
+.capabilities-list .capability {
+  color: #6ebe6e;
+}
+
+.capabilities-list .limitation {
+  color: #ff9999;
+}
+
+.models-list {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0;
+}
+
+.models-list li {
+  padding: 6px 0;
+  color: #e0e0e0;
+}
+
+.hardware-empty {
+  text-align: center;
+  padding: 40px;
+  color: #999;
+}
+
+.hardware-empty p {
+  margin-bottom: 20px;
+}
+
+.hardware-empty button {
+  padding: 10px 20px;
+  background: #4a9eff;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 1rem;
+}
+
+.hardware-empty button:hover {
+  background: #3a8eef;
+}

@@ -65,6 +65,13 @@ pub enum Commands {
     /// Update ted to the latest version
     Update(UpdateArgs),
 
+    /// Show system hardware information and recommendations
+    #[command(alias = "hw")]
+    System(SystemArgs),
+
+    /// Start MCP server for external tool integrations
+    Mcp(McpArgs),
+
     /// Run a custom command from .ted/commands/
     #[command(external_subcommand)]
     Run(Vec<String>),
@@ -84,6 +91,26 @@ pub struct UpdateArgs {
     /// Force update even if already on latest version
     #[arg(short, long)]
     pub force: bool,
+}
+
+/// Arguments for the system subcommand
+#[derive(clap::Args, Debug)]
+pub struct SystemArgs {
+    /// Show upgrade suggestions
+    #[arg(short, long)]
+    pub upgrades: bool,
+
+    /// Show detailed hardware information
+    #[arg(short, long)]
+    pub detailed: bool,
+}
+
+/// Arguments for the MCP subcommand
+#[derive(clap::Args, Debug)]
+pub struct McpArgs {
+    /// Project directory to expose tools for
+    #[arg(short, long)]
+    pub project: Option<String>,
 }
 
 /// Arguments for the chat subcommand
@@ -123,6 +150,10 @@ pub struct ChatArgs {
     /// Path to conversation history JSON file (for multi-turn embedded conversations)
     #[arg(long, hide = true)]
     pub history: Option<PathBuf>,
+
+    /// Review mode - emit file events but don't execute file modifications (for GUI review before applying)
+    #[arg(long, hide = true)]
+    pub review_mode: bool,
 }
 
 /// Arguments for the ask subcommand

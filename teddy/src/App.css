@@ -255,3 +255,68 @@ button {
 ::-webkit-scrollbar-thumb:hover {
   background: #555;
 }
+
+/* Review Mode Toggle */
+.review-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-secondary);
+  -webkit-app-region: no-drag;
+}
+
+.review-toggle input {
+  cursor: pointer;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent-primary);
+}
+
+.review-toggle:hover {
+  color: var(--text-primary);
+}
+
+/* Tab Badge */
+.tab {
+  position: relative;
+}
+
+.tab-badge {
+  background: var(--warning);
+  color: var(--bg-primary);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 10px;
+  margin-left: 6px;
+  min-width: 18px;
+  text-align: center;
+}
+
+.tab.has-badge {
+  padding-right: 8px;
+}
+
+/* Danger Button */
+.btn-danger {
+  padding: 6px 12px;
+  background-color: var(--error);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background-color 0.2s;
+}
+
+.btn-danger:hover {
+  background-color: #ff5252;
+}
+
+.btn-danger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

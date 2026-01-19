@@ -14,9 +14,9 @@
 |----------|---------|--------|-------|
 | **LLM Providers** | Anthropic Claude | ✅ Complete | claude-sonnet-4, claude-3.5-sonnet, claude-3.5-haiku |
 | | Ollama (Local) | ✅ Complete | qwen2.5-coder, llama3.2, deepseek-coder, etc. |
-| | OpenAI | ❌ Skeleton | Not implemented |
-| | Google Gemini | ❌ Skeleton | Not implemented |
-| | OpenRouter | ❌ Not started | Would enable 100+ models |
+| | OpenRouter | ✅ Complete | 100+ models (GPT-4, Claude, Gemini, DeepSeek, Llama, etc.) |
+| | OpenAI | ❌ Skeleton | Not implemented (use OpenRouter instead) |
+| | Google Gemini | ❌ Skeleton | Not implemented (use OpenRouter instead) |
 | **Tools** | file_read | ✅ Complete | Line offset/limit, truncation |
 | | file_write | ✅ Complete | Create new files, auto-mkdir |
 | | file_edit | ✅ Complete | Find/replace with uniqueness check |
@@ -24,6 +24,10 @@
 | | glob | ✅ Complete | File pattern matching |
 | | grep | ✅ Complete | Regex search with context |
 | | plan_update | ✅ Complete | Task tracking |
+| | database_init | ✅ Complete | Initialize SQLite/Postgres with Prisma |
+| | database_migrate | ✅ Complete | Run Prisma migrations |
+| | database_query | ✅ Complete | Execute SQL queries (read-only by default) |
+| | database_seed | ✅ Complete | Run seed scripts for sample data |
 | | External tools | 🔶 Partial | JSON-RPC protocol defined, not tested |
 | **Caps System** | Base cap | ✅ Complete | Always loaded |
 | | rust-expert | ✅ Complete | Rust best practices |
@@ -66,12 +70,13 @@
 | | File operations | ✅ Complete | FileApplier |
 | | Git auto-commit | ✅ Complete | AutoCommit |
 | | Multi-turn chat | ✅ Complete | Conversation history |
-| **Planned Features** | Docker support | ❌ Stubbed | Button exists, not functional |
-| | PostgreSQL | ❌ Stubbed | Button exists, not functional |
-| | Deploy integration | ❌ Stubbed | Button exists, not functional |
-| | Dev server detection | ❌ Not started | Manual URL required |
-| | Diff view | ❌ Not started | No change review |
-| | Settings UI | ❌ Not started | Runtime options only |
+| | Diff view | ✅ Complete | Monaco diff editor, accept/reject changes |
+| | Review mode | ✅ Complete | Queue changes for review before applying |
+| **Deploy & Infra** | Deploy integration | ✅ Complete | Vercel deploy with one-click, Cloudflare tunnel sharing |
+| | Dev server detection | ✅ Complete | Auto-detects Vite/Next.js, sets correct ports |
+| | Settings UI | ✅ Complete | Full settings UI with Hardware/Providers/Deployment tabs |
+| **Future Features** | Docker support | ❌ Stubbed | Button exists, not functional (Phase 4) |
+| | PostgreSQL | ❌ Stubbed | Button exists, not functional (Phase 4) |
 
 ---
 
@@ -88,7 +93,7 @@
 | **Stack Multiple Personas** | ✅ Yes | ❌ No | **Ted** |
 | **Tool Permissions** | Per-cap granular | Per-agent | **Ted** |
 | **Context Memory** | WAL + smart indexer | Unknown | **Ted** |
-| **MCP Protocol** | ❌ No | ✅ Yes | OpenCode |
+| **MCP Protocol** | ✅ Yes | ✅ Yes | Tie |
 | **LSP Integration** | ❌ No | ✅ Yes | OpenCode |
 | **GitHub Actions** | ❌ No | ✅ /opencode mentions | OpenCode |
 | **IDE Extension** | ❌ No | ✅ Yes | OpenCode |
@@ -143,25 +148,50 @@
 
 This is your key differentiator. Here's how to implement it:
 
+### The "2010 Dell Benchmark" - Our IE 11 Moment
+
+**Philosophy**: Just as web developers grudgingly supported IE 11 to reach everyone, Ted/Teddy will support 2010-era hardware to democratize AI coding.
+
+**The Benchmark Machine**: A refurbished 2010 Dell OptiPlex ($100) with minimal upgrades ($50):
+- Intel Core 2 Duo or Core i3 (2-4 cores, ~2.5-3.0 GHz)
+- 16GB DDR3 RAM (upgraded from 4-8GB stock)
+- 240GB SSD (upgraded from HDD)
+- Integrated graphics (no dedicated GPU)
+- **Total cost: $150**
+
+**What it should do**:
+- ✅ Build simple single-page apps (blogs, portfolios, to-do lists)
+- ✅ Run qwen2.5-coder:1.5b at 5-10 tokens/sec
+- ✅ Preview with Vite dev server
+- ✅ Make iterative changes via chat
+- ⚠️ 30-60 second AI response times (acceptable with proper UX)
+- ❌ Cannot handle: Multi-page complex apps, large refactorings, 7b+ models
+
+**Why this matters**: Proves that **anyone with a $150 computer can build software**. No other AI coding tool can claim this.
+
 ### System Detection Tiers
 
-| Tier | RAM | VRAM | CPU | Recommended Models |
-|------|-----|------|-----|-------------------|
-| **Tiny** | ≤8GB | None | 4 cores | qwen2.5-coder:1.5b, phi-3-mini |
-| **Small** | 8-16GB | ≤4GB | 4-8 cores | qwen2.5-coder:3b, codellama:7b |
-| **Medium** | 16-32GB | 4-8GB | 8+ cores | qwen2.5-coder:7b, deepseek-coder:6.7b |
-| **Large** | 32GB+ | 8-16GB | 8+ cores | qwen2.5-coder:14b, codellama:34b |
-| **Cloud** | Any | Any | Any | claude-sonnet-4, gpt-4o |
+| Tier | RAM | VRAM | CPU | CPU Age | Recommended Models |
+|------|-----|------|-----|---------|-------------------|
+| **UltraTiny** | 8GB | None | 4 ARM cores | 2020+ | qwen2.5-coder:1.5b (Q3_K_M) |
+| **Ancient** | 8-16GB | None | 2-4 cores x86 | 2010-2015 | qwen2.5-coder:1.5b |
+| **Tiny** | 8-16GB | None | 4 cores | 2015-2020 | qwen2.5-coder:1.5b, phi-3-mini |
+| **Small** | 8-16GB | ≤4GB | 4-8 cores | 2018+ | qwen2.5-coder:3b, codellama:7b |
+| **Medium** | 16-32GB | 4-8GB | 8+ cores | 2020+ | qwen2.5-coder:7b, deepseek-coder:6.7b |
+| **Large** | 32GB+ | 8-16GB | 8+ cores | 2021+ | qwen2.5-coder:14b, codellama:34b |
+| **Cloud** | Any | Any | Any | Any | claude-sonnet-4, gpt-4o |
 
 ### Adaptive Behavior
 
-| Tier | Max Context | Response Strategy | Cap Adjustments |
-|------|-------------|-------------------|-----------------|
-| **Tiny** | 2K tokens | More directive prompts, step-by-step | Simplified caps, more examples |
-| **Small** | 4K tokens | Focused context, single file | Standard caps |
-| **Medium** | 8K tokens | Multi-file context | Full caps |
-| **Large** | 16K+ tokens | Full project context | All features |
-| **Cloud** | 100K+ tokens | Unlimited context | Maximum capability |
+| Tier | Max Context | Response Strategy | Cap Adjustments | Background Tasks |
+|------|-------------|-------------------|-----------------|------------------|
+| **UltraTiny** | 512 tokens | Extremely directive, one-shot | Minimal, tutorial mode | All disabled, thermal aware |
+| **Ancient** | 1K tokens | Ultra-directive, single task | Minimal caps, heavy examples | All disabled |
+| **Tiny** | 2K tokens | More directive prompts, step-by-step | Simplified caps, more examples | Indexer disabled |
+| **Small** | 4K tokens | Focused context, single file | Standard caps | Indexer low priority |
+| **Medium** | 8K tokens | Multi-file context | Full caps | Full indexer |
+| **Large** | 16K+ tokens | Full project context | All features | Full indexer |
+| **Cloud** | 100K+ tokens | Unlimited context | Maximum capability | All features |
 
 ### Implementation Plan
 
@@ -171,15 +201,27 @@ pub struct SystemProfile {
     pub ram_gb: u32,
     pub vram_gb: Option<u32>,
     pub cpu_cores: u32,
+    pub cpu_year: Option<u32>,  // Estimated CPU generation year
+    pub has_ssd: bool,
+    pub architecture: CpuArchitecture,  // x86_64, ARM64, etc.
+    pub is_sbc: bool,  // Single-board computer (Raspberry Pi, etc.)
     pub tier: HardwareTier,
 }
 
+pub enum CpuArchitecture {
+    X86_64,
+    ARM64,
+    ARM32,
+}
+
 pub enum HardwareTier {
-    Tiny,   // Chromebook, old laptops
-    Small,  // Entry MacBook Air, basic laptops
-    Medium, // MacBook Pro M1/M2, gaming laptops
-    Large,  // Pro workstations, Mac Studio
-    Cloud,  // Using API providers
+    UltraTiny,  // 2020+: Raspberry Pi 5, ARM SBCs - education & embedded
+    Ancient,    // 2010-2015: The "IE 11 Benchmark" - refurbished PCs
+    Tiny,       // 2015-2020: Chromebooks, old laptops
+    Small,      // 2018+: Entry MacBook Air, basic laptops
+    Medium,     // 2020+: MacBook Pro M1/M2, gaming laptops
+    Large,      // 2021+: Pro workstations, Mac Studio
+    Cloud,      // Using API providers
 }
 
 impl SystemProfile {
@@ -187,78 +229,403 @@ impl SystemProfile {
     pub fn recommended_model(&self) -> &str { ... }
     pub fn max_context_tokens(&self) -> usize { ... }
     pub fn should_use_streaming(&self) -> bool { ... }
+    pub fn get_upgrade_suggestions(&self) -> Vec<Upgrade> { ... }
+    pub fn meets_minimum_requirements(&self) -> Result<(), String> { ... }
+    pub fn is_raspberry_pi(&self) -> bool { ... }
+    pub fn thermal_throttle_risk(&self) -> bool { ... }
+}
+
+pub struct Upgrade {
+    pub component: String,  // "RAM", "Storage", etc.
+    pub current: String,
+    pub recommended: String,
+    pub estimated_cost: String,
+    pub performance_gain: String,
 }
 ```
 
-### Guardrails for Small Systems
+### Guardrails for UltraTiny/Ancient/Tiny Systems
 
-1. **Automatic model selection** - Detect hardware, suggest appropriate model
-2. **Context limiting** - Reduce context window on constrained systems
-3. **Prompt optimization** - More directive, structured prompts for smaller models
-4. **Streaming always** - Never buffer full responses on low-RAM systems
-5. **Graceful degradation** - If model too slow, suggest smaller alternative
-6. **Memory monitoring** - Warn before OOM situations
+#### 1. **Hardware Detection & Soft Blocking**
+```rust
+if profile.ram_gb < 8 {
+    return Err("Minimum 8GB RAM required. Current: {}GB. Upgrade cost: ~$30-40.", profile.ram_gb);
+}
+
+// Raspberry Pi specific checks
+if profile.is_raspberry_pi() {
+    if !profile.has_ssd {
+        warn!("microSD detected. NVMe HAT + SSD ($45) will improve loading by 10x.");
+    }
+    if profile.thermal_throttle_risk() {
+        warn!("Active cooling recommended for sustained AI workloads ($10-15).");
+    }
+}
+
+// x86 PC specific checks
+if profile.tier == Ancient && !profile.has_ssd {
+    warn!("HDD detected. Upgrading to SSD ($25-35) will improve loading by 10x.");
+}
+```
+
+#### 2. **Automatic Model Selection with User Education**
+- Detect hardware tier on first launch
+- Show what the system can handle with visual examples:
+  ```
+  ✅ Your PC can build: Blogs, portfolios, simple tools
+  ⚠️ Expect: 30-60 second responses (be patient!)
+  ❌ Cannot build: Complex multi-page apps, enterprise software
+
+  Recommended model: qwen2.5-coder:1.5b (2GB)
+  Why: Optimized for older CPUs, still surprisingly capable
+  ```
+
+#### 3. **Aggressive Resource Management**
+```rust
+match profile.tier {
+    UltraTiny => Config {
+        max_context_tokens: 512,
+        max_warm_chunks: 5,       // Extremely limited
+        disable_background_tasks: true,
+        streaming_only: true,
+        single_file_mode: true,
+        quantization: "Q3_K_M",   // Ultra-heavy quantization for ARM
+        monitor_thermal: true,    // Pause on thermal throttling
+        electron_optimization: ElectronMode::Minimal,  // Reduce UI overhead
+    },
+    Ancient => Config {
+        max_context_tokens: 1024,
+        max_warm_chunks: 10,      // vs 100 default
+        disable_background_tasks: true,
+        streaming_only: true,
+        single_file_mode: true,
+        quantization: "Q4_K_M",   // Heavy quantization
+    },
+    Tiny => Config {
+        max_context_tokens: 2048,
+        max_warm_chunks: 20,
+        disable_indexer: true,
+        streaming_only: true,
+    },
+    // ... other tiers
+}
+```
+
+#### 4. **Prompt Optimization for Small Models**
+Ancient/Tiny tiers get ultra-directive system prompts:
+- Explicit step-by-step instructions
+- No creative freedom (model is too small)
+- More examples in prompts
+- Single file focus only
+
+#### 5. **UX Adaptations for Slow Hardware**
+```
+🐢 Ancient Hardware Detected
+
+Expected response time: 30-60 seconds
+Your PC is working hard! While you wait:
+• Grab some coffee ☕
+• Review the last change
+• Think about your next request
+
+[Why so slow?] [Upgrade guide: Get to 5 seconds for $50]
+```
+
+#### 6. **Memory Monitoring & Graceful Degradation**
+- Monitor Ollama process memory
+- If approaching system limits, pause and warn
+- Suggest closing other apps
+- Never crash - always degrade gracefully
+
+#### 7. **Upgrade Path Guidance**
+When Ancient tier detected:
+```
+💡 Upgrade Suggestions for Better Performance
+
+Current: 8GB RAM, HDD, Core 2 Duo (2010)
+
+Priority 1: SSD ($25-35 used)
+  ▸ 10x faster model loading
+  ▸ Snappier file operations
+
+Priority 2: RAM to 16GB ($30-40 used DDR3)
+  ▸ Use larger 3b models
+  ▸ 2-3x faster responses
+
+Total cost: $55-75 → Moves you to "Tiny" tier
+
+[Show me compatible parts] [I'll upgrade later]
+```
+
+### Testing the "2010 Dell Benchmark"
+
+We commit to:
+1. **Acquire a real 2010 Dell OptiPlex** for testing
+2. **Test every release** on this benchmark machine
+3. **Document the experience** with screen recordings
+4. **Publish "The $150 Coding PC"** build guide
+5. **Never break backwards compatibility** without major version bump
+
+This is our contract with the community: *If it doesn't work on the benchmark, we don't ship.*
+
+### The Raspberry Pi Opportunity - UltraTiny Tier
+
+**Why Raspberry Pi matters**: While the 2010 Dell proves we support "anyone with an old PC," Raspberry Pi opens entirely different use cases:
+
+**Target audiences**:
+- **Education**: Schools already have Raspberry Pis in classrooms
+- **Developing countries**: Easier to ship/import than desktop PCs
+- **Makers**: Integrate AI coding into robotics/IoT projects
+- **Always-on**: Low power consumption for background tasks
+- **Kids**: Less intimidating than a "real computer"
+
+**The Raspberry Pi 5 Build** ($125 total):
+- Raspberry Pi 5 8GB: $80
+- NVMe HAT: $15 (PiNVMe, Argon ONE, etc.)
+- 256GB NVMe SSD: $30
+- Active cooling: Optional but recommended ($10-15)
+
+**Performance expectations**:
+- qwen2.5-coder:1.5b: 5-15 tokens/sec (CPU only, skip AI HAT+ 2)
+- Response time: 15-40 seconds
+- **Key advantage**: Doesn't hog CPU, so Teddy UI stays responsive
+
+**Raspberry Pi-specific optimizations**:
+1. **ARM64 builds** - Native ARM compilation for Ted CLI and Teddy
+2. **Thermal monitoring** - Pause inference if CPU temp >80°C
+3. **Power-aware scheduling** - Detect if running on battery/portable power
+4. **Minimal Electron mode** - Reduce UI overhead on limited RAM
+5. **SD card detection** - Warn if using microSD instead of NVMe
+
+**Why NOT the AI HAT+ 2** ($130):
+- Benchmarks show it's **slower than the Pi's CPU** for LLM inference
+- Adds $130 to cost (more than the Pi itself!)
+- Only helps if you need CPU free for GPIO/robotics
+- Models are limited to 1.5B and heavily quantized (INT4)
+
+**The education pitch**:
+> "Every classroom Raspberry Pi can now teach kids to build websites with AI assistance. No cloud required. No API keys. No subscriptions."
+
+**Implementation priority**: Phase 2-3
+- Phase 1: Focus on 2010 Dell (x86_64 baseline)
+- Phase 2: Add ARM64 builds for Pi 5
+- Phase 3: Raspberry Pi-specific optimizations (thermal, storage detection)
 
 ---
 
-## Part 5: Roadmap
+## Part 5: Critical Feature Gaps Analysis
 
-### Phase 1: Foundation (Current → 2 weeks)
+These are the features we **must** have to compete. Prioritized by user impact.
 
-**Goal**: Production-ready local experience
+### 🔴 Critical (Users will bounce without these)
 
-| Task | Priority | Effort | Notes |
-|------|----------|--------|-------|
-| End-to-end Teddy testing | P0 | 2 days | Verify full agent loop works |
-| Hardware detection module | P0 | 3 days | Detect RAM/VRAM/CPU |
-| Model recommendation engine | P0 | 2 days | Map hardware → models |
-| Context limiting by tier | P1 | 2 days | Reduce context for small systems |
-| Fix Teddy preview (dev server detection) | P1 | 2 days | Auto-detect Vite/Next.js |
-| Add settings UI to Teddy | P2 | 3 days | Provider/model selection |
+| Gap | Who Has It | Why It Matters | Effort | Phase |
+|-----|------------|----------------|--------|-------|
+| **Database setup** | Lovable, Bolt.new | Can't build real apps without data persistence | 5 days | 1 |
+| **Diff view** | All IDEs | Users scared to let AI change code without review | 4 days | 1 |
+| **One-click deploy** | Lovable, v0, Bolt.new | Apps stuck on localhost forever | 3 days/platform | 2 |
+| **MCP protocol** | OpenCode | Cut off from entire tool ecosystem | 5 days | 2 |
+| **OpenRouter provider** | OpenCode (75+ models) | Limited to 2 providers is embarrassing | 3 days | 1 |
 
-### Phase 2: Provider Expansion (Weeks 3-4)
+### 🟡 Important (Users will complain)
 
-**Goal**: Support more models and providers
+| Gap | Who Has It | Why It Matters | Effort | Phase |
+|-----|------------|----------------|--------|-------|
+| **Multi-session** | OpenCode | Can't work on multiple tasks | 3 days | 2 |
+| **LSP integration** | OpenCode, all IDEs | No autocomplete, no go-to-definition | 1 week | 3 |
+| **VS Code extension** | OpenCode, Cursor | IDE users feel left out | 1 week | 3 |
+| **Settings UI** | All competitors | CLI-only config is hostile | 3 days | 1 |
+| **File watching** | All IDEs | External changes not detected | 2 days | 2 |
 
-| Task | Priority | Effort | Notes |
-|------|----------|--------|-------|
-| OpenRouter integration | P0 | 3 days | 100+ models via single API |
-| OpenAI provider | P1 | 2 days | GPT-4o, GPT-4o-mini |
-| Google Gemini provider | P1 | 2 days | Gemini Pro, Flash |
-| Provider auto-selection | P1 | 2 days | Based on hardware + availability |
-| Model speed benchmarking | P2 | 2 days | Track tokens/sec per model |
+### 🟢 Nice-to-Have (Differentiation)
 
-### Phase 3: Teddy Polish (Weeks 5-6)
+| Gap | Who Has It | Why It Matters | Effort | Phase |
+|-----|------------|----------------|--------|-------|
+| **Visual editing** | Lovable | Click-to-edit without chat | 2 weeks | 4 |
+| **GitHub Actions bot** | OpenCode | `/ted` mentions in PRs | 3 days | 4 |
+| **Figma import** | Bolt.new | Design-to-code workflow | 1 week | 4 |
+| **Shareable sessions** | OpenCode | Collaboration features | 4 days | 3 |
+| **Plugin system** | VS Code | User extensibility | 1 week | 4 |
 
-**Goal**: Feature parity with competitors on core UX
+### Gap Closure Strategy
 
-| Task | Priority | Effort | Notes |
-|------|----------|--------|-------|
-| Diff view before apply | P0 | 4 days | Review AI changes |
-| Undo/redo for file ops | P1 | 3 days | Beyond just Git |
-| File tree search | P1 | 2 days | Find files quickly |
-| Multi-file selection | P2 | 2 days | Bulk operations |
-| Dark/light theme toggle | P2 | 1 day | User preference |
-| Keyboard shortcuts | P2 | 2 days | Power user UX |
+**Phase 1 Focus**: Database + Diff + OpenRouter = "Real apps, safely"
+**Phase 2 Focus**: Deploy + MCP = "Ship to the world"
+**Phase 3 Focus**: LSP + Extension = "Developer experience"
+**Phase 4 Focus**: Visual + Plugins = "Differentiation"
 
-### Phase 4: Backend & Deploy (Weeks 7-10)
+---
 
-**Goal**: Full-stack app building capability
+## Part 6: Database Strategy
 
-| Task | Priority | Effort | Notes |
-|------|----------|--------|-------|
-| Supabase integration | P0 | 5 days | Auth + database |
-| Docker detection & management | P1 | 4 days | Container runtime |
-| PostgreSQL local setup | P1 | 3 days | Via Docker |
-| Vercel deploy | P1 | 3 days | One-click deploy |
-| Netlify deploy | P2 | 2 days | Alternative deploy |
-| Environment variable management | P2 | 2 days | Secrets handling |
+### Philosophy: SQLite First, Postgres When Needed
 
-### Phase 5: Share & Deploy (Weeks 11-14)
+| Consideration | SQLite | PostgreSQL |
+|---------------|--------|------------|
+| **Setup** | Zero - it's a file | Requires Docker |
+| **Non-coder friendly** | Perfect - invisible | "What's a container?" |
+| **Local-first ethos** | Aligns perfectly | Feels "server-y" |
+| **Teddy's target user** | Blogs, small apps | Production apps |
+| **Offline support** | Works completely offline | Needs running server |
 
-**Goal**: Grandma can build an app and share it with the world
+### Implementation
 
-The complete flow:
+**Phase 1: SQLite (Default)**
+```
+User: "Create a recipe blog with favorites"
+Ted: Creates SQLite database, Prisma schema, migrations
+Teddy: Database just works - no setup, no Docker
+```
+
+**Phase 2: PostgreSQL (Upgrade Path)**
+```
+User: "I need user authentication and real-time updates"
+Teddy: "This needs PostgreSQL. [Start Docker Container]"
+Ted: Migrates schema from SQLite → Postgres
+```
+
+### Database Tools for Ted
+
+| Tool | Purpose | Priority |
+|------|---------|----------|
+| `database_init` | Create SQLite DB + Prisma schema | P0 |
+| `database_migrate` | Run Prisma migrations | P0 |
+| `database_query` | Execute SQL (read-only by default) | P1 |
+| `database_seed` | Populate with sample data | P2 |
+
+### ORM Strategy
+
+**Prisma** as the default because:
+- Works with both SQLite and Postgres
+- Type-safe queries (matches our TypeScript focus)
+- Migrations built-in
+- Most LLMs know it well
+
+```prisma
+// Example: What Ted generates for "recipe blog with favorites"
+datasource db {
+  provider = "sqlite"  // Upgradeable to "postgresql"
+  url      = "file:./dev.db"
+}
+
+model Recipe {
+  id          Int      @id @default(autoincrement())
+  title       String
+  ingredients String
+  steps       String
+  createdAt   DateTime @default(now())
+  favorites   Favorite[]
+}
+
+model Favorite {
+  id       Int    @id @default(autoincrement())
+  recipeId Int
+  recipe   Recipe @relation(fields: [recipeId], references: [id])
+}
+```
+
+---
+
+## Part 7: Roadmap
+
+### Phase 1: Foundation + Critical Gaps (Weeks 1-2)
+
+**Goal**: Real apps, built safely, with model choice. **Passes the "2010 Dell Benchmark".**
+
+| Task | Priority | Effort | Status | Notes |
+|------|----------|--------|--------|-------|
+| **SQLite + Prisma integration** | P0 | 5 days | ✅ Done | `database_init`, `database_migrate`, `database_query`, `database_seed` tools |
+| **Diff view in Teddy** | P0 | 4 days | ✅ Done | Monaco diff editor, accept/reject individual or all changes |
+| **OpenRouter provider** | P0 | 3 days | ✅ Done | 100+ models via single API, streaming support |
+| **Hardware detection module** | P0 | 4 days | ✅ Done | Full detection: RAM/VRAM/CPU/CPU age/SSD/architecture/SBC detection + `ted system` command |
+| **Tier-based config system** | P0 | 3 days | ✅ Done | 7 tiers with adaptive config, model recommendations, upgrade suggestions |
+| **Settings UI in Teddy** | P1 | 3 days | ✅ Done | Provider/model/API key config + hardware display with 2 tabs |
+| **Model recommendation engine** | P1 | 2 days | ✅ Done | Built into tier system with per-tier model lists |
+| **Upgrade suggestions UI** | P1 | 2 days | ✅ Done | CLI via `ted system --upgrades` + Hardware tab in Teddy UI |
+| **Fix Teddy preview** | P2 | 2 days | ✅ Done | Auto-detects Vite/Next.js, sets correct ports, shows project type badge |
+| End-to-end Teddy testing | P0 | 2 days | 🟡 In progress | Verify full agent loop |
+| Acquire 2010 Dell for testing | P2 | 1 day | 🔴 Not started | eBay/Craigslist, $100-150 budget |
+
+**Phase 1 Deliverable**: User can build a blog with SQLite database, review AI changes before applying, choose from 100+ models. **Works acceptably on a $150 refurbished 2010 Dell OptiPlex.**
+
+### Phase 2: Deploy + Ecosystem (Weeks 3-5)
+
+**Goal**: Ship to the world, connect to tools, **support Raspberry Pi**
+
+| Task | Priority | Effort | Status | Notes |
+|------|----------|--------|--------|-------|
+| **MCP protocol support** | P0 | 5 days | ✅ Done | External tool ecosystem - exposes all built-in tools via stdio |
+| **Vercel deploy integration** | P0 | 3 days | ✅ Done | One-click deploy via API, auto-detection, token verification |
+| **Cloudflare Tunnel sharing** | P0 | 3 days | ✅ Done | Instant share links via cloudflared, auto-download, auto-copy to clipboard |
+| **ARM64 builds** | P0 | 3 days | ✅ Done | Raspberry Pi 5 support - electron-builder config, cross-compile script, GitHub Actions |
+| **Bundled dependencies** | P0 | 2 days | ✅ Done | Auto-download cloudflared, no manual installs needed, batteries-included |
+| Blackman AI provider | P1 | 2 days | 🔴 Not started | OpenAI-compatible |
+| Netlify deploy | P1 | 2 days | 🔴 Not started | Alternative deploy |
+| Multi-session support | P1 | 3 days | 🔴 Not started | Work on multiple tasks |
+| File watching (chokidar) | P2 | 2 days | 🔴 Not started | Detect external changes |
+| teddy.rocks subdomain service | P2 | 4 days | 🔴 Not started | CF Workers + KV |
+| Acquire Raspberry Pi 5 for testing | P2 | 1 day | 🔴 Not started | $125 budget (8GB + NVMe HAT + SSD) |
+
+**Phase 2 Deliverable**: User can deploy to Vercel with one click, share preview links, use MCP tools. **Works on Raspberry Pi 5 (ARM64).**
+
+### Phase 3: Developer Experience + Pi Optimizations (Weeks 6-8)
+
+**Goal**: Pro developers feel at home, **Raspberry Pi gets optimized**
+
+| Task | Priority | Effort | Status | Notes |
+|------|----------|--------|--------|-------|
+| **Tool output streaming** | P0 | 2 days | ✅ Done | Real-time command output in chat (already complete in codebase) |
+| **Error recovery + retry** | P0 | 2 days | ✅ Done | Exponential backoff, circuit breaker, smart defaults |
+| **Multi-file context** | P0 | 3 days | 🟡 In progress | Atomic/incremental edit modes, file grouping |
+| **Conversation memory/RAG** | P0 | 5 days | 🔴 Not started | Semantic search with Ollama embeddings |
+| **LSP integration** | P0 | 1 week | 🔴 Not started | Autocomplete, go-to-def |
+| **VS Code extension** | P0 | 1 week | 🔴 Not started | IDE integration |
+| Thermal monitoring (Pi) | P1 | 2 days | 🔴 Not started | Pause inference at 80°C, UltraTiny tier |
+| Minimal Electron mode (Pi) | P1 | 3 days | 🔴 Not started | Reduce UI overhead for 8GB RAM |
+| Storage detection (Pi) | P1 | 1 day | 🔴 Not started | Warn on microSD, recommend NVMe |
+| Undo/redo for file ops | P1 | 3 days | 🔴 Not started | Beyond Git |
+| Keyboard shortcuts | P1 | 2 days | 🔴 Not started | Power user UX |
+| File tree search | P1 | 2 days | 🔴 Not started | Find files quickly |
+| Shareable sessions | P2 | 4 days | 🔴 Not started | Collaboration |
+| Dark/light theme toggle | P2 | 1 day | 🔴 Not started | User preference |
+
+**Phase 3 Deliverable**: Developers get IDE-quality experience, can use Ted from VS Code. **Raspberry Pi 5 optimized for education use cases.**
+
+### Phase 4: Backend + Advanced (Weeks 9-12)
+
+**Goal**: Full-stack apps, differentiated features
+
+| Task | Priority | Effort | Status | Notes |
+|------|----------|--------|--------|-------|
+| **PostgreSQL upgrade path** | P0 | 4 days | 🔴 Not started | Docker-based, migrate from SQLite |
+| **Docker detection & management** | P0 | 4 days | 🔴 Not started | Container runtime |
+| Visual editing | P1 | 2 weeks | 🔴 Not started | Click-to-edit UI |
+| GitHub Actions bot | P2 | 3 days | 🔴 Not started | `/ted` in PR comments |
+| Plugin system | P2 | 1 week | 🔴 Not started | User extensions |
+| Figma import | P3 | 1 week | 🔴 Not started | Design-to-code |
+| Domain purchase flow | P3 | 4 days | 🔴 Not started | Affiliate integration |
+
+**Phase 4 Deliverable**: Full-stack apps with PostgreSQL, visual editing for non-coders.
+
+### Phase 5: Distribution + Polish (Weeks 13-16)
+
+**Goal**: Easy installation, professional packaging
+
+| Task | Priority | Effort | Status | Notes |
+|------|----------|--------|--------|-------|
+| macOS DMG packaging | P0 | 2 days | 🔴 Not started | Signed + notarized |
+| Windows installer | P0 | 2 days | 🔴 Not started | MSI/NSIS |
+| Linux AppImage | P1 | 1 day | 🔴 Not started | Universal Linux |
+| Auto-update for Teddy | P1 | 3 days | 🔴 Not started | Electron auto-updater |
+| Homebrew formula | P2 | 1 day | 🔴 Not started | `brew install ted` |
+| Multi-agent orchestration | P2 | 1 week | 🔴 Not started | Parallel agents |
+| ted_core library extraction | P3 | 2 weeks | 🔴 Not started | Eliminate subprocess overhead |
+
+**Phase 5 Deliverable**: One-click install on all platforms, auto-updates.
+
+### Share Flow Architecture
+
+The "Grandma Test" flow:
 ```
 1. "Create a blog about home gardening"
 2. Teddy builds it locally, auto-starts preview
@@ -267,19 +634,6 @@ The complete flow:
 5. Send link to friends (no more "localhost:3000" mistakes!)
 6. Click "Go Live" → Pick/buy domain → Deployed
 ```
-
-| Task | Priority | Effort | Notes |
-|------|----------|--------|-------|
-| Dev server auto-detection | P0 | 2 days | Detect Vite/Next.js/etc, auto-start |
-| Cloudflare Tunnel integration | P0 | 3 days | Embed cloudflared binary, manage tunnels |
-| Share Link UI | P0 | 2 days | One-click share, copy link, QR code |
-| teddy.rocks subdomain service | P1 | 4 days | Cloudflare Workers + KV routing |
-| Permanent free hosting | P1 | 3 days | Static deploy to CF Pages (free tier) |
-| Vercel deploy integration | P1 | 3 days | OAuth + deploy API |
-| Netlify deploy integration | P2 | 2 days | Alternative option |
-| Cloudflare Pages deploy | P2 | 2 days | Another free option |
-| Domain availability check | P2 | 2 days | Cloudflare Registrar API |
-| Domain purchase flow | P3 | 4 days | Buy + auto-configure DNS (affiliate) |
 
 #### teddy.rocks Subdomain Service
 
@@ -306,7 +660,7 @@ For permanent deploys:
 - Free tier: `myapp.teddy.rocks` → CF Pages static hosting
 - Custom domain: User buys via Cloudflare Registrar (affiliate link)
 
-#### Share UI Flow
+#### Share UI Design
 
 ```
 ┌─────────────────────────────────────────┐
@@ -327,57 +681,66 @@ For permanent deploys:
 └─────────────────────────────────────────┘
 ```
 
-### Phase 6: Advanced Features (Weeks 15-20)
-
-**Goal**: Differentiated capabilities
-
-| Task | Priority | Effort | Notes |
-|------|----------|--------|-------|
-| MCP protocol support | P1 | 5 days | External tool ecosystem |
-| Multi-agent orchestration | P2 | 1 week | Parallel agents |
-| Collaborative mode | P2 | 1 week | Multiple users |
-| Plugin system | P2 | 1 week | User extensions |
-| ted_core library extraction | P3 | 2 weeks | Eliminate subprocess overhead |
-
-### Phase 7: Distribution (Ongoing)
-
-**Goal**: Easy installation and updates
-
-| Task | Priority | Effort | Notes |
-|------|----------|--------|-------|
-| macOS DMG packaging | P0 | 2 days | Signed + notarized |
-| Windows installer | P0 | 2 days | MSI/NSIS |
-| Linux AppImage | P1 | 1 day | Universal Linux |
-| Auto-update for Teddy | P1 | 3 days | Electron auto-updater |
-| Homebrew formula | P2 | 1 day | `brew install ted` |
-
 ---
 
-## Part 6: Success Metrics
+## Part 8: Success Metrics
+
+### The "2010 Dell Benchmark" - Mandatory Testing
+Every release MUST pass these tests on the benchmark machine:
+
+**Benchmark Hardware**: 2010 Dell OptiPlex
+- Intel Core 2 Duo / Core i3 (2-4 cores)
+- 16GB DDR3 RAM (upgraded)
+- 240GB SSD (upgraded)
+- Integrated graphics
+
+**Required Tests**:
+- [ ] Teddy launches in <10 seconds
+- [ ] Hardware detection correctly identifies as "Ancient" tier
+- [ ] Shows appropriate upgrade suggestions
+- [ ] Ollama + qwen2.5-coder:1.5b installs successfully
+- [ ] Can build a simple blog (single page with form)
+- [ ] AI responses complete in <90 seconds
+- [ ] Preview launches and refreshes
+- [ ] Can make 3 iterative changes without crashing
+- [ ] Memory usage stays under 12GB throughout session
+- [ ] No background processes consume CPU when idle
+
+**Pass Criteria**: 9/10 tests pass. If <9, release is BLOCKED until fixed.
 
 ### Short-term (1 month)
+- [ ] Phase 1 complete: SQLite, Diff view, OpenRouter, Hardware detection working
 - [ ] Teddy works end-to-end on all 3 platforms
+- [ ] **Passes 2010 Dell Benchmark (9/10 tests)**
 - [ ] Hardware detection correctly identifies 90% of systems
-- [ ] Model recommendations feel appropriate to users
+- [ ] Published "The $150 Coding PC" build guide
 - [ ] 50+ GitHub stars
 
 ### Medium-term (3 months)
+- [ ] Phase 2 complete: Deploy, MCP, sharing, ARM64 builds working
 - [ ] 5+ LLM providers supported
-- [ ] Supabase integration working
 - [ ] One-click deploy to Vercel
+- [ ] **2010 Dell Benchmark maintained across all updates**
+- [ ] **Raspberry Pi 5 passes UltraTiny tier tests**
+- [ ] Community testing on 10+ different ancient hardware configs
+- [ ] Published "The $125 Raspberry Pi AI Coding Computer" guide
 - [ ] 500+ GitHub stars
-- [ ] 100+ active users
+- [ ] 100+ active users (20%+ on "Ancient", "Tiny", or "UltraTiny" tier)
 
 ### Long-term (6 months)
+- [ ] Phase 4 complete: PostgreSQL, visual editing
 - [ ] Feature parity with Lovable core features
 - [ ] MCP ecosystem compatibility
+- [ ] **Every ancient tier feature maintains <90s response time on benchmark**
+- [ ] **Raspberry Pi optimizations complete (thermal, power-aware, minimal UI)**
 - [ ] 2000+ GitHub stars
 - [ ] Community-contributed caps
-- [ ] Self-sustaining open source project
+- [ ] Documentary evidence: "I built my first app on a $150 PC" stories
+- [ ] At least one school/classroom using Ted/Teddy on Raspberry Pi
 
 ---
 
-## Part 7: Technical Debt to Address
+## Part 9: Technical Debt to Address
 
 ### High Priority
 1. **Type safety across IPC** - Shared types between Electron main/renderer
@@ -399,7 +762,7 @@ For permanent deploys:
 
 ---
 
-## Part 8: Sustainability Model
+## Part 10: Sustainability Model
 
 ### Philosophy
 
@@ -452,7 +815,7 @@ Teddy: Free. Open source. Runs on your hardware. Funded by vibes and affiliate l
 
 ---
 
-## Part 9: Blackman AI Integration (Optional Cloud Provider)
+## Part 11: Blackman AI Integration (Optional Cloud Provider)
 
 Ted/Teddy is local-first, but users who want cloud models have options.
 
@@ -585,8 +948,209 @@ The ultimate success metric: Can a non-technical person do this?
 
 If any step requires technical knowledge, we've failed.
 
+**Hardware requirement for Grandma Test**: Must work on a $150 refurbished 2010 Dell OptiPlex with 16GB RAM and SSD. If Grandma can't afford a new computer, she can use an old one.
+
+---
+
+## Appendix D: The 2010 Dell Benchmark - Our Commitment
+
+### Why This Matters
+
+Every other AI coding assistant assumes users have:
+- Modern MacBook Pros ($2000+)
+- High-speed internet for cloud APIs
+- Money for subscriptions ($20-200/month)
+- Technical knowledge to set up dev environments
+
+**We refuse to make these assumptions.**
+
+### The Commitment
+
+1. **We will acquire and maintain a real 2010 Dell OptiPlex** as our benchmark test machine
+2. **Every release will be tested on this machine** before shipping
+3. **Performance regressions on ancient hardware block releases** just like security issues
+4. **We will publish video evidence** of Teddy working on this hardware
+5. **We will help users acquire and upgrade old hardware** with detailed guides
+
+### The "$150 Coding PC" Build Guide (Future)
+
+**Where to buy**:
+- eBay, Craigslist, Facebook Marketplace
+- Search: "Dell OptiPlex 2010-2015" or "HP EliteDesk 2010-2015"
+- Target price: $50-100
+
+**Required upgrades** (do-it-yourself friendly):
+1. **RAM to 16GB** ($30-40 used DDR3)
+   - YouTube tutorial: "How to upgrade Dell OptiPlex RAM"
+   - Tools needed: Just your hands (no screws)
+   - Difficulty: 1/10
+
+2. **SSD 240GB** ($25-35)
+   - YouTube tutorial: "Replace HDD with SSD in Dell OptiPlex"
+   - Tools needed: Screwdriver
+   - Difficulty: 2/10
+
+**Total cost**: $105-175 for a fully functional AI coding computer
+
+**What you can build on it**:
+- Personal blogs and portfolios
+- Small business websites
+- To-do lists and productivity apps
+- Recipe sites, photo galleries
+- Simple e-commerce stores
+- Learning projects
+
+**What you CAN'T build** (upgrade needed):
+- Complex enterprise software
+- Real-time multiplayer games
+- Large-scale data processing apps
+- Anything requiring 7b+ models
+
+### The Philosophy
+
+This isn't about being cheap. It's about **accessibility**.
+
+- Students in developing countries
+- Retirees on fixed incomes
+- People who lost everything and are rebuilding
+- Teachers in underfunded schools
+- Anyone who deserves a chance to create
+
+If we can run on a $150 computer, we remove the hardware barrier entirely. The only limit becomes imagination.
+
+### Inspiration: The Raspberry Pi Ethos
+
+The Raspberry Pi Foundation proved that $35 computers could change education globally. We're doing the same for AI-assisted coding.
+
+**Their philosophy**: "A computer for everyone, regardless of means."
+**Our philosophy**: "AI coding assistance for everyone, regardless of hardware."
+
+---
+
+---
+
+## Appendix E: The "$125 Raspberry Pi AI Coding Computer" (Future)
+
+### Why Raspberry Pi Complements the 2010 Dell
+
+The 2010 Dell proves we support **anyone with an old PC**.
+The Raspberry Pi 5 proves we support **anyone, anywhere, with minimal hardware**.
+
+**Different strengths**:
+
+| Feature | 2010 Dell OptiPlex | Raspberry Pi 5 |
+|---------|-------------------|----------------|
+| **Cost** | $105-175 | $125 |
+| **Performance** | Better (x86 optimized) | Good enough (ARM) |
+| **Power draw** | 65-90W | 5-10W |
+| **Size** | Desktop tower | Credit card |
+| **Availability** | eBay/local | Global shipping |
+| **Education use** | One per classroom | One per student |
+| **Maker integration** | No GPIO | GPIO for robotics/IoT |
+| **Always-on viability** | High power cost | Perfect (low power) |
+| **International shipping** | Expensive/difficult | Easy/cheap |
+
+### The Build Guide
+
+**What to buy**:
+1. **Raspberry Pi 5 8GB** - $80 ([raspberrypi.com](https://raspberrypi.com))
+2. **NVMe HAT** - $15 (Argon ONE M.2, PiNVMe, Geekworm X1001, etc.)
+3. **256GB NVMe SSD** - $30 (Any M.2 2280 drive)
+4. **27W USB-C Power Supply** - Included or $12 official
+5. **Active cooling** - Optional but recommended ($10-15)
+6. **Case** - Optional, many NVMe HATs include cases
+
+**Total**: $125-140 for a fully functional AI coding computer
+
+**Why NVMe over microSD**:
+- Model loading: 10-15 seconds vs 60-90 seconds
+- File operations: Near-instant vs laggy
+- Reliability: SSDs don't corrupt like SD cards
+- Cost: Only $15 more for HAT + $30 for SSD
+
+**Assembly** (30 minutes, no soldering):
+1. Attach NVMe HAT to Pi 5 GPIO header
+2. Install M.2 SSD into HAT
+3. Flash Raspberry Pi OS to SSD
+4. Boot and install Ollama
+5. Install Teddy
+
+### Education Use Cases
+
+**Why classrooms love Raspberry Pi**:
+- Many schools already have Pi 5s for teaching
+- Students can take them home (portable)
+- Low power = safe to leave running
+- GPIO integration for robotics projects
+- Teach "AI + hardware" in one device
+
+**Example curriculum integration**:
+```
+Week 1-2: Build a personal website with Teddy
+Week 3-4: Add LED status lights via GPIO (build in progress = blink)
+Week 5-6: Create a temperature sensor dashboard
+Week 7-8: Build a smart home control panel
+```
+
+**The magic**: Same hardware teaches web development AND physical computing.
+
+### What You Can Build
+
+**Perfect for**:
+- Learning to code (Python, JavaScript, HTML/CSS)
+- Personal websites and blogs
+- School projects
+- Maker projects with UI (weather station, smart mirror, etc.)
+- Always-on local tools (home automation dashboard)
+- Offline documentation sites
+
+**Not ideal for**:
+- Professional development work (upgrade to Ancient/Tiny tier)
+- Complex multi-page apps (need more RAM/CPU)
+- Large codebases (context too limited)
+
+### The Developing Country Angle
+
+**Shipping a desktop PC internationally**: $100-300 in shipping
+**Shipping a Raspberry Pi 5**: $10-30
+
+For students in developing countries:
+- Pi 5 is easier to import (small, light)
+- Lower customs duties (cheaper declared value)
+- Can run on solar power (5-10W)
+- Works with any HDMI monitor/TV
+- Can be powered by laptop USB-C charger
+
+### Performance Expectations
+
+**With qwen2.5-coder:1.5b (Q3_K_M quantization)**:
+- Token generation: 5-15 tokens/sec
+- Simple request: 15-40 seconds
+- Complex request: 40-90 seconds
+- Memory usage: 3-4GB (plenty of headroom)
+
+**UX adaptations**:
+```
+🎓 Raspberry Pi Detected (Education Mode)
+
+Your Pi can build: Simple apps, learning projects, maker tools
+Expected AI response: 20-40 seconds
+Pro tip: While waiting, review your code or plan your next feature!
+
+[Why is it slow?] [Upgrade to faster hardware ($150 Dell)]
+```
+
+### The Marketing Story
+
+**2010 Dell**: "We support the hardware you already have"
+**Raspberry Pi 5**: "We support the hardware educators trust"
+
+Together: **"AI coding for everyone, on any budget, anywhere in the world"**
+
 ---
 
 *This roadmap is a living document. Update as priorities shift.*
 
 *Built with love and spite for the VC-industrial complex.*
+
+*Tested on a 2010 Dell OptiPlex and Raspberry Pi 5 because everyone deserves to build software.*

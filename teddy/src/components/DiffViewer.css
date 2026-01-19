@@ -1,0 +1,286 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/* Copyright (C) 2025 Blackman Artificial Intelligence Technologies Inc. */
+
+.diff-viewer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-primary, #1e1e1e);
+}
+
+.diff-viewer-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  background: var(--bg-primary, #1e1e1e);
+}
+
+.diff-viewer-empty .empty-state {
+  text-align: center;
+  color: var(--text-secondary, #888);
+}
+
+.diff-viewer-empty .empty-icon {
+  font-size: 3rem;
+  margin-bottom: 1rem;
+  color: var(--success, #4caf50);
+}
+
+.diff-viewer-empty .empty-hint {
+  font-size: 0.85rem;
+  max-width: 300px;
+  margin-top: 0.5rem;
+}
+
+/* Header */
+.diff-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  background: var(--bg-secondary, #252526);
+  border-bottom: 1px solid var(--border-color, #3c3c3c);
+}
+
+.diff-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  color: var(--text-primary, #e0e0e0);
+}
+
+.diff-count {
+  background: var(--warning, #ff9800);
+  color: var(--bg-primary, #1e1e1e);
+  padding: 0.15rem 0.5rem;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 0.8rem;
+}
+
+.diff-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* Content layout */
+.diff-content {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* Change list */
+.diff-list {
+  width: 280px;
+  min-width: 200px;
+  background: var(--bg-secondary, #252526);
+  border-right: 1px solid var(--border-color, #3c3c3c);
+  overflow-y: auto;
+}
+
+.diff-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.6rem 0.75rem;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border-color, #3c3c3c);
+  transition: background-color 0.15s;
+}
+
+.diff-item:hover {
+  background: var(--bg-hover, #2a2a2a);
+}
+
+.diff-item.selected {
+  background: var(--bg-active, #37373d);
+  border-left: 3px solid var(--accent, #007acc);
+  padding-left: calc(0.75rem - 3px);
+}
+
+.diff-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  overflow: hidden;
+  flex: 1;
+}
+
+.diff-item-path {
+  font-size: 0.8rem;
+  color: var(--text-secondary, #888);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.diff-item-actions {
+  display: flex;
+  gap: 0.25rem;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.diff-item:hover .diff-item-actions,
+.diff-item.selected .diff-item-actions {
+  opacity: 1;
+}
+
+/* Change badges */
+.change-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.change-badge.change-create {
+  background: var(--success, #4caf50);
+  color: white;
+}
+
+.change-badge.change-edit {
+  background: var(--warning, #ff9800);
+  color: var(--bg-primary, #1e1e1e);
+}
+
+.change-badge.change-delete {
+  background: var(--danger, #f44336);
+  color: white;
+}
+
+/* Action buttons */
+.btn-accept {
+  color: var(--success, #4caf50) !important;
+}
+
+.btn-accept:hover {
+  background: rgba(76, 175, 80, 0.2) !important;
+}
+
+.btn-reject {
+  color: var(--danger, #f44336) !important;
+}
+
+.btn-reject:hover {
+  background: rgba(244, 67, 54, 0.2) !important;
+}
+
+/* Editor container */
+.diff-editor-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.diff-editor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 1rem;
+  background: var(--bg-secondary, #252526);
+  border-bottom: 1px solid var(--border-color, #3c3c3c);
+}
+
+.diff-editor-title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.diff-editor-path {
+  font-family: monospace;
+  font-size: 0.85rem;
+  color: var(--text-primary, #e0e0e0);
+}
+
+.diff-editor-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.diff-editor-content {
+  flex: 1;
+  overflow: hidden;
+}
+
+.diff-editor-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-secondary, #888);
+}
+
+/* Delete preview */
+.diff-delete-preview {
+  padding: 1rem;
+  color: var(--text-secondary, #888);
+}
+
+.diff-delete-preview p {
+  margin-bottom: 1rem;
+  color: var(--danger, #f44336);
+}
+
+.diff-delete-preview pre {
+  background: var(--bg-secondary, #252526);
+  padding: 1rem;
+  border-radius: 4px;
+  overflow: auto;
+  max-height: 400px;
+  font-size: 0.85rem;
+  color: var(--text-primary, #e0e0e0);
+}
+
+/* Button styles */
+.btn-primary {
+  background: var(--accent, #007acc);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.btn-primary:hover {
+  background: var(--accent-hover, #0098ff);
+}
+
+.btn-danger {
+  background: var(--danger, #f44336);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.btn-danger:hover {
+  background: #ff5252;
+}
+
+.btn-small {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.8rem;
+}
+
+.btn-icon {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0.25rem 0.4rem;
+  border-radius: 3px;
+  font-size: 0.9rem;
+  transition: background-color 0.15s;
+}
+
+.btn-icon:hover {
+  background: var(--bg-hover, #2a2a2a);
+}

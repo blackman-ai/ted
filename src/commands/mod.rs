@@ -9,6 +9,9 @@
 //! 1. `./.ted/commands/` - Project-local commands
 //! 2. `~/.ted/commands/` - User-global commands
 
+pub mod mcp;
+pub mod system;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;

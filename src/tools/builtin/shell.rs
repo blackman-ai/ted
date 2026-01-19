@@ -457,25 +457,9 @@ mod tests {
         assert!(result.output_text().contains("blocked"));
     }
 
-    #[tokio::test]
-    async fn test_blocks_echo_for_communication() {
-        let temp_dir = TempDir::new().unwrap();
-        let tool = ShellTool::new();
-        let context = create_test_context(&temp_dir);
-
-        // Should block echo commands that look like user communication
-        let result = tool
-            .execute(
-                "test-id".to_string(),
-                serde_json::json!({"command": "echo \"Which framework would you prefer?\""}),
-                &context,
-            )
-            .await
-            .unwrap();
-
-        assert!(result.is_error());
-        assert!(result.output_text().contains("Do NOT use echo"));
-    }
+    // Note: test_blocks_echo_for_communication was removed because the blocking behavior
+    // was intentionally removed (see comment in execute() around line 103).
+    // Echo blocking caused more issues than it solved.
 
     #[tokio::test]
     async fn test_allows_legitimate_echo() {

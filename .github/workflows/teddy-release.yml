@@ -1,0 +1,146 @@
+name: Teddy Release
+
+on:
+  push:
+    tags:
+      - 'teddy-v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  # Build Teddy for all platforms including ARM64
+  build:
+    name: Build Teddy ${{ matrix.platform }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x64
+          - platform: linux
+            os: ubuntu-latest
+            arch: x64
+            rust_target: x86_64-unknown-linux-gnu
+          # Linux ARM64 (Raspberry Pi 5)
+          - platform: linux
+            os: ubuntu-latest
+            arch: arm64
+            rust_target: aarch64-unknown-linux-gnu
+            cross: true
+          # macOS x64
+          - platform: mac
+            os: macos-latest
+            arch: x64
+            rust_target: x86_64-apple-darwin
+          # macOS ARM64
+          - platform: mac
+            os: macos-latest
+            arch: arm64
+            rust_target: aarch64-apple-darwin
+          # Windows x64
+          - platform: windows
+            os: windows-latest
+            arch: x64
+            rust_target: x86_64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.rust_target }}
+
+      # Install cross for ARM64 cross-compilation
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      # Build Rust CLI
+      - name: Build Rust CLI (cross-compile)
+        if: matrix.cross
+        run: |
+          cd ${{ github.workspace }}
+          cross build --release --target ${{ matrix.rust_target }}
+          mkdir -p target/release
+          cp target/${{ matrix.rust_target }}/release/ted target/release/ted
+        shell: bash
+
+      - name: Build Rust CLI (native)
+        if: ${{ !matrix.cross }}
+        run: |
+          cd ${{ github.workspace }}
+          cargo build --release --target ${{ matrix.rust_target }}
+          mkdir -p target/release
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            cp target/${{ matrix.rust_target }}/release/ted.exe target/release/ted.exe
+          else
+            cp target/${{ matrix.rust_target }}/release/ted target/release/ted
+          fi
+        shell: bash
+
+      # Install dependencies and build Teddy
+      - name: Install dependencies
+        working-directory: teddy
+        run: npm install
+
+      - name: Build Teddy
+        working-directory: teddy
+        run: |
+          npm run build -- --${{ matrix.platform }} --${{ matrix.arch }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: teddy-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            teddy/release/*.deb
+            teddy/release/*.AppImage
+            teddy/release/*.dmg
+            teddy/release/*.zip
+            teddy/release/*.exe
+          retention-days: 5
+
+  # Create GitHub Release
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name "*.deb" -o -name "*.AppImage" -o -name "*.dmg" -o -name "*.zip" -o -name "*.exe" \) -exec cp {} release/ \;
+          cd release
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref, '-beta') || contains(github.ref, '-alpha') || contains(github.ref, '-rc') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

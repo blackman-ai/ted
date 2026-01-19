@@ -21,6 +21,7 @@ use futures::StreamExt;
 
 use ted::caps::{CapLoader, CapResolver};
 use ted::cli::{ChatArgs, Cli, Commands, UpdateArgs};
+use ted::commands;
 use ted::config::Settings;
 use ted::context::{ContextManager, SessionId};
 use ted::error::{ApiError, Result, TedError};
@@ -30,7 +31,7 @@ use ted::llm::provider::{
     CompletionRequest, ContentBlockDelta, ContentBlockResponse, LlmProvider, StopReason,
     StreamEvent,
 };
-use ted::llm::providers::{AnthropicProvider, OllamaProvider};
+use ted::llm::providers::{AnthropicProvider, OllamaProvider, OpenRouterProvider};
 use ted::plans::PlanStore;
 use ted::tools::{ToolContext, ToolExecutor, ToolResult};
 use ted::update;
@@ -96,6 +97,12 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Update(args)) => {
             run_update_command(args).await?;
+        }
+        Some(Commands::System(args)) => {
+            commands::system::execute(&args, &cli.format)?;
+        }
+        Some(Commands::Mcp(args)) => {
+            commands::mcp::execute(&args).await?;
         }
         Some(Commands::Run(args)) => {
             run_custom_command(args)?;
@@ -264,6 +271,19 @@ async fn run_chat(args: ChatArgs, mut settings: Settings) -> Result<()> {
             }
             Box::new(ollama_provider)
         }
+        "openrouter" => {
+            let api_key = settings.get_openrouter_api_key().ok_or_else(|| {
+                TedError::Config(
+                    "No OpenRouter API key found. Set OPENROUTER_API_KEY env var or run 'ted settings'.".to_string(),
+                )
+            })?;
+            let provider = if let Some(ref base_url) = settings.providers.openrouter.base_url {
+                OpenRouterProvider::with_base_url(api_key, base_url)
+            } else {
+                OpenRouterProvider::new(api_key)
+            };
+            Box::new(provider)
+        }
         _ => {
             // Get API key (anthropic is the default)
             let api_key = settings.get_anthropic_api_key().ok_or_else(|| {
@@ -291,6 +311,7 @@ async fn run_chat(args: ChatArgs, mut settings: Settings) -> Result<()> {
         .or_else(|| merged_cap.preferred_model().map(|s| s.to_string()))
         .unwrap_or_else(|| match provider_name.as_str() {
             "ollama" => settings.providers.ollama.default_model.clone(),
+            "openrouter" => settings.providers.openrouter.default_model.clone(),
             _ => settings.providers.anthropic.default_model.clone(),
         });
 
@@ -1581,6 +1602,17 @@ async fn run_ask(args: ted::cli::AskArgs, settings: Settings) -> Result<()> {
             ollama_provider.health_check().await?;
             Box::new(ollama_provider)
         }
+        "openrouter" => {
+            let api_key = settings
+                .get_openrouter_api_key()
+                .ok_or_else(|| TedError::Config("No OpenRouter API key found.".to_string()))?;
+            let provider = if let Some(ref base_url) = settings.providers.openrouter.base_url {
+                OpenRouterProvider::with_base_url(api_key, base_url)
+            } else {
+                OpenRouterProvider::new(api_key)
+            };
+            Box::new(provider)
+        }
         _ => {
             let api_key = settings
                 .get_anthropic_api_key()
@@ -1591,6 +1623,7 @@ async fn run_ask(args: ted::cli::AskArgs, settings: Settings) -> Result<()> {
 
     let model = args.model.unwrap_or_else(|| match provider_name.as_str() {
         "ollama" => settings.providers.ollama.default_model.clone(),
+        "openrouter" => settings.providers.openrouter.default_model.clone(),
         _ => settings.providers.anthropic.default_model.clone(),
     });
 

@@ -15,6 +15,7 @@ export interface TedRunnerOptions {
   model?: string;           // Model to use
   caps?: string[];          // Active caps
   historyFile?: string;     // Path to conversation history JSON file
+  reviewMode?: boolean;     // Review mode - emit file events but don't execute modifications
 }
 
 /**
@@ -122,27 +123,68 @@ export class TedRunner extends EventEmitter {
    * Get the path to the Ted binary
    */
   private getTedBinaryPath(): string {
+    const fs = require('fs');
+
+    console.log('[TED_RUNNER] getTedBinaryPath called');
+    console.log('[TED_RUNNER] __dirname:', __dirname);
+    console.log('[TED_RUNNER] NODE_ENV:', process.env.NODE_ENV);
+    console.log('[TED_RUNNER] tedBinaryPath option:', this.options.tedBinaryPath);
+
     if (this.options.tedBinaryPath) {
+      console.log('[TED_RUNNER] Using provided tedBinaryPath:', this.options.tedBinaryPath);
       return this.options.tedBinaryPath;
     }
 
     // In development: use cargo-built binary from parent ted repo
     // __dirname is out/main/ so we go up to teddy/, then up to ted/
-    if (process.env.NODE_ENV === 'development') {
+    // Note: Also check for Electron's app.isPackaged equivalent
+    const isProduction = process.env.NODE_ENV === 'production' ||
+                         (process.resourcesPath && process.resourcesPath.includes('.app'));
+
+    console.log('[TED_RUNNER] isProduction:', isProduction);
+
+    if (!isProduction) {
       // Try debug build first (faster compilation), fall back to release
       const debugBinary = path.join(__dirname, '../../../target/debug/ted');
       const releaseBinary = path.join(__dirname, '../../../target/release/ted');
-      const fs = require('fs');
+
+      console.log('[TED_RUNNER] Checking debug binary:', debugBinary);
+      console.log('[TED_RUNNER] Debug binary exists:', fs.existsSync(debugBinary));
+
       if (fs.existsSync(debugBinary)) {
+        console.log('[TED_RUNNER] Using debug binary');
         return debugBinary;
       }
-      return releaseBinary;
+
+      console.log('[TED_RUNNER] Checking release binary:', releaseBinary);
+      console.log('[TED_RUNNER] Release binary exists:', fs.existsSync(releaseBinary));
+
+      if (fs.existsSync(releaseBinary)) {
+        console.log('[TED_RUNNER] Using release binary');
+        return releaseBinary;
+      }
+
+      // Neither exists, fall through to PATH
+      console.log('[TED_RUNNER] No local binary found, falling back to PATH');
     }
 
-    // In production: use bundled binary from resources
+    // In production: try bundled binary first, fall back to PATH
     const resourcePath = process.resourcesPath || path.join(__dirname, '../../');
     const binaryName = process.platform === 'win32' ? 'ted.exe' : 'ted';
-    return path.join(resourcePath, 'bin', binaryName);
+    const bundledPath = path.join(resourcePath, 'bin', binaryName);
+
+    console.log('[TED_RUNNER] resourcesPath:', process.resourcesPath);
+    console.log('[TED_RUNNER] bundledPath:', bundledPath);
+    console.log('[TED_RUNNER] bundledPath exists:', fs.existsSync(bundledPath));
+
+    if (fs.existsSync(bundledPath)) {
+      console.log('[TED_RUNNER] Using bundled binary');
+      return bundledPath;
+    }
+
+    // Fall back to ted in PATH (for development/testing when binary not bundled)
+    console.log('[TED_RUNNER] Using ted from PATH');
+    return 'ted';
   }
 
   /**
@@ -172,6 +214,11 @@ export class TedRunner extends EventEmitter {
     // Add history file if provided
     if (this.options.historyFile) {
       args.push('--history', this.options.historyFile);
+    }
+
+    // Add review mode flag if enabled
+    if (this.options.reviewMode) {
+      args.push('--review-mode');
     }
 
     // Add the prompt as the final argument

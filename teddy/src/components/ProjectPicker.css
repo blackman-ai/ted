@@ -55,6 +55,98 @@
   color: var(--text-secondary);
 }
 
+.recent-projects {
+  margin-bottom: 32px;
+  text-align: left;
+}
+
+.recent-projects h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.recent-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.recent-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  margin-bottom: 4px;
+  background: var(--surface-color);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.recent-item:hover {
+  background: var(--surface-hover);
+  border-color: var(--primary-color);
+}
+
+.recent-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+  flex: 1;
+}
+
+.recent-name {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.recent-path {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recent-date {
+  font-size: 11px;
+  color: var(--text-tertiary, #666);
+}
+
+.recent-remove {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 18px;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+
+.recent-item:hover .recent-remove {
+  opacity: 1;
+}
+
+.recent-remove:hover {
+  background: var(--danger-bg, rgba(255, 0, 0, 0.1));
+  color: var(--danger-color, #ff4444);
+}
+
 .picker-footer {
   padding-top: 32px;
   border-top: 1px solid var(--border-color);

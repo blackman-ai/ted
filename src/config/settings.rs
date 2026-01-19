@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::error::Result;
+use crate::hardware::{HardwareTier, SystemProfile};
 
 /// Main settings structure, stored in ~/.ted/settings.json
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -28,6 +29,10 @@ pub struct Settings {
     /// Appearance settings
     #[serde(default)]
     pub appearance: AppearanceConfig,
+
+    /// Hardware profile and tier information
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hardware: Option<HardwareConfig>,
 }
 
 /// Configuration for LLM providers
@@ -40,6 +45,10 @@ pub struct ProvidersConfig {
     /// Ollama local model configuration
     #[serde(default)]
     pub ollama: OllamaConfig,
+
+    /// OpenRouter configuration (100+ models via single API)
+    #[serde(default)]
+    pub openrouter: OpenRouterConfig,
 
     /// OpenAI configuration (future)
     #[serde(default)]
@@ -80,6 +89,26 @@ pub struct OllamaConfig {
     /// Default model to use with Ollama
     #[serde(default = "default_ollama_model")]
     pub default_model: String,
+}
+
+/// OpenRouter configuration (100+ models via single API)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenRouterConfig {
+    /// API key (if stored directly, not recommended)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+
+    /// Environment variable name for API key
+    #[serde(default = "default_openrouter_api_key_env")]
+    pub api_key_env: String,
+
+    /// Default model to use
+    #[serde(default = "default_openrouter_model")]
+    pub default_model: String,
+
+    /// Base URL for API (for custom endpoints)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
 }
 
 /// OpenAI configuration (placeholder for future)
@@ -158,6 +187,25 @@ pub struct AppearanceConfig {
     pub theme: String,
 }
 
+/// Hardware-specific configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HardwareConfig {
+    /// Detected hardware tier
+    pub tier: HardwareTier,
+
+    /// Override detected tier (user preference)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tier_override: Option<HardwareTier>,
+
+    /// Enable hardware-adaptive behavior
+    #[serde(default = "default_true")]
+    pub adaptive_mode: bool,
+
+    /// Last hardware detection timestamp
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_detection: Option<String>,
+}
+
 // Default value functions
 fn default_anthropic_api_key_env() -> String {
     "ANTHROPIC_API_KEY".to_string()
@@ -173,6 +221,14 @@ fn default_ollama_base_url() -> String {
 
 fn default_ollama_model() -> String {
     "qwen2.5-coder:14b".to_string()
+}
+
+fn default_openrouter_api_key_env() -> String {
+    "OPENROUTER_API_KEY".to_string()
+}
+
+fn default_openrouter_model() -> String {
+    "anthropic/claude-3.5-sonnet".to_string()
 }
 
 fn default_caps() -> Vec<String> {
@@ -230,6 +286,17 @@ impl Default for OllamaConfig {
         Self {
             base_url: default_ollama_base_url(),
             default_model: default_ollama_model(),
+        }
+    }
+}
+
+impl Default for OpenRouterConfig {
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            api_key_env: default_openrouter_api_key_env(),
+            default_model: default_openrouter_model(),
+            base_url: None,
         }
     }
 }
@@ -317,6 +384,14 @@ impl Settings {
             .or_else(|| self.providers.anthropic.api_key.clone())
     }
 
+    /// Get the API key for OpenRouter, checking env var first
+    pub fn get_openrouter_api_key(&self) -> Option<String> {
+        // Priority: env var > config file
+        std::env::var(&self.providers.openrouter.api_key_env)
+            .ok()
+            .or_else(|| self.providers.openrouter.api_key.clone())
+    }
+
     /// Get the ted home directory (~/.ted)
     pub fn ted_home() -> PathBuf {
         dirs::home_dir()
@@ -367,6 +442,83 @@ impl Settings {
         }
 
         Ok(())
+    }
+
+    /// Detect hardware and update configuration
+    pub fn detect_hardware(&mut self) -> Result<()> {
+        let profile = SystemProfile::detect()?;
+        let now = chrono::Utc::now().to_rfc3339();
+
+        self.hardware = Some(HardwareConfig {
+            tier: profile.tier,
+            tier_override: None,
+            adaptive_mode: true,
+            last_detection: Some(now),
+        });
+
+        Ok(())
+    }
+
+    /// Get the effective hardware tier (considering overrides)
+    pub fn effective_tier(&self) -> HardwareTier {
+        if let Some(ref hw) = self.hardware {
+            hw.tier_override.unwrap_or(hw.tier)
+        } else {
+            // Default to Medium if not detected
+            HardwareTier::Medium
+        }
+    }
+
+    /// Apply hardware-adaptive configuration to context settings
+    pub fn apply_hardware_adaptive_config(&mut self) {
+        let tier = self.effective_tier();
+
+        // Only apply if adaptive mode is enabled
+        if let Some(ref hw) = self.hardware {
+            if !hw.adaptive_mode {
+                return;
+            }
+        }
+
+        // Update context config based on tier
+        self.context.max_warm_chunks = tier.max_warm_chunks();
+
+        // Update defaults based on tier
+        self.defaults.max_tokens = tier.max_context_tokens() as u32;
+
+        // For ancient/tiny tiers, prefer local models
+        if matches!(tier, HardwareTier::UltraTiny | HardwareTier::Ancient | HardwareTier::Tiny) {
+            self.defaults.provider = "ollama".to_string();
+            let models = tier.recommended_models();
+            if !models.is_empty() {
+                self.providers.ollama.default_model = models[0].to_string();
+            }
+        }
+    }
+
+    /// Get hardware-specific warnings or recommendations
+    pub fn get_hardware_warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+
+        if let Some(ref hw) = self.hardware {
+            let tier = hw.tier_override.unwrap_or(hw.tier);
+
+            match tier {
+                HardwareTier::UltraTiny => {
+                    warnings.push(
+                        "🎓 Raspberry Pi detected (Education Mode). Expected AI response: 20-40 seconds.".to_string()
+                    );
+                }
+                HardwareTier::Ancient => {
+                    warnings.push(
+                        "🐢 Ancient hardware detected. Expected response time: 30-60 seconds. Consider upgrading RAM or SSD for better performance.".to_string()
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        warnings
     }
 }
 
@@ -626,6 +778,70 @@ mod tests {
         assert_eq!(default_max_warm_chunks(), 100);
         assert_eq!(default_cold_retention_days(), 30);
         assert_eq!(default_theme(), "default");
+    }
+
+    #[test]
+    fn test_effective_tier_with_override() {
+        let mut settings = Settings::default();
+        settings.hardware = Some(HardwareConfig {
+            tier: HardwareTier::Ancient,
+            tier_override: Some(HardwareTier::Small),
+            adaptive_mode: true,
+            last_detection: None,
+        });
+
+        assert_eq!(settings.effective_tier(), HardwareTier::Small);
+    }
+
+    #[test]
+    fn test_effective_tier_without_override() {
+        let mut settings = Settings::default();
+        settings.hardware = Some(HardwareConfig {
+            tier: HardwareTier::Medium,
+            tier_override: None,
+            adaptive_mode: true,
+            last_detection: None,
+        });
+
+        assert_eq!(settings.effective_tier(), HardwareTier::Medium);
+    }
+
+    #[test]
+    fn test_effective_tier_default() {
+        let settings = Settings::default();
+        assert_eq!(settings.effective_tier(), HardwareTier::Medium);
+    }
+
+    #[test]
+    fn test_apply_hardware_adaptive_config() {
+        let mut settings = Settings::default();
+        settings.hardware = Some(HardwareConfig {
+            tier: HardwareTier::Ancient,
+            tier_override: None,
+            adaptive_mode: true,
+            last_detection: None,
+        });
+
+        settings.apply_hardware_adaptive_config();
+
+        assert_eq!(settings.context.max_warm_chunks, 10);
+        assert_eq!(settings.defaults.max_tokens, 1024);
+        assert_eq!(settings.defaults.provider, "ollama");
+    }
+
+    #[test]
+    fn test_get_hardware_warnings() {
+        let mut settings = Settings::default();
+        settings.hardware = Some(HardwareConfig {
+            tier: HardwareTier::Ancient,
+            tier_override: None,
+            adaptive_mode: true,
+            last_detection: None,
+        });
+
+        let warnings = settings.get_hardware_warnings();
+        assert!(!warnings.is_empty());
+        assert!(warnings[0].contains("Ancient hardware"));
     }
 
     #[test]
