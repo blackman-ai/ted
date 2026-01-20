@@ -26,9 +26,11 @@ export function Preview({ projectPath }: PreviewProps) {
   const [detecting, setDetecting] = useState(false);
   const [deploying, setDeploying] = useState(false);
   const [deploymentUrl, setDeploymentUrl] = useState<string | null>(null);
+  const [showDeployMenu, setShowDeployMenu] = useState(false);
   const [sharingTunnel, setSharingTunnel] = useState(false);
   const [tunnelUrl, setTunnelUrl] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const deployMenuRef = useRef<HTMLDivElement>(null);
 
   // Detect project type on mount or when project changes
   useEffect(() => {
@@ -46,6 +48,23 @@ export function Preview({ projectPath }: PreviewProps) {
       setServerOutput(`Server running on port ${globalServerPort}`);
     }
   }, []);
+
+  // Close deploy menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (deployMenuRef.current && !deployMenuRef.current.contains(event.target as Node)) {
+        setShowDeployMenu(false);
+      }
+    };
+
+    if (showDeployMenu) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showDeployMenu]);
 
   // Auto-refresh preview when files change
   useEffect(() => {
@@ -247,6 +266,7 @@ export function Preview({ projectPath }: PreviewProps) {
 
   const deployToVercel = useCallback(async () => {
     setDeploying(true);
+    setShowDeployMenu(false);
     setServerOutput('Preparing deployment to Vercel...');
     setDeploymentUrl(null);
 
@@ -265,6 +285,45 @@ export function Preview({ projectPath }: PreviewProps) {
       const result = await window.teddy.deployVercel({
         projectPath,
         vercelToken: settings.vercelToken,
+      });
+
+      if (result.success && result.url) {
+        setDeploymentUrl(result.url);
+        setServerOutput(`✓ Deployed successfully! Click to open: ${result.url}`);
+      } else {
+        setServerOutput(`✗ Deployment failed: ${result.error || 'Unknown error'}`);
+        alert(`Deployment failed: ${result.error}`);
+      }
+    } catch (err) {
+      console.error('Deployment error:', err);
+      setServerOutput(`✗ Deployment failed: ${err}`);
+      alert(`Deployment failed: ${err}`);
+    } finally {
+      setDeploying(false);
+    }
+  }, [projectPath]);
+
+  const deployToNetlify = useCallback(async () => {
+    setDeploying(true);
+    setShowDeployMenu(false);
+    setServerOutput('Preparing deployment to Netlify...');
+    setDeploymentUrl(null);
+
+    try {
+      // Get settings to retrieve Netlify token
+      const settings = await window.teddy.getSettings();
+
+      if (!settings.netlifyToken) {
+        alert('Please configure your Netlify token in Settings → Deployment tab first');
+        setServerOutput('✗ Deployment failed: No Netlify token configured');
+        return;
+      }
+
+      setServerOutput('Uploading files to Netlify...');
+
+      const result = await window.teddy.deployNetlify({
+        projectPath,
+        netlifyToken: settings.netlifyToken,
       });
 
       if (result.success && result.url) {
@@ -416,14 +475,22 @@ export function Preview({ projectPath }: PreviewProps) {
         >
           {sharingTunnel ? '⏳ Creating...' : tunnelUrl ? '⬛ Stop Share' : '🔗 Share'}
         </button>
-        <button
-          className="btn-primary btn-small"
-          onClick={deployToVercel}
-          title="Deploy to Vercel"
-          disabled={deploying || detecting}
-        >
-          {deploying ? '⏳ Deploying...' : '🚀 Deploy'}
-        </button>
+        <div className="deploy-menu-container" ref={deployMenuRef}>
+          <button
+            className="btn-primary btn-small"
+            onClick={() => setShowDeployMenu(!showDeployMenu)}
+            title="Deploy to cloud"
+            disabled={deploying || detecting}
+          >
+            {deploying ? '⏳ Deploying...' : '🚀 Deploy ▾'}
+          </button>
+          {showDeployMenu && !deploying && (
+            <div className="deploy-dropdown">
+              <button onClick={deployToVercel}>▲ Deploy to Vercel</button>
+              <button onClick={deployToNetlify}>◆ Deploy to Netlify</button>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="preview-content">

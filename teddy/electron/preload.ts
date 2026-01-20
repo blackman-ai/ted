@@ -47,6 +47,7 @@ export interface TedSettings {
   openrouterApiKey: string;
   openrouterModel: string;
   vercelToken: string;
+  netlifyToken: string;
   hardware: HardwareInfo | null;
 }
 
@@ -82,6 +83,31 @@ export interface DeploymentStatus {
   createdAt: number;
 }
 
+export interface NetlifyDeploymentOptions {
+  projectPath: string;
+  netlifyToken: string;
+  siteName?: string;
+  envVars?: Record<string, string>;
+}
+
+export interface NetlifyDeploymentResult {
+  success: boolean;
+  url?: string;
+  deployId?: string;
+  siteId?: string;
+  error?: string;
+}
+
+export interface NetlifyDeploymentStatus {
+  id: string;
+  url: string;
+  state: 'new' | 'pending_review' | 'accepted' | 'building' | 'enqueued' | 'uploading' | 'uploaded' | 'preparing' | 'prepared' | 'processing' | 'processed' | 'ready' | 'error' | 'retrying';
+  siteId: string;
+  siteName: string;
+  createdAt: string;
+  errorMessage?: string;
+}
+
 export interface TeddyAPI {
   // Dialog
   openFolderDialog: () => Promise<string | null>;
@@ -91,6 +117,7 @@ export interface TeddyAPI {
   getProject: () => Promise<{ path: string | null; hasProject: boolean }>;
   getRecentProjects: () => Promise<RecentProject[]>;
   getLastProject: () => Promise<{ path: string; name: string } | null>;
+  clearLastProject: () => Promise<{ success: boolean }>;
   removeRecentProject: (path: string) => Promise<{ success: boolean }>;
   getProjectContext: () => Promise<ProjectContext | null>;
 
@@ -139,10 +166,15 @@ export interface TeddyAPI {
   saveSettings: (settings: TedSettings) => Promise<{ success: boolean }>;
   detectHardware: () => Promise<HardwareInfo>;
 
-  // Deployment
+  // Deployment - Vercel
   deployVercel: (options: DeploymentOptions) => Promise<DeploymentResult>;
   verifyVercelToken: (token: string) => Promise<{ valid: boolean; error?: string }>;
   getVercelDeploymentStatus: (deploymentId: string, token: string) => Promise<DeploymentStatus>;
+
+  // Deployment - Netlify
+  deployNetlify: (options: NetlifyDeploymentOptions) => Promise<NetlifyDeploymentResult>;
+  verifyNetlifyToken: (token: string) => Promise<{ valid: boolean; error?: string }>;
+  getNetlifyDeploymentStatus: (deployId: string, token: string) => Promise<NetlifyDeploymentStatus>;
 
   // Cloudflare Tunnel
   tunnelIsInstalled: () => Promise<{ installed: boolean }>;
@@ -185,6 +217,7 @@ const api: TeddyAPI = {
   getProject: () => ipcRenderer.invoke('project:get'),
   getRecentProjects: () => ipcRenderer.invoke('project:getRecent'),
   getLastProject: () => ipcRenderer.invoke('project:getLast'),
+  clearLastProject: () => ipcRenderer.invoke('project:clearLast'),
   removeRecentProject: (path: string) => ipcRenderer.invoke('project:removeRecent', path),
   getProjectContext: () => ipcRenderer.invoke('project:getContext'),
 
@@ -223,11 +256,17 @@ const api: TeddyAPI = {
   saveSettings: (settings: TedSettings) => ipcRenderer.invoke('settings:save', settings),
   detectHardware: () => ipcRenderer.invoke('settings:detectHardware'),
 
-  // Deployment
+  // Deployment - Vercel
   deployVercel: (options: DeploymentOptions) => ipcRenderer.invoke('deploy:vercel', options),
   verifyVercelToken: (token: string) => ipcRenderer.invoke('deploy:verifyVercelToken', token),
   getVercelDeploymentStatus: (deploymentId: string, token: string) =>
     ipcRenderer.invoke('deploy:getVercelStatus', deploymentId, token),
+
+  // Deployment - Netlify
+  deployNetlify: (options: NetlifyDeploymentOptions) => ipcRenderer.invoke('deploy:netlify', options),
+  verifyNetlifyToken: (token: string) => ipcRenderer.invoke('deploy:verifyNetlifyToken', token),
+  getNetlifyDeploymentStatus: (deployId: string, token: string) =>
+    ipcRenderer.invoke('deploy:getNetlifyStatus', deployId, token),
 
   // Cloudflare Tunnel
   tunnelIsInstalled: () => ipcRenderer.invoke('tunnel:isInstalled'),

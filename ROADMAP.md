@@ -94,9 +94,9 @@
 | **Tool Permissions** | Per-cap granular | Per-agent | **Ted** |
 | **Context Memory** | WAL + smart indexer | Unknown | **Ted** |
 | **MCP Protocol** | ✅ Yes | ✅ Yes | Tie |
-| **LSP Integration** | ❌ No | ✅ Yes | OpenCode |
+| **LSP Integration** | ✅ Yes | ✅ Yes | Tie |
 | **GitHub Actions** | ❌ No | ✅ /opencode mentions | OpenCode |
-| **IDE Extension** | ❌ No | ✅ Yes | OpenCode |
+| **IDE Extension** | ✅ Yes | ✅ Yes | Tie |
 | **GUI Companion** | ✅ Teddy | ❌ No | **Ted** |
 | **License** | AGPL-3.0 | MIT | Preference |
 | **Multi-session** | ❌ No | ✅ Yes | OpenCode |
@@ -560,13 +560,13 @@ model Favorite {
 | **ARM64 builds** | P0 | 3 days | ✅ Done | Raspberry Pi 5 support - electron-builder config, cross-compile script, GitHub Actions |
 | **Bundled dependencies** | P0 | 2 days | ✅ Done | Auto-download cloudflared, no manual installs needed, batteries-included |
 | Blackman AI provider | P1 | 2 days | ✅ Done | OpenAI-compatible, full streaming support |
-| Netlify deploy | P1 | 2 days | 🔴 Not started | Alternative deploy |
+| Netlify deploy | P1 | 2 days | ✅ Done | One-click deploy, token verification, dropdown menu in Preview |
 | Multi-session support | P1 | 3 days | ✅ Done | Full session CRUD, UI, backend storage |
 | File watching (chokidar) | P2 | 2 days | ✅ Done | Full chokidar implementation with ignore patterns |
-| teddy.rocks subdomain service | P2 | 4 days | 🔶 In progress | CF Workers + KV |
+| teddy.rocks subdomain service | P2 | 4 days | ✅ Done | CF Workers + KV, zero-config sharing via `*.teddy.rocks` |
 | Acquire Raspberry Pi 5 for testing | P2 | 1 day | ✅ Done | Have hardware |
 
-**Phase 2 Deliverable**: User can deploy to Vercel with one click, share preview links, use MCP tools. **Works on Raspberry Pi 5 (ARM64).**
+**Phase 2 Deliverable**: User can deploy to Vercel or Netlify with one click, share preview links via teddy.rocks, use MCP tools. **Works on Raspberry Pi 5 (ARM64).** ✅ **COMPLETE**
 
 ### Phase 3: Developer Experience + Pi Optimizations (Weeks 6-8)
 
@@ -578,8 +578,8 @@ model Favorite {
 | **Error recovery + retry** | P0 | 2 days | ✅ Done | Exponential backoff, circuit breaker, smart defaults |
 | **Multi-file context** | P0 | 3 days | ✅ Done | FileChangeSetTool with atomic/incremental modes, integrated with embedded_runner |
 | **Conversation memory/RAG** | P0 | 5 days | ✅ Done | Embeddings, SQLite storage, summarization, recall integration complete |
-| **LSP integration** | P0 | 1 week | 🔴 Not started | Autocomplete, go-to-def |
-| **VS Code extension** | P0 | 1 week | 🔴 Not started | IDE integration |
+| **LSP integration** | P0 | 1 week | ✅ Done | Autocomplete, go-to-def, hover - `ted lsp` command |
+| **VS Code extension** | P0 | 1 week | ✅ Done | Full IDE integration in `vscode-extension/` |
 | Thermal monitoring (Pi) | P1 | 2 days | 🔴 Not started | Pause inference at 80°C, UltraTiny tier |
 | Minimal Electron mode (Pi) | P1 | 3 days | 🔴 Not started | Reduce UI overhead for 8GB RAM |
 | Storage detection (Pi) | P1 | 1 day | 🔴 Not started | Warn on microSD, recommend NVMe |

@@ -104,6 +104,9 @@ async fn main() -> Result<()> {
         Some(Commands::Mcp(args)) => {
             commands::mcp::execute(&args).await?;
         }
+        Some(Commands::Lsp) => {
+            ted::lsp::start_server().await?;
+        }
         Some(Commands::Run(args)) => {
             run_custom_command(args)?;
         }

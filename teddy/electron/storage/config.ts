@@ -224,6 +224,15 @@ class TeddyStorage {
   }
 
   /**
+   * Clear last opened project (used when user explicitly wants to change projects)
+   */
+  async clearLastProject(): Promise<void> {
+    await this.loadConfig();
+    this.config!.lastProjectPath = null;
+    await this.saveConfig();
+  }
+
+  /**
    * Generate a project ID from path (used for storage directory)
    */
   private getProjectId(projectPath: string): string {

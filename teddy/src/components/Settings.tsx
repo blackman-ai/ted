@@ -39,6 +39,7 @@ export interface TedSettings {
 
   // Deployment
   vercelToken: string;
+  netlifyToken: string;
 
   // Hardware info
   hardware: HardwareInfo | null;
@@ -53,8 +54,10 @@ export function Settings({ onClose }: SettingsProps) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [activeTab, setActiveTab] = useState<'providers' | 'deployment' | 'hardware'>('providers');
-  const [verifyingToken, setVerifyingToken] = useState(false);
-  const [tokenValid, setTokenValid] = useState<boolean | null>(null);
+  const [verifyingVercelToken, setVerifyingVercelToken] = useState(false);
+  const [vercelTokenValid, setVercelTokenValid] = useState<boolean | null>(null);
+  const [verifyingNetlifyToken, setVerifyingNetlifyToken] = useState(false);
+  const [netlifyTokenValid, setNetlifyTokenValid] = useState<boolean | null>(null);
 
   useEffect(() => {
     loadSettings();
@@ -102,20 +105,43 @@ export function Settings({ onClose }: SettingsProps) {
       return;
     }
 
-    setVerifyingToken(true);
-    setTokenValid(null);
+    setVerifyingVercelToken(true);
+    setVercelTokenValid(null);
     try {
       const result = await window.teddy.verifyVercelToken(settings.vercelToken);
-      setTokenValid(result.valid);
+      setVercelTokenValid(result.valid);
       if (!result.valid) {
         alert(`Token verification failed: ${result.error}`);
       }
     } catch (err) {
       console.error('Failed to verify token:', err);
-      setTokenValid(false);
+      setVercelTokenValid(false);
       alert('Failed to verify token');
     } finally {
-      setVerifyingToken(false);
+      setVerifyingVercelToken(false);
+    }
+  };
+
+  const verifyNetlifyToken = async () => {
+    if (!settings?.netlifyToken) {
+      alert('Please enter a Netlify token first');
+      return;
+    }
+
+    setVerifyingNetlifyToken(true);
+    setNetlifyTokenValid(null);
+    try {
+      const result = await window.teddy.verifyNetlifyToken(settings.netlifyToken);
+      setNetlifyTokenValid(result.valid);
+      if (!result.valid) {
+        alert(`Token verification failed: ${result.error}`);
+      }
+    } catch (err) {
+      console.error('Failed to verify token:', err);
+      setNetlifyTokenValid(false);
+      alert('Failed to verify token');
+    } finally {
+      setVerifyingNetlifyToken(false);
     }
   };
 
@@ -281,6 +307,7 @@ export function Settings({ onClose }: SettingsProps) {
             <div className="settings-section">
               <h3>Deployment Configuration</h3>
 
+              <h4>Vercel</h4>
               <div className="form-group">
                 <label htmlFor="vercel-token">Vercel API Token</label>
                 <div style={{ display: 'flex', gap: '8px' }}>
@@ -291,22 +318,55 @@ export function Settings({ onClose }: SettingsProps) {
                     value={settings.vercelToken}
                     onChange={(e) => {
                       setSettings({ ...settings, vercelToken: e.target.value });
-                      setTokenValid(null); // Reset validation
+                      setVercelTokenValid(null); // Reset validation
                     }}
                     placeholder="Enter your Vercel token"
                   />
                   <button
                     className="btn-secondary"
                     onClick={verifyVercelToken}
-                    disabled={verifyingToken || !settings.vercelToken}
+                    disabled={verifyingVercelToken || !settings.vercelToken}
                   >
-                    {verifyingToken ? 'Verifying...' : tokenValid === true ? '✓ Valid' : tokenValid === false ? '✗ Invalid' : 'Verify'}
+                    {verifyingVercelToken ? 'Verifying...' : vercelTokenValid === true ? '✓ Valid' : vercelTokenValid === false ? '✗ Invalid' : 'Verify'}
                   </button>
                 </div>
                 <small>
                   Get your token from <a href="https://vercel.com/account/tokens" target="_blank" rel="noopener noreferrer">Vercel Dashboard → Settings → Tokens</a>
                 </small>
-                {tokenValid === true && (
+                {vercelTokenValid === true && (
+                  <div style={{ marginTop: '8px', color: 'var(--accent-success, #28a745)' }}>
+                    ✓ Token verified successfully
+                  </div>
+                )}
+              </div>
+
+              <h4>Netlify</h4>
+              <div className="form-group">
+                <label htmlFor="netlify-token">Netlify Personal Access Token</label>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input
+                    type="password"
+                    id="netlify-token"
+                    style={{ flex: 1 }}
+                    value={settings.netlifyToken || ''}
+                    onChange={(e) => {
+                      setSettings({ ...settings, netlifyToken: e.target.value });
+                      setNetlifyTokenValid(null); // Reset validation
+                    }}
+                    placeholder="Enter your Netlify token"
+                  />
+                  <button
+                    className="btn-secondary"
+                    onClick={verifyNetlifyToken}
+                    disabled={verifyingNetlifyToken || !settings.netlifyToken}
+                  >
+                    {verifyingNetlifyToken ? 'Verifying...' : netlifyTokenValid === true ? '✓ Valid' : netlifyTokenValid === false ? '✗ Invalid' : 'Verify'}
+                  </button>
+                </div>
+                <small>
+                  Get your token from <a href="https://app.netlify.com/user/applications#personal-access-tokens" target="_blank" rel="noopener noreferrer">Netlify → User Settings → Applications → Personal access tokens</a>
+                </small>
+                {netlifyTokenValid === true && (
                   <div style={{ marginTop: '8px', color: 'var(--accent-success, #28a745)' }}>
                     ✓ Token verified successfully
                   </div>
@@ -316,10 +376,10 @@ export function Settings({ onClose }: SettingsProps) {
               <div className="form-group">
                 <h4>How to Deploy</h4>
                 <ol style={{ marginLeft: '20px', lineHeight: '1.8' }}>
-                  <li>Enter your Vercel API token above and click "Verify"</li>
+                  <li>Enter your API token above and click "Verify"</li>
                   <li>Save settings</li>
                   <li>Go to the Preview tab in Teddy</li>
-                  <li>Click the "Deploy to Vercel" button</li>
+                  <li>Click the "Deploy" button and choose your platform</li>
                   <li>Your project will be deployed automatically!</li>
                 </ol>
               </div>

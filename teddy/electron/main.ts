@@ -14,6 +14,7 @@ import { TedEvent, ConversationHistoryEvent } from './types/protocol';
 import { storage, ProjectContext } from './storage/config';
 import { loadTedSettings, saveTedSettings, detectHardware } from './settings/ted-settings';
 import { deployProject, verifyToken, getDeploymentStatus } from './deploy/vercel';
+import { deployNetlifyProject, verifyNetlifyToken, getNetlifyDeploymentStatus } from './deploy/netlify';
 
 // Lazy-loaded module references to avoid electron app access at module load time
 let cloudfareTunnel: typeof import('./deploy/cloudflare-tunnel') | null = null;
@@ -243,6 +244,14 @@ ipcMain.handle('project:getLast', async () => {
     return { path: lastPath, name: path.basename(lastPath) };
   }
   return null;
+});
+
+/**
+ * Clear last opened project (when user explicitly wants to change projects)
+ */
+ipcMain.handle('project:clearLast', async () => {
+  await storage.clearLastProject();
+  return { success: true };
 });
 
 /**
@@ -855,6 +864,63 @@ ipcMain.handle('deploy:getVercelStatus', async (_, deploymentId, token) => {
     return status;
   } catch (err) {
     log('[DEPLOY:GET_STATUS] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Deploy project to Netlify
+ */
+ipcMain.handle('deploy:netlify', async (_, options) => {
+  log('[DEPLOY:NETLIFY]', { projectPath: options.projectPath });
+  try {
+    // Send progress update to renderer
+    if (mainWindow) {
+      mainWindow.webContents.send('deploy:progress', { status: 'starting', message: 'Preparing Netlify deployment...' });
+    }
+
+    const result = await deployNetlifyProject(options);
+
+    if (result.success && mainWindow) {
+      mainWindow.webContents.send('deploy:success', { url: result.url, deployId: result.deployId, siteId: result.siteId });
+    } else if (!result.success && mainWindow) {
+      mainWindow.webContents.send('deploy:error', { error: result.error });
+    }
+
+    return result;
+  } catch (err) {
+    log('[DEPLOY:NETLIFY] Failed:', err);
+    if (mainWindow) {
+      mainWindow.webContents.send('deploy:error', { error: String(err) });
+    }
+    throw err;
+  }
+});
+
+/**
+ * Verify Netlify token
+ */
+ipcMain.handle('deploy:verifyNetlifyToken', async (_, token) => {
+  log('[DEPLOY:VERIFY_NETLIFY_TOKEN]');
+  try {
+    const result = await verifyNetlifyToken(token);
+    return result;
+  } catch (err) {
+    log('[DEPLOY:VERIFY_NETLIFY_TOKEN] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Get Netlify deployment status
+ */
+ipcMain.handle('deploy:getNetlifyStatus', async (_, deployId, token) => {
+  log('[DEPLOY:GET_NETLIFY_STATUS]', deployId);
+  try {
+    const status = await getNetlifyDeploymentStatus(deployId, token);
+    return status;
+  } catch (err) {
+    log('[DEPLOY:GET_NETLIFY_STATUS] Failed:', err);
     throw err;
   }
 });

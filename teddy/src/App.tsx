@@ -342,7 +342,10 @@ function App() {
           </button>
           <button
             className="btn-secondary"
-            onClick={() => setProject(null)}
+            onClick={async () => {
+              await window.teddy.clearLastProject();
+              setProject(null);
+            }}
           >
             Change Project
           </button>

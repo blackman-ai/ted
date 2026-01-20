@@ -1,0 +1,193 @@
+{
+  "name": "ted-vscode",
+  "displayName": "Ted - AI Coding Assistant",
+  "description": "AI-powered coding assistant that edits files, runs commands, and builds apps",
+  "version": "0.1.0",
+  "publisher": "blackman-ai",
+  "license": "AGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/blackman-ai/ted"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Machine Learning",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "coding",
+    "assistant",
+    "claude",
+    "ollama",
+    "gpt"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "icon": "icon.png",
+  "contributes": {
+    "commands": [
+      {
+        "command": "ted.openChat",
+        "title": "Ted: Open Chat",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "ted.askQuestion",
+        "title": "Ted: Ask about Selection",
+        "icon": "$(question)"
+      },
+      {
+        "command": "ted.editCode",
+        "title": "Ted: Edit Code",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "ted.stopTask",
+        "title": "Ted: Stop Current Task",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "ted.clearHistory",
+        "title": "Ted: Clear Conversation History"
+      },
+      {
+        "command": "ted.setProvider",
+        "title": "Ted: Set AI Provider"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "ted.openChat",
+        "key": "ctrl+shift+t",
+        "mac": "cmd+shift+t"
+      },
+      {
+        "command": "ted.askQuestion",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a",
+        "when": "editorHasSelection"
+      },
+      {
+        "command": "ted.editCode",
+        "key": "ctrl+shift+e",
+        "mac": "cmd+shift+e",
+        "when": "editorTextFocus"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ted-sidebar",
+          "title": "Ted",
+          "icon": "$(hubot)"
+        }
+      ]
+    },
+    "views": {
+      "ted-sidebar": [
+        {
+          "type": "webview",
+          "id": "ted.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "ted.askQuestion",
+          "when": "editorHasSelection",
+          "group": "ted@1"
+        },
+        {
+          "command": "ted.editCode",
+          "when": "editorTextFocus",
+          "group": "ted@2"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "ted.clearHistory",
+          "when": "view == ted.chatView",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Ted",
+      "properties": {
+        "ted.provider": {
+          "type": "string",
+          "default": "anthropic",
+          "enum": ["anthropic", "ollama", "openrouter"],
+          "description": "AI provider to use"
+        },
+        "ted.anthropicApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Anthropic API key (or set ANTHROPIC_API_KEY env var)"
+        },
+        "ted.anthropicModel": {
+          "type": "string",
+          "default": "claude-sonnet-4-20250514",
+          "description": "Anthropic model to use"
+        },
+        "ted.ollamaBaseUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Ollama server base URL"
+        },
+        "ted.ollamaModel": {
+          "type": "string",
+          "default": "qwen2.5-coder:7b",
+          "description": "Ollama model to use"
+        },
+        "ted.openrouterApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "OpenRouter API key"
+        },
+        "ted.openrouterModel": {
+          "type": "string",
+          "default": "anthropic/claude-3.5-sonnet",
+          "description": "OpenRouter model to use"
+        },
+        "ted.trustMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow Ted to make changes without confirmation"
+        },
+        "ted.tedBinaryPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to ted binary (auto-detected if empty)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile",
+    "test": "node ./out/test/runTest.js",
+    "lint": "eslint src --ext ts",
+    "package": "vsce package",
+    "publish": "vsce publish"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "eslint": "^8.54.0",
+    "typescript": "^5.3.0",
+    "@vscode/vsce": "^2.22.0"
+  }
+}

@@ -72,6 +72,9 @@ pub enum Commands {
     /// Start MCP server for external tool integrations
     Mcp(McpArgs),
 
+    /// Start Language Server Protocol (LSP) server
+    Lsp,
+
     /// Run a custom command from .ted/commands/
     #[command(external_subcommand)]
     Run(Vec<String>),

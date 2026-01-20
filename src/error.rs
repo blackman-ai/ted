@@ -61,6 +61,10 @@ pub enum TedError {
     /// Plan errors
     #[error("Plan error: {0}")]
     Plan(String),
+
+    /// LSP server errors
+    #[error("LSP error: {0}")]
+    Lsp(String),
 }
 
 /// API-specific error types
@@ -115,6 +119,12 @@ impl From<toml::de::Error> for TedError {
 impl From<toml::ser::Error> for TedError {
     fn from(err: toml::ser::Error) -> Self {
         TedError::Toml(err.to_string())
+    }
+}
+
+impl From<anyhow::Error> for TedError {
+    fn from(err: anyhow::Error) -> Self {
+        TedError::Lsp(err.to_string())
     }
 }
 

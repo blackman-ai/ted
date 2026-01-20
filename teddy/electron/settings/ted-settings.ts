@@ -36,6 +36,7 @@ export interface TedSettings {
   openrouterApiKey: string;
   openrouterModel: string;
   vercelToken: string;
+  netlifyToken: string;
   hardware: HardwareInfo | null;
 }
 
@@ -62,6 +63,7 @@ export async function loadTedSettings(): Promise<TedSettings> {
     openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
     openrouterModel: 'anthropic/claude-3.5-sonnet',
     vercelToken: process.env.VERCEL_TOKEN || '',
+    netlifyToken: process.env.NETLIFY_AUTH_TOKEN || '',
     hardware: null,
   };
 
@@ -83,6 +85,8 @@ export async function loadTedSettings(): Promise<TedSettings> {
       ollamaModel: rawSettings.providers?.ollama?.default_model || defaultSettings.ollamaModel,
       openrouterApiKey: rawSettings.providers?.openrouter?.api_key || defaultSettings.openrouterApiKey,
       openrouterModel: rawSettings.providers?.openrouter?.default_model || defaultSettings.openrouterModel,
+      vercelToken: rawSettings.deploy?.vercel_token || defaultSettings.vercelToken,
+      netlifyToken: rawSettings.deploy?.netlify_token || defaultSettings.netlifyToken,
       hardware: rawSettings.hardware || null,
     };
   } catch (err) {
@@ -139,6 +143,15 @@ export async function saveTedSettings(settings: TedSettings): Promise<void> {
 
   if (settings.hardware) {
     rawSettings.hardware = settings.hardware;
+  }
+
+  // Save deployment tokens
+  rawSettings.deploy = rawSettings.deploy || {};
+  if (settings.vercelToken) {
+    rawSettings.deploy.vercel_token = settings.vercelToken;
+  }
+  if (settings.netlifyToken) {
+    rawSettings.deploy.netlify_token = settings.netlifyToken;
   }
 
   // Write settings

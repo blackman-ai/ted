@@ -18,6 +18,7 @@ pub mod hardware;
 pub mod history;
 pub mod indexer;
 pub mod llm;
+pub mod lsp;
 pub mod mcp;
 pub mod plans;
 pub mod tools;
