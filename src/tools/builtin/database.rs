@@ -492,11 +492,133 @@ impl Tool for DatabaseQueryTool {
                 }
             }
         } else {
-            // For PostgreSQL, use psql via DATABASE_URL
-            Ok(ToolResult::error(
-                tool_use_id,
-                "PostgreSQL queries are not yet supported. Use prisma studio or psql directly.",
-            ))
+            // For PostgreSQL, use psql via DATABASE_URL from .env
+            let env_path = context.working_directory.join(".env");
+            let database_url = if env_path.exists() {
+                // Try to read DATABASE_URL from .env
+                match std::fs::read_to_string(&env_path) {
+                    Ok(content) => {
+                        content
+                            .lines()
+                            .find(|line| line.starts_with("DATABASE_URL="))
+                            .map(|line| line.trim_start_matches("DATABASE_URL=").trim_matches('"').to_string())
+                    }
+                    Err(_) => None
+                }
+            } else {
+                None
+            };
+
+            let database_url = match database_url {
+                Some(url) if !url.is_empty() => url,
+                _ => {
+                    return Ok(ToolResult::error(
+                        tool_use_id,
+                        "PostgreSQL DATABASE_URL not found in .env file. Set DATABASE_URL=\"postgresql://user:password@localhost:5432/dbname\" in your .env file, or start the PostgreSQL container from Teddy's Settings → Database & Services.",
+                    ));
+                }
+            };
+
+            // Execute query using psql
+            // First check if we're using Docker (teddy-postgres container) or external PostgreSQL
+            let query_result = if database_url.contains("localhost") || database_url.contains("127.0.0.1") {
+                // Try to use psql inside the teddy-postgres container first
+                Command::new("docker")
+                    .args([
+                        "exec", "teddy-postgres",
+                        "psql", &database_url,
+                        "-c", query,
+                    ])
+                    .current_dir(&context.working_directory)
+                    .stdin(Stdio::null())
+                    .output()
+                    .await
+            } else {
+                // External PostgreSQL - try to use local psql
+                Command::new("psql")
+                    .args([&database_url, "-c", query])
+                    .current_dir(&context.working_directory)
+                    .stdin(Stdio::null())
+                    .output()
+                    .await
+            };
+
+            match query_result {
+                Ok(output) => {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+
+                    if !output.status.success() {
+                        // If Docker command failed, try local psql as fallback
+                        if database_url.contains("localhost") || database_url.contains("127.0.0.1") {
+                            let fallback_result = Command::new("psql")
+                                .args([&database_url, "-c", query])
+                                .current_dir(&context.working_directory)
+                                .stdin(Stdio::null())
+                                .output()
+                                .await;
+
+                            match fallback_result {
+                                Ok(fb_output) => {
+                                    let fb_stdout = String::from_utf8_lossy(&fb_output.stdout);
+                                    let fb_stderr = String::from_utf8_lossy(&fb_output.stderr);
+
+                                    if !fb_output.status.success() {
+                                        return Ok(ToolResult::error(
+                                            tool_use_id,
+                                            format!("PostgreSQL query failed: {}", fb_stderr),
+                                        ));
+                                    }
+
+                                    let mut result = String::new();
+                                    result.push_str(&format!("✅ Query executed: {}\n\n", query));
+                                    if fb_stdout.is_empty() {
+                                        result.push_str("(No results)\n");
+                                    } else {
+                                        result.push_str(&fb_stdout);
+                                    }
+                                    return Ok(ToolResult::success(tool_use_id, result));
+                                }
+                                Err(e) => {
+                                    return Ok(ToolResult::error(
+                                        tool_use_id,
+                                        format!("PostgreSQL query failed: {}. Neither teddy-postgres container nor local psql is available.", e),
+                                    ));
+                                }
+                            }
+                        }
+
+                        return Ok(ToolResult::error(
+                            tool_use_id,
+                            format!("PostgreSQL query failed: {}", stderr),
+                        ));
+                    }
+
+                    let mut result = String::new();
+                    result.push_str(&format!("✅ Query executed: {}\n\n", query));
+                    if stdout.is_empty() {
+                        result.push_str("(No results)\n");
+                    } else {
+                        result.push_str(&stdout);
+                    }
+
+                    Ok(ToolResult::success(tool_use_id, result))
+                }
+                Err(e) => {
+                    // psql might not be installed, try local fallback
+                    if database_url.contains("localhost") || database_url.contains("127.0.0.1") {
+                        Ok(ToolResult::error(
+                            tool_use_id,
+                            format!("Failed to execute PostgreSQL query: {}. Ensure the teddy-postgres container is running (start it from Teddy's Settings → Database & Services) or that psql is installed locally.", e),
+                        ))
+                    } else {
+                        Ok(ToolResult::error(
+                            tool_use_id,
+                            format!("Failed to execute PostgreSQL query: {}. Is psql installed?", e),
+                        ))
+                    }
+                }
+            }
         }
     }
 

@@ -121,7 +121,20 @@ export async function saveTedSettings(settings: TedSettings): Promise<void> {
   // Update settings in Ted's format
   rawSettings.defaults = rawSettings.defaults || {};
   rawSettings.defaults.provider = settings.provider;
-  rawSettings.defaults.model = settings.model;
+
+  // Sync model with the correct provider-specific model
+  const modelForProvider = (() => {
+    switch (settings.provider) {
+      case 'ollama':
+        return settings.ollamaModel;
+      case 'openrouter':
+        return settings.openrouterModel;
+      case 'anthropic':
+      default:
+        return settings.anthropicModel;
+    }
+  })();
+  rawSettings.defaults.model = modelForProvider;
 
   rawSettings.providers = rawSettings.providers || {};
 

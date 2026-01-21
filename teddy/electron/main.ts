@@ -15,6 +15,7 @@ import { storage, ProjectContext } from './storage/config';
 import { loadTedSettings, saveTedSettings, detectHardware } from './settings/ted-settings';
 import { deployProject, verifyToken, getDeploymentStatus } from './deploy/vercel';
 import { deployNetlifyProject, verifyNetlifyToken, getNetlifyDeploymentStatus } from './deploy/netlify';
+import { detectScaffold, generateScaffoldPrompt } from './scaffolds';
 
 // Lazy-loaded module references to avoid electron app access at module load time
 let cloudfareTunnel: typeof import('./deploy/cloudflare-tunnel') | null = null;
@@ -40,6 +41,17 @@ async function getFileWatcherModule() {
   }
   return fileWatcherModule;
 }
+
+let dockerModule: typeof import('./docker') | null = null;
+async function getDockerModule() {
+  if (!dockerModule) {
+    dockerModule = await import('./docker');
+  }
+  return dockerModule;
+}
+
+// Track running shell processes (preview servers, etc.) for cleanup
+const runningShells: Map<number, import('child_process').ChildProcess> = new Map();
 
 // Type imports for file watcher
 type FileWatcherType = import('./file-watcher').FileWatcher;
@@ -117,9 +129,21 @@ app.on('window-all-closed', () => {
   }
 });
 
-// Cleanup shares and tunnels when app is quitting
+// Cleanup shares, tunnels, and shell processes when app is quitting
 app.on('before-quit', async () => {
   log('[APP] Cleaning up before quit...');
+
+  // Kill all running shell processes (preview servers, etc.)
+  for (const [pid] of runningShells) {
+    try {
+      process.kill(-pid, 'SIGTERM'); // Kill process group
+      log('[APP] Killed shell process group:', pid);
+    } catch (err) {
+      // Process might already be dead
+    }
+  }
+  runningShells.clear();
+
   try {
     const share = await getShareModule();
     await share.stopAllShares();
@@ -417,6 +441,57 @@ ipcMain.handle('ted:run', async (_, prompt: string, options?: {
       finalPrompt = contextPrefix + prompt;
       log('[TED:RUN] Injected project context into prompt');
     }
+  } else if (conversationHistory.length === 0) {
+    // EMPTY PROJECT: Inject comprehensive app-building guidance for Teddy
+    // This is what makes Teddy work like Lovable/Replit - it builds complete apps
+
+    // Try to detect the best scaffold for the user's request
+    const scaffold = detectScaffold(prompt);
+    let scaffoldSection = '';
+
+    if (scaffold) {
+      scaffoldSection = generateScaffoldPrompt(scaffold, prompt);
+      log('[TED:RUN] Detected scaffold:', scaffold.name, 'for request');
+    }
+
+    const emptyProjectPrefix = `[NEW PROJECT - EMPTY DIRECTORY]
+This is a brand new, empty project directory. There are NO existing files.
+
+You are Teddy, an AI app builder. You BUILD complete, working applications - not just give advice.
+
+## CRITICAL: DO NOT SEARCH FOR FILES
+There are no files here. Do NOT use glob or file_read - they will return nothing.
+Go straight to CREATING files with file_write.
+
+## YOUR WORKFLOW
+1. START CREATING FILES IMMEDIATELY using file_write
+2. Create ALL necessary files for a complete, working app
+3. Tell the user how to run it
+4. Do NOT ask clarifying questions unless absolutely necessary
+
+## FILE QUALITY REQUIREMENTS
+Every file must be COMPLETE and FUNCTIONAL:
+- Full implementations, not placeholders
+- Real styling, not bare HTML
+- Working logic, not TODO comments
+- Proper error handling
+
+## HOW TO CREATE FILES
+Call file_write for each file. Example:
+- file_write with path="index.html" and content="<!DOCTYPE html>..."
+- file_write with path="styles.css" and content="* { box-sizing... }"
+- file_write with path="app.js" and content="// App logic..."
+
+## REMEMBER
+- You are a BUILDER - create files, don't explain how
+- Use file_write for each file, not code blocks in chat
+- Every app should work immediately
+- Include good styling - make it look professional
+${scaffoldSection}
+
+User request: `;
+    finalPrompt = emptyProjectPrefix + prompt;
+    log('[TED:RUN] Injected empty project guidance into prompt');
   }
   log('[TED:RUN] Project has files:', projectHasFiles);
 
@@ -704,15 +779,45 @@ ipcMain.handle('ted:getHistoryLength', async () => {
   return { length: conversationHistory.length };
 });
 
-// Track running shell processes
-const runningShells: Map<number, import('child_process').ChildProcess> = new Map();
+/**
+ * Kill any process running on a specific port
+ */
+async function killProcessOnPort(port: number): Promise<void> {
+  const { exec } = await import('child_process');
+  const { promisify } = await import('util');
+  const execAsync = promisify(exec);
+
+  try {
+    // Find PIDs listening on the port
+    const { stdout } = await execAsync(`lsof -ti :${port}`);
+    const pids = stdout.trim().split('\n').filter(Boolean);
+
+    for (const pid of pids) {
+      try {
+        process.kill(parseInt(pid, 10), 'SIGTERM');
+        log(`[SHELL] Killed process ${pid} on port ${port}`);
+      } catch (err) {
+        // Process might already be dead
+      }
+    }
+  } catch (err) {
+    // No process on port, which is fine
+  }
+}
 
 /**
  * Run a shell command directly (without Ted)
+ * If port is provided, kill any existing process on that port first
  */
-ipcMain.handle('shell:run', async (_, command: string) => {
+ipcMain.handle('shell:run', async (_, command: string, port?: number) => {
   if (!currentProjectRoot) {
     throw new Error('No project selected');
+  }
+
+  // Kill any existing process on the port before starting
+  if (port) {
+    log('[SHELL:RUN] Killing any process on port', port);
+    await killProcessOnPort(port);
   }
 
   const { spawn } = await import('child_process');
@@ -736,18 +841,27 @@ ipcMain.handle('shell:run', async (_, command: string) => {
 });
 
 /**
- * Kill a running shell process
+ * Kill a running shell process and all its children
  */
 ipcMain.handle('shell:kill', async (_, pid: number) => {
   log('[SHELL:KILL] PID:', pid);
 
   try {
-    process.kill(pid, 'SIGTERM');
+    // Kill the entire process group (negative PID) since we spawn with detached: true
+    // This ensures child processes like python3 http.server are also killed
+    process.kill(-pid, 'SIGTERM');
     runningShells.delete(pid);
     return { success: true };
   } catch (err) {
-    log('[SHELL:KILL] Failed:', err);
-    return { success: false };
+    // If process group kill fails, try killing just the process
+    try {
+      process.kill(pid, 'SIGTERM');
+      runningShells.delete(pid);
+      return { success: true };
+    } catch (innerErr) {
+      log('[SHELL:KILL] Failed:', innerErr);
+      return { success: false };
+    }
   }
 });
 
@@ -1105,6 +1219,188 @@ ipcMain.handle('share:generateSlug', async (_, projectName?: string) => {
 ipcMain.handle('share:checkSlug', async (_, slug: string) => {
   const share = await getShareModule();
   return await share.checkSlugAvailability(slug);
+});
+
+/**
+ * Docker & PostgreSQL IPC Handlers
+ */
+
+/**
+ * Get Docker status
+ */
+ipcMain.handle('docker:getStatus', async () => {
+  log('[DOCKER:GET_STATUS]');
+  try {
+    const docker = await getDockerModule();
+    const status = await docker.getDockerStatus();
+    return status;
+  } catch (err) {
+    log('[DOCKER:GET_STATUS] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Check if Docker is installed
+ */
+ipcMain.handle('docker:isInstalled', async () => {
+  log('[DOCKER:IS_INSTALLED]');
+  try {
+    const docker = await getDockerModule();
+    const installed = await docker.isDockerInstalled();
+    return { installed };
+  } catch (err) {
+    log('[DOCKER:IS_INSTALLED] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Get Docker installation instructions
+ */
+ipcMain.handle('docker:getInstallInstructions', async () => {
+  log('[DOCKER:GET_INSTALL_INSTRUCTIONS]');
+  try {
+    const docker = await getDockerModule();
+    const instructions = docker.getDockerInstallInstructions();
+    return { instructions };
+  } catch (err) {
+    log('[DOCKER:GET_INSTALL_INSTRUCTIONS] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Get Docker start instructions
+ */
+ipcMain.handle('docker:getStartInstructions', async () => {
+  log('[DOCKER:GET_START_INSTRUCTIONS]');
+  try {
+    const docker = await getDockerModule();
+    const instructions = docker.getDockerStartInstructions();
+    return { instructions };
+  } catch (err) {
+    log('[DOCKER:GET_START_INSTRUCTIONS] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Get PostgreSQL container status
+ */
+ipcMain.handle('postgres:getStatus', async () => {
+  log('[POSTGRES:GET_STATUS]');
+  try {
+    const docker = await getDockerModule();
+    const status = await docker.getPostgresStatus();
+    return status;
+  } catch (err) {
+    log('[POSTGRES:GET_STATUS] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Start PostgreSQL container
+ */
+ipcMain.handle('postgres:start', async (_, config?: { password?: string; port?: number; database?: string; user?: string }) => {
+  log('[POSTGRES:START]', config);
+  try {
+    const docker = await getDockerModule();
+    const result = await docker.startPostgresContainer(config);
+
+    if (result.success && mainWindow) {
+      mainWindow.webContents.send('postgres:started', {
+        containerId: result.containerId,
+        databaseUrl: result.databaseUrl,
+      });
+    }
+
+    return result;
+  } catch (err) {
+    log('[POSTGRES:START] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Stop PostgreSQL container
+ */
+ipcMain.handle('postgres:stop', async () => {
+  log('[POSTGRES:STOP]');
+  try {
+    const docker = await getDockerModule();
+    const result = await docker.stopPostgresContainer();
+
+    if (result.success && mainWindow) {
+      mainWindow.webContents.send('postgres:stopped', {});
+    }
+
+    return result;
+  } catch (err) {
+    log('[POSTGRES:STOP] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Remove PostgreSQL container (preserves data)
+ */
+ipcMain.handle('postgres:remove', async () => {
+  log('[POSTGRES:REMOVE]');
+  try {
+    const docker = await getDockerModule();
+    const result = await docker.removePostgresContainer();
+    return result;
+  } catch (err) {
+    log('[POSTGRES:REMOVE] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Get PostgreSQL container logs
+ */
+ipcMain.handle('postgres:getLogs', async (_, lines?: number) => {
+  log('[POSTGRES:GET_LOGS]', lines);
+  try {
+    const docker = await getDockerModule();
+    const logs = await docker.getPostgresLogs(lines);
+    return { logs };
+  } catch (err) {
+    log('[POSTGRES:GET_LOGS] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Test PostgreSQL connection
+ */
+ipcMain.handle('postgres:testConnection', async () => {
+  log('[POSTGRES:TEST_CONNECTION]');
+  try {
+    const docker = await getDockerModule();
+    const result = await docker.testPostgresConnection();
+    return result;
+  } catch (err) {
+    log('[POSTGRES:TEST_CONNECTION] Failed:', err);
+    throw err;
+  }
+});
+
+/**
+ * Get PostgreSQL database URL
+ */
+ipcMain.handle('postgres:getDatabaseUrl', async () => {
+  log('[POSTGRES:GET_DATABASE_URL]');
+  try {
+    const docker = await getDockerModule();
+    const databaseUrl = docker.buildDatabaseUrl();
+    return { databaseUrl };
+  } catch (err) {
+    log('[POSTGRES:GET_DATABASE_URL] Failed:', err);
+    throw err;
+  }
 });
 
 /**

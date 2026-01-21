@@ -108,6 +108,30 @@ export interface NetlifyDeploymentStatus {
   errorMessage?: string;
 }
 
+export interface DockerStatus {
+  installed: boolean;
+  daemonRunning: boolean;
+  version: string | null;
+  composeVersion: string | null;
+  error: string | null;
+}
+
+export interface PostgresStatus {
+  installed: boolean;
+  running: boolean;
+  containerId: string | null;
+  databaseUrl: string | null;
+  port: number;
+  dataDir: string;
+}
+
+export interface PostgresConfig {
+  password?: string;
+  port?: number;
+  database?: string;
+  user?: string;
+}
+
 export interface TeddyAPI {
   // Dialog
   openFolderDialog: () => Promise<string | null>;
@@ -155,7 +179,7 @@ export interface TeddyAPI {
   }>>;
 
   // Shell operations (run commands directly without Ted)
-  runShell: (command: string) => Promise<{ success: boolean; pid?: number }>;
+  runShell: (command: string, port?: number) => Promise<{ success: boolean; pid?: number }>;
   killShell: (pid: number) => Promise<{ success: boolean }>;
 
   // Cache operations
@@ -197,6 +221,21 @@ export interface TeddyAPI {
   shareGetAll: () => Promise<Array<{ port: number; slug: string; previewUrl: string }>>;
   shareGenerateSlug: (projectName?: string) => Promise<string>;
   shareCheckSlug: (slug: string) => Promise<boolean>;
+
+  // Docker
+  dockerGetStatus: () => Promise<DockerStatus>;
+  dockerIsInstalled: () => Promise<{ installed: boolean }>;
+  dockerGetInstallInstructions: () => Promise<{ instructions: string }>;
+  dockerGetStartInstructions: () => Promise<{ instructions: string }>;
+
+  // PostgreSQL
+  postgresGetStatus: () => Promise<PostgresStatus>;
+  postgresStart: (config?: PostgresConfig) => Promise<{ success: boolean; containerId?: string; databaseUrl?: string; error?: string }>;
+  postgresStop: () => Promise<{ success: boolean; error?: string }>;
+  postgresRemove: () => Promise<{ success: boolean; error?: string }>;
+  postgresGetLogs: (lines?: number) => Promise<{ logs: string }>;
+  postgresTestConnection: () => Promise<{ success: boolean; error?: string }>;
+  postgresGetDatabaseUrl: () => Promise<{ databaseUrl: string }>;
 
   // Event listeners
   onTedEvent: (callback: (event: TedEvent) => void) => () => void;
@@ -245,7 +284,7 @@ const api: TeddyAPI = {
   listFiles: (dirPath?: string) => ipcRenderer.invoke('file:list', dirPath),
 
   // Shell operations
-  runShell: (command: string) => ipcRenderer.invoke('shell:run', command),
+  runShell: (command: string, port?: number) => ipcRenderer.invoke('shell:run', command, port),
   killShell: (pid: number) => ipcRenderer.invoke('shell:kill', pid),
 
   // Cache operations
@@ -283,6 +322,21 @@ const api: TeddyAPI = {
   shareGetAll: () => ipcRenderer.invoke('share:getAll'),
   shareGenerateSlug: (projectName?: string) => ipcRenderer.invoke('share:generateSlug', projectName),
   shareCheckSlug: (slug: string) => ipcRenderer.invoke('share:checkSlug', slug),
+
+  // Docker
+  dockerGetStatus: () => ipcRenderer.invoke('docker:getStatus'),
+  dockerIsInstalled: () => ipcRenderer.invoke('docker:isInstalled'),
+  dockerGetInstallInstructions: () => ipcRenderer.invoke('docker:getInstallInstructions'),
+  dockerGetStartInstructions: () => ipcRenderer.invoke('docker:getStartInstructions'),
+
+  // PostgreSQL
+  postgresGetStatus: () => ipcRenderer.invoke('postgres:getStatus'),
+  postgresStart: (config?: PostgresConfig) => ipcRenderer.invoke('postgres:start', config),
+  postgresStop: () => ipcRenderer.invoke('postgres:stop'),
+  postgresRemove: () => ipcRenderer.invoke('postgres:remove'),
+  postgresGetLogs: (lines?: number) => ipcRenderer.invoke('postgres:getLogs', lines),
+  postgresTestConnection: () => ipcRenderer.invoke('postgres:testConnection'),
+  postgresGetDatabaseUrl: () => ipcRenderer.invoke('postgres:getDatabaseUrl'),
 
   // Event listeners
   onTedEvent: (callback) => {

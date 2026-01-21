@@ -98,7 +98,16 @@ fn extract_json_tool_calls(text: &str) -> Vec<(String, serde_json::Value)> {
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_text)
             {
                 eprintln!("[TOOL PARSE] Successfully parsed JSON");
-                if let Some(tool) = parse_tool_from_json(&parsed) {
+
+                // Check if it's an array of tool calls
+                if let Some(arr) = parsed.as_array() {
+                    for item in arr {
+                        if let Some(tool) = parse_tool_from_json(item) {
+                            eprintln!("[TOOL PARSE] Extracted tool from array: {}", tool.0);
+                            tools.push(tool);
+                        }
+                    }
+                } else if let Some(tool) = parse_tool_from_json(&parsed) {
                     eprintln!("[TOOL PARSE] Extracted tool: {}", tool.0);
                     tools.push(tool);
                 }
@@ -108,7 +117,31 @@ fn extract_json_tool_calls(text: &str) -> Vec<(String, serde_json::Value)> {
         }
     }
 
-    // Pattern 2: Try to find JSON objects by scanning for balanced braces
+    // Pattern 2: Look for ``` ... ``` blocks without json marker (some models do this)
+    if tools.is_empty() {
+        let generic_block_re = regex::Regex::new(r"```\s*([\s\S]*?)```").unwrap();
+        for cap in generic_block_re.captures_iter(text) {
+            if let Some(block_str) = cap.get(1) {
+                let block_text = block_str.as_str().trim();
+                // Only try to parse if it looks like JSON
+                if block_text.starts_with('{') || block_text.starts_with('[') {
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(block_text) {
+                        if let Some(arr) = parsed.as_array() {
+                            for item in arr {
+                                if let Some(tool) = parse_tool_from_json(item) {
+                                    tools.push(tool);
+                                }
+                            }
+                        } else if let Some(tool) = parse_tool_from_json(&parsed) {
+                            tools.push(tool);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Pattern 3: Try to find JSON objects by scanning for balanced braces
     // This is more robust than a regex for complex nested JSON
     if tools.is_empty() {
         eprintln!("[TOOL PARSE] No tools from markdown blocks, trying brace scanning");
@@ -206,20 +239,46 @@ fn parse_tool_from_json(value: &serde_json::Value) -> Option<(String, serde_json
         _ => name,
     };
 
-    // Map argument names for file_edit: some models use old_text/new_text instead of old_string/new_string
-    let mapped_arguments = if mapped_name == "file_edit" {
-        map_file_edit_arguments(&arguments)
-    } else if mapped_name == "file_write" {
-        map_file_write_arguments(&arguments)
-    } else {
-        arguments
+    // Map argument names for various tools: different models use different names
+    let mapped_arguments = match mapped_name {
+        "file_read" => map_file_read_arguments(&arguments),
+        "file_edit" => map_file_edit_arguments(&arguments),
+        "file_write" => map_file_write_arguments(&arguments),
+        "shell" => map_shell_arguments(&arguments),
+        _ => arguments,
     };
 
-    eprintln!("[TOOL PARSE] Parsed tool: {} -> {}", name, mapped_name);
-    Some((mapped_name.to_string(), mapped_arguments))
+    // Special case: file_edit with empty old_string should become file_write
+    // Models sometimes use edit with empty old to mean "write/create file"
+    let (final_name, final_args) = if mapped_name == "file_edit" {
+        let old_string = mapped_arguments.get("old_string")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if old_string.is_empty() || old_string.trim().is_empty() {
+            // Convert to file_write: rename new_string to content
+            let mut write_args = serde_json::Map::new();
+            if let Some(path) = mapped_arguments.get("path") {
+                write_args.insert("path".to_string(), path.clone());
+            }
+            if let Some(new_content) = mapped_arguments.get("new_string") {
+                write_args.insert("content".to_string(), new_content.clone());
+            }
+            ("file_write".to_string(), serde_json::Value::Object(write_args))
+        } else {
+            (mapped_name.to_string(), mapped_arguments)
+        }
+    } else {
+        (mapped_name.to_string(), mapped_arguments)
+    };
+
+    Some((final_name, final_args))
 }
 
 /// Map file_edit argument names from various LLM output formats to our expected format
+/// Different models (Ollama, etc.) use different naming conventions:
+/// - old/new, old_text/new_text, old_string/new_string, find/replace, etc.
+/// - Some send arrays of lines instead of strings
 fn map_file_edit_arguments(args: &serde_json::Value) -> serde_json::Value {
     let Some(obj) = args.as_object() else {
         return args.clone();
@@ -229,10 +288,61 @@ fn map_file_edit_arguments(args: &serde_json::Value) -> serde_json::Value {
 
     for (key, value) in obj {
         let mapped_key = match key.as_str() {
-            // Map various names to our expected format
-            "old_text" | "oldText" | "find" | "search" | "original" => "old_string",
-            "new_text" | "newText" | "replace" | "replacement" | "modified" => "new_string",
-            "file" | "file_path" | "filepath" | "filename" => "path",
+            // Map various names for "what to find/replace"
+            "old_text" | "oldText" | "old_content" | "oldContent"
+            | "find" | "search" | "original" | "old" | "before"
+            | "pattern" | "target" | "match" => "old_string",
+
+            // Map various names for "what to replace with"
+            "new_text" | "newText" | "new_content" | "newContent"
+            | "replace" | "replacement" | "modified" | "new" | "after"
+            | "content" | "updated" | "with" => "new_string",
+
+            // Map path variations
+            "file" | "file_path" | "filepath" | "filename" | "file_name" => "path",
+
+            // Already correct names - still pass through for array conversion
+            "old_string" => "old_string",
+            "new_string" => "new_string",
+            "path" => "path",
+
+            _ => key.as_str(),
+        };
+
+        // Handle array values - join them into a single string with newlines
+        // Models like Ollama often send old/new as arrays of lines
+        let mapped_value = if (mapped_key == "old_string" || mapped_key == "new_string") && value.is_array() {
+            if let Some(arr) = value.as_array() {
+                let joined = arr
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                serde_json::Value::String(joined)
+            } else {
+                value.clone()
+            }
+        } else {
+            value.clone()
+        };
+
+        mapped.insert(mapped_key.to_string(), mapped_value);
+    }
+
+    serde_json::Value::Object(mapped)
+}
+
+/// Map file_read/read_file argument names from various LLM output formats to our expected format
+fn map_file_read_arguments(args: &serde_json::Value) -> serde_json::Value {
+    let Some(obj) = args.as_object() else {
+        return args.clone();
+    };
+
+    let mut mapped = serde_json::Map::new();
+
+    for (key, value) in obj {
+        let mapped_key = match key.as_str() {
+            "file" | "file_path" | "filepath" | "filename" | "name" | "file_name" => "path",
             _ => key.as_str(),
         };
         mapped.insert(mapped_key.to_string(), value.clone());
@@ -251,8 +361,27 @@ fn map_file_write_arguments(args: &serde_json::Value) -> serde_json::Value {
 
     for (key, value) in obj {
         let mapped_key = match key.as_str() {
-            "file" | "file_path" | "filepath" | "filename" => "path",
-            "text" | "data" | "contents" => "content",
+            "file" | "file_path" | "filepath" | "filename" | "name" | "file_name" => "path",
+            "text" | "data" | "contents" | "file_content" | "code" | "body" => "content",
+            _ => key.as_str(),
+        };
+        mapped.insert(mapped_key.to_string(), value.clone());
+    }
+
+    serde_json::Value::Object(mapped)
+}
+
+/// Map shell/command argument names from various LLM output formats
+fn map_shell_arguments(args: &serde_json::Value) -> serde_json::Value {
+    let Some(obj) = args.as_object() else {
+        return args.clone();
+    };
+
+    let mut mapped = serde_json::Map::new();
+
+    for (key, value) in obj {
+        let mapped_key = match key.as_str() {
+            "cmd" | "shell_command" | "bash" | "exec" | "run" => "command",
             _ => key.as_str(),
         };
         mapped.insert(mapped_key.to_string(), value.clone());
@@ -610,7 +739,17 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
                                 .unwrap_or(serde_json::json!({}))
                         };
 
-                        tool_uses.push((id, name, input));
+                        // Apply the same mapping as for text-extracted tools
+                        // This handles different parameter names from different models
+                        if let Some((mapped_name, mapped_input)) = parse_tool_from_json(&serde_json::json!({
+                            "name": name,
+                            "arguments": input
+                        })) {
+                            tool_uses.push((id, mapped_name, mapped_input));
+                        } else {
+                            // Fallback if parsing fails
+                            tool_uses.push((id, name, input));
+                        }
                         current_tool_input_json.clear();
                     }
                 }
@@ -719,27 +858,10 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
                     is_first_turn = false;
                     continue; // Skip - get model's next response
                 } else {
-                    // Model tried to write without exploring or asking - check if it asked questions
-                    let text_before_tools = current_text.trim();
-                    let asked_questions = text_before_tools.contains('?') && text_before_tools.len() > 20;
-
-                    if !asked_questions {
-                        // Model jumped straight to write tools without asking - reject
-                        eprintln!("[ENFORCEMENT] First turn: Model used write tools without asking questions. Rejecting.");
-
-                        // Tell the model to explore first
-                        let clarification_message = "STOP! You tried to modify files without first understanding the existing codebase.\n\n\
-                            Before making changes, you MUST:\n\
-                            1. Use glob to see what files exist\n\
-                            2. Use read_file to examine the relevant files\n\
-                            3. Then make targeted changes that fit the existing codebase\n\n\
-                            Start by exploring the current directory with glob.";
-
-                        messages.push(Message::user(clarification_message.to_string()));
-
-                        is_first_turn = false;
-                        continue; // Skip - get model's next response
-                    }
+                    // Project is empty (implies_existing=false) - model is FREE to create files!
+                    // This is the correct behavior for "build me a tic-tac-toe game" type requests.
+                    eprintln!("[ENFORCEMENT] First turn: Empty project, model is creating files. Allowing.");
+                    has_made_edits = true;
                 }
             } else if implies_existing {
                 // Model used NO tools but the request implies existing content
@@ -757,6 +879,37 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
 
                 is_first_turn = false;
                 continue; // Skip - get model's next response
+            } else {
+                // Empty project (implies_existing=false) and model used NO tools
+                // Check if model is giving instructions instead of building
+                let text_lower = current_text.to_lowercase();
+                let is_giving_instructions = text_lower.contains("you can")
+                    || text_lower.contains("you need")
+                    || text_lower.contains("you should")
+                    || text_lower.contains("step 1")
+                    || text_lower.contains("first,")
+                    || text_lower.contains("to create")
+                    || text_lower.contains("to build")
+                    || text_lower.contains("here's how")
+                    || text_lower.contains("```html")
+                    || text_lower.contains("```javascript")
+                    || text_lower.contains("```css");
+
+                if is_giving_instructions {
+                    eprintln!("[ENFORCEMENT] First turn: Empty project but model gave instructions instead of building. Forcing file creation.");
+
+                    let build_message = "STOP! Do NOT give instructions or show code blocks. The user wants YOU to build the application.\n\n\
+                        This is an EMPTY project. You must CREATE the files yourself using file_write.\n\n\
+                        For example, to create an HTML file:\n\
+                        Call file_write with path=\"index.html\" and content=\"<!DOCTYPE html>...\"\n\n\
+                        START BUILDING NOW - use file_write to create the files!";
+
+                    messages.push(Message::user(build_message.to_string()));
+
+                    is_first_turn = false;
+                    continue;
+                }
+                // Otherwise, model might be asking legitimate clarifying questions - allow it
             }
         }
 
@@ -873,7 +1026,21 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
 
             // Only enforce if model hasn't already made edits - allow summary responses after edits
             if user_wants_build && giving_instructions && !has_made_edits {
-                eprintln!("[ENFORCEMENT] User wants to build but model is giving instructions. Forcing tool use.");
+                // Check if the model is planning a complex backend app - these need multiple steps
+                // and we should guide them to build it properly rather than simplify
+                let is_complex_app = assistant_lower.contains("express")
+                    || assistant_lower.contains("mongodb")
+                    || assistant_lower.contains("database")
+                    || assistant_lower.contains("npm install")
+                    || assistant_lower.contains("node.js")
+                    || assistant_lower.contains("fastapi")
+                    || assistant_lower.contains("django")
+                    || assistant_lower.contains("flask")
+                    || assistant_lower.contains("authentication")
+                    || assistant_lower.contains("api endpoint")
+                    || assistant_lower.contains("server");
+
+                eprintln!("[ENFORCEMENT] User wants to build but model is giving instructions. is_complex_app={}", is_complex_app);
 
                 let build_message = if implies_existing {
                     "STOP! The user wants to MODIFY EXISTING CODE. Do NOT ask clarifying questions.\n\n\
@@ -882,13 +1049,23 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
                     2. Use read_file to examine the relevant files (look for HTML, JS, CSS files)\n\
                     3. Use file_edit to make the specific changes the user requested\n\n\
                     The project already exists - explore it and make the changes NOW."
+                } else if is_complex_app {
+                    // For complex apps, guide them to build properly with all needed files
+                    "STOP explaining - START BUILDING!\n\n\
+                    I see you're planning a backend app. That's the right approach! Now execute it:\n\n\
+                    1. Use file_write to create package.json with all dependencies\n\
+                    2. Use file_write to create server.js (or app.js) with the Express/backend code\n\
+                    3. Use file_write to create any frontend files (index.html, styles.css, etc.)\n\
+                    4. Use shell to run 'npm install' after creating package.json\n\n\
+                    Create ALL the files you mentioned. Don't simplify - build the full app!\n\
+                    START with file_write for package.json NOW."
                 } else {
                     "STOP! The user has already given you the information you need.\n\n\
-                    Do NOT ask for more confirmation. Do NOT ask 'should I create...?' or 'would you like...?'\n\n\
+                    Do NOT ask for more confirmation. Do NOT explain steps.\n\n\
                     You MUST start building NOW using your tools:\n\
-                    1. Use file_write to create the project files\n\
-                    2. Create index.html, styles.css, and any needed JS files\n\
-                    3. Actually BUILD it - the user wants results, not questions\n\n\
+                    1. Use file_write to create index.html with complete HTML\n\
+                    2. Use file_write to create styles.css with full styling\n\
+                    3. Use file_write to create app.js with all functionality\n\n\
                     START CREATING FILES NOW with file_write."
                 };
 
@@ -1223,6 +1400,9 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
         // File modification tools that should be skipped in review mode
         let file_mod_tools = ["file_write", "file_edit", "file_delete", "create_file", "edit_file", "delete_file"];
 
+        // Track if we made file mods in review mode - we'll exit after this turn
+        let mut has_review_file_mods = false;
+
         for (id, name, input) in tool_uses {
             let name_lower = name.to_lowercase();
             let is_file_mod = file_mod_tools.iter().any(|t| name_lower.contains(t));
@@ -1232,6 +1412,7 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
             if review_mode && is_file_mod {
                 eprintln!("[REVIEW MODE] Skipping execution of file tool: {} (events already emitted)", name);
                 tools_executed += 1;
+                has_review_file_mods = true;
 
                 // Return a mock success result so the model knows the "change was applied"
                 let mock_result = match name.as_str() {
@@ -1278,6 +1459,56 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
             });
         }
 
+        // Detect if model is stuck searching an empty directory
+        // If project has no files (implies_existing=false) and all tool results show empty/no matches,
+        // inject a message telling the model to start creating instead of searching
+        if is_ollama && !implies_existing && !has_made_edits {
+            let all_results_empty = tool_result_blocks.iter().all(|block| {
+                if let ContentBlock::ToolResult { content, .. } = block {
+                    if let crate::llm::message::ToolResultContent::Text(text) = content {
+                        // Check for empty results from glob/grep/read
+                        text.contains("Found 0 matches") ||
+                        text.contains("No files found") ||
+                        text.contains("searched 0 files") ||
+                        text.contains("not found") ||
+                        text.contains("does not exist") ||
+                        text.is_empty()
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            });
+
+            if all_results_empty && !tool_result_blocks.is_empty() {
+                eprintln!("[ENFORCEMENT] Empty project and all search results empty. Telling model to start creating.");
+
+                // Add the tool results first
+                messages.push(Message {
+                    id: uuid::Uuid::new_v4(),
+                    role: crate::llm::message::Role::User,
+                    content: MessageContent::Blocks(tool_result_blocks),
+                    timestamp: chrono::Utc::now(),
+                    tool_use_id: None,
+                    token_count: None,
+                });
+
+                // Then add strong guidance to start creating files
+                let create_message = "STOP SEARCHING! The directory is completely empty.\n\n\
+                    You MUST start CREATING files now using file_write. For a web app:\n\n\
+                    1. Call file_write with path=\"index.html\" and complete HTML content\n\
+                    2. Call file_write with path=\"styles.css\" and complete CSS\n\
+                    3. Call file_write with path=\"app.js\" and complete JavaScript\n\n\
+                    Do NOT search again. Do NOT ask questions. START BUILDING NOW with file_write!";
+
+                messages.push(Message::user(create_message.to_string()));
+
+                // Skip the normal message push below
+                continue;
+            }
+        }
+
         // Add tool results as user message
         messages.push(Message {
             id: uuid::Uuid::new_v4(),
@@ -1292,6 +1523,13 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
         // This ensures that even if Ted is killed mid-conversation, Teddy has the latest history
         if let Err(e) = emitter.emit_conversation_history(extract_history_messages(&messages)) {
             eprintln!("[HISTORY] Failed to emit turn history: {}", e);
+        }
+
+        // In review mode, if we made file modifications, EXIT the loop
+        // The user needs to review and accept/reject before we continue
+        if has_review_file_mods {
+            eprintln!("[REVIEW MODE] File modifications pending review. Exiting loop to wait for user.");
+            break;
         }
 
         eprintln!("[LOOP] End of turn. tools_executed={}, files_changed={:?}. Continuing to next LLM call...", tools_executed, files_changed);

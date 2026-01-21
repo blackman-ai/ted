@@ -6,7 +6,7 @@ import { FileTree } from './components/FileTree';
 import { Editor } from './components/Editor';
 import { ChatPanel } from './components/ChatPanel';
 import { Console } from './components/Console';
-import { Preview } from './components/Preview';
+import { Preview, stopPreviewServer } from './components/Preview';
 import { ProjectPicker } from './components/ProjectPicker';
 import { DiffViewer, PendingChange } from './components/DiffViewer';
 import { Settings } from './components/Settings';
@@ -343,6 +343,8 @@ function App() {
           <button
             className="btn-secondary"
             onClick={async () => {
+              // Stop any running preview server before changing projects
+              await stopPreviewServer();
               await window.teddy.clearLastProject();
               setProject(null);
             }}

@@ -16,6 +16,20 @@ let globalServerPort = 8080;
 let globalServerPid: number | null = null;
 let globalProjectType: ProjectType = 'unknown';
 
+// Export function to stop server from outside the component (e.g., when changing projects)
+export async function stopPreviewServer(): Promise<void> {
+  if (globalServerPid) {
+    try {
+      await window.teddy.killShell(globalServerPid);
+    } catch (err) {
+      console.error('Failed to kill server:', err);
+    }
+    globalServerPid = null;
+  }
+  globalServerRunning = false;
+  globalProjectType = 'unknown';
+}
+
 export function Preview({ projectPath }: PreviewProps) {
   const [url, setUrl] = useState(`http://localhost:${globalServerPort}`);
   const [iframeSrc, setIframeSrc] = useState(`http://localhost:${globalServerPort}?_t=${Date.now()}`);
@@ -37,17 +51,20 @@ export function Preview({ projectPath }: PreviewProps) {
     detectProjectType();
   }, [projectPath]);
 
-  // Sync with global state on mount and refresh with cache-busting
+  // Sync with global state on mount/project change and refresh with cache-busting
   useEffect(() => {
     setIsRunning(globalServerRunning);
     const baseUrl = `http://localhost:${globalServerPort}`;
     setUrl(baseUrl);
-    // Always refresh iframe with cache-busting when component mounts
+    setPort(globalServerPort);
+    // Always refresh iframe with cache-busting when component mounts or project changes
     setIframeSrc(`${baseUrl}?_t=${Date.now()}`);
     if (globalServerRunning) {
       setServerOutput(`Server running on port ${globalServerPort}`);
+    } else {
+      setServerOutput('');
     }
-  }, []);
+  }, [projectPath]);
 
   // Close deploy menu when clicking outside
   useEffect(() => {
@@ -203,7 +220,8 @@ export function Preview({ projectPath }: PreviewProps) {
     setUrl(`http://localhost:${port}`);
 
     try {
-      const result = await window.teddy.runShell(command);
+      // Pass port so any existing process on that port gets killed first
+      const result = await window.teddy.runShell(command, port);
       if (result.success && result.pid) {
         globalServerPid = result.pid;
         setIsRunning(true);

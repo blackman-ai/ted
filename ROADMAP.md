@@ -15,6 +15,7 @@
 | **LLM Providers** | Anthropic Claude | ✅ Complete | claude-sonnet-4, claude-3.5-sonnet, claude-3.5-haiku |
 | | Ollama (Local) | ✅ Complete | qwen2.5-coder, llama3.2, deepseek-coder, etc. |
 | | OpenRouter | ✅ Complete | 100+ models (GPT-4, Claude, Gemini, DeepSeek, Llama, etc.) |
+| | Blackman AI | ✅ Complete | OpenAI-compatible cloud proxy with optimization |
 | | OpenAI | ❌ Skeleton | Not implemented (use OpenRouter instead) |
 | | Google Gemini | ❌ Skeleton | Not implemented (use OpenRouter instead) |
 | **Tools** | file_read | ✅ Complete | Line offset/limit, truncation |
@@ -28,6 +29,7 @@
 | | database_migrate | ✅ Complete | Run Prisma migrations |
 | | database_query | ✅ Complete | Execute SQL queries (read-only by default) |
 | | database_seed | ✅ Complete | Run seed scripts for sample data |
+| | file_changeset | ✅ Complete | Multi-file atomic/incremental changes |
 | | External tools | 🔶 Partial | JSON-RPC protocol defined, not tested |
 | **Caps System** | Base cap | ✅ Complete | Always loaded |
 | | rust-expert | ✅ Complete | Rust best practices |
@@ -45,6 +47,9 @@
 | | Git analysis | ✅ Complete | Blame, commit frequency |
 | | Language parsing | ✅ Complete | Rust, Python, TS, Go |
 | | Dependency graph | ✅ Complete | Import/export tracking |
+| | Conversation memory | ✅ Complete | Embeddings + semantic search |
+| | Summarization | ✅ Complete | Auto-summarize long conversations |
+| | Recall/RAG | ✅ Complete | Retrieve relevant past context |
 | **CLI** | Interactive chat | ✅ Complete | Full REPL |
 | | Single-shot ask | ✅ Complete | `ted ask "question"` |
 | | History management | ✅ Complete | List, search, show, delete |
@@ -64,7 +69,7 @@
 | | Monaco editor | ✅ Complete | Syntax highlighting, save |
 | | Chat panel | ✅ Complete | Streaming messages, events |
 | | Console | ✅ Complete | Logs, stderr output |
-| | Preview iframe | 🔶 Partial | Manual URL only |
+| | Preview iframe | ✅ Complete | Auto-detects dev server, Vite/Next.js support |
 | **Ted Integration** | Subprocess spawning | ✅ Complete | TedRunner |
 | | JSONL parsing | ✅ Complete | TedParser |
 | | File operations | ✅ Complete | FileApplier |
@@ -87,7 +92,7 @@
 | Feature | Ted | OpenCode | Winner |
 |---------|-----|----------|--------|
 | **Language** | Rust | Go | Tie |
-| **LLM Providers** | 2 (Anthropic, Ollama) | 75+ (via Models.dev) | OpenCode |
+| **LLM Providers** | 4 (Anthropic, Ollama, OpenRouter, Blackman) | 75+ (via Models.dev) | Tie |
 | **Local Models** | ✅ Ollama | ✅ Multiple | Tie |
 | **Customization** | Caps (composable) | Agents (single mode) | **Ted** |
 | **Stack Multiple Personas** | ✅ Yes | ❌ No | **Ted** |
@@ -99,7 +104,7 @@
 | **IDE Extension** | ✅ Yes | ✅ Yes | Tie |
 | **GUI Companion** | ✅ Teddy | ❌ No | **Ted** |
 | **License** | AGPL-3.0 | MIT | Preference |
-| **Multi-session** | ❌ No | ✅ Yes | OpenCode |
+| **Multi-session** | ✅ Yes | ✅ Yes | Tie |
 | **Shareable Sessions** | ❌ No | ✅ Yes | OpenCode |
 
 **Summary**: Ted wins on customization (caps) and memory. OpenCode wins on provider breadth and integrations.
@@ -114,8 +119,8 @@
 | **Self-Hosted** | ✅ Yes | ❌ No | ❌ No | ❌ No |
 | **Pricing** | Free | Credit-based ($20+) | Credit-based ($20+) | Token-based ($20-200) |
 | **Backend Generation** | 🔶 Via Ted | ✅ Supabase auto | 🔶 Limited | ✅ Node.js + Supabase |
-| **Database Setup** | ❌ Not yet | ✅ Auto Supabase | ❌ No | ✅ Auto Supabase |
-| **Deployment** | ❌ Not yet | ✅ One-click | ✅ Vercel native | ✅ Netlify native |
+| **Database Setup** | ✅ SQLite + Prisma | ✅ Auto Supabase | ❌ No | ✅ Auto Supabase |
+| **Deployment** | ✅ Vercel, Netlify, CF Tunnel | ✅ One-click | ✅ Vercel native | ✅ Netlify native |
 | **Tech Stack** | React + any | React + Tailwind | React + Next.js + Tailwind | React + Tailwind |
 | **Agent Mode** | ✅ Yes (Ted) | ✅ Yes (autonomous) | ✅ Yes (agentic) | 🔶 Discussion mode |
 | **Git Integration** | ✅ Auto-commit | ✅ GitHub sync | ✅ GitHub | ❌ Manual export |
@@ -123,7 +128,7 @@
 | **Figma Import** | ❌ No | ❌ No | ❌ No | ✅ Yes |
 | **Code Ownership** | ✅ Full | ✅ Full | ✅ Full | ✅ Full |
 | **Model Selection** | ✅ Any (Ollama) | ❌ Fixed | ❌ Claude only | ❌ Fixed |
-| **Hardware Adaptive** | 🔶 Planned | ❌ N/A | ❌ N/A | ❌ N/A |
+| **Hardware Adaptive** | ✅ Yes (7 tiers) | ❌ N/A | ❌ N/A | ❌ N/A |
 
 **Summary**: Teddy's differentiators are local-first, offline, open-source, and model flexibility. Competitors win on polish, integrations, and deployment.
 
@@ -417,42 +422,39 @@ This is our contract with the community: *If it doesn't work on the benchmark, w
 
 These are the features we **must** have to compete. Prioritized by user impact.
 
-### 🔴 Critical (Users will bounce without these)
+### ✅ Closed Gaps (Previously Critical)
 
-| Gap | Who Has It | Why It Matters | Effort | Phase |
-|-----|------------|----------------|--------|-------|
-| **Database setup** | Lovable, Bolt.new | Can't build real apps without data persistence | 5 days | 1 |
-| **Diff view** | All IDEs | Users scared to let AI change code without review | 4 days | 1 |
-| **One-click deploy** | Lovable, v0, Bolt.new | Apps stuck on localhost forever | 3 days/platform | 2 |
-| **MCP protocol** | OpenCode | Cut off from entire tool ecosystem | 5 days | 2 |
-| **OpenRouter provider** | OpenCode (75+ models) | Limited to 2 providers is embarrassing | 3 days | 1 |
+| Feature | Status | Notes |
+|---------|--------|-------|
+| **Database setup** | ✅ Complete | SQLite + Prisma with 4 tools |
+| **Diff view** | ✅ Complete | Monaco diff editor, accept/reject |
+| **One-click deploy** | ✅ Complete | Vercel, Netlify, Cloudflare Tunnel |
+| **MCP protocol** | ✅ Complete | Full stdio server implementation |
+| **OpenRouter provider** | ✅ Complete | 100+ models accessible |
+| **Multi-session** | ✅ Complete | Full session CRUD + UI |
+| **LSP integration** | ✅ Complete | Autocomplete, go-to-def, hover |
+| **VS Code extension** | ✅ Complete | Full IDE integration |
+| **Settings UI** | ✅ Complete | Hardware/Providers/Deployment/Database tabs |
+| **File watching** | ✅ Complete | chokidar with ignore patterns |
+| **PostgreSQL + Docker** | ✅ Complete | Docker container management, database_query support |
 
-### 🟡 Important (Users will complain)
-
-| Gap | Who Has It | Why It Matters | Effort | Phase |
-|-----|------------|----------------|--------|-------|
-| **Multi-session** | OpenCode | Can't work on multiple tasks | 3 days | 2 |
-| **LSP integration** | OpenCode, all IDEs | No autocomplete, no go-to-definition | 1 week | 3 |
-| **VS Code extension** | OpenCode, Cursor | IDE users feel left out | 1 week | 3 |
-| **Settings UI** | All competitors | CLI-only config is hostile | 3 days | 1 |
-| **File watching** | All IDEs | External changes not detected | 2 days | 2 |
-
-### 🟢 Nice-to-Have (Differentiation)
+### 🟢 Remaining Gaps (Nice-to-Have / Differentiation)
 
 | Gap | Who Has It | Why It Matters | Effort | Phase |
 |-----|------------|----------------|--------|-------|
 | **Visual editing** | Lovable | Click-to-edit without chat | 2 weeks | 4 |
-| **GitHub Actions bot** | OpenCode | `/ted` mentions in PRs | 3 days | 4 |
-| **Figma import** | Bolt.new | Design-to-code workflow | 1 week | 4 |
+| **GitHub Actions bot** | OpenCode | `/ted` mentions in PRs | 3 days | 5 |
+| **Figma import** | Bolt.new | Design-to-code workflow | 1 week | 5 |
 | **Shareable sessions** | OpenCode | Collaboration features | 4 days | 3 |
-| **Plugin system** | VS Code | User extensibility | 1 week | 4 |
+
+Note: Plugin system removed - Teddy is not a full IDE. Users who want extensibility should use Ted via the VS Code extension.
 
 ### Gap Closure Strategy
 
-**Phase 1 Focus**: Database + Diff + OpenRouter = "Real apps, safely"
-**Phase 2 Focus**: Deploy + MCP = "Ship to the world"
-**Phase 3 Focus**: LSP + Extension = "Developer experience"
-**Phase 4 Focus**: Visual + Plugins = "Differentiation"
+**Phase 1-2**: ✅ COMPLETE - Database, Diff, OpenRouter, Deploy, MCP all done
+**Phase 3 Focus**: Pi optimizations, shareable sessions, polish
+**Phase 4 Focus**: Visual editing + SQLite→PostgreSQL migration = "Differentiation" (Docker/Postgres core done)
+**Phase 5 Focus**: GitHub Actions bot, Figma import = "Nice-to-have"
 
 ---
 
@@ -597,19 +599,98 @@ model Favorite {
 
 | Task | Priority | Effort | Status | Notes |
 |------|----------|--------|--------|-------|
-| **PostgreSQL upgrade path** | P0 | 4 days | 🔴 Not started | Docker-based, migrate from SQLite |
-| **Docker detection & management** | P0 | 4 days | 🔴 Not started | Container runtime |
-| Visual editing | P1 | 2 weeks | 🔴 Not started | Click-to-edit UI |
-| GitHub Actions bot | P2 | 3 days | 🔴 Not started | `/ted` in PR comments |
-| Plugin system | P2 | 1 week | 🔴 Not started | User extensions |
-| Figma import | P3 | 1 week | 🔴 Not started | Design-to-code |
-| Domain purchase flow | P3 | 4 days | 🔴 Not started | Affiliate integration |
+| **Visual editing** | P0 | 2 weeks | 🔴 Not started | Click-to-edit UI (see detailed plan below) |
+| **Docker detection** | P0 | 2 days | ✅ Done | `teddy/electron/docker/detector.ts` |
+| **PostgreSQL container management** | P0 | 3 days | ✅ Done | `teddy/electron/docker/container-manager.ts` |
+| **PostgreSQL query support** | P0 | 2 days | ✅ Done | `database_query` tool updated in `database.rs` |
+| **Database Settings UI tab** | P1 | 2 days | ✅ Done | Settings → Database tab with Docker/Postgres controls |
+| **SQLite → PostgreSQL migration** | P1 | 2 days | 🔴 Not started | Data export/import tooling |
+| Domain purchase flow | P2 | 4 days | 🔴 Not started | Affiliate integration |
+
+#### Visual Editing Implementation Plan
+
+**Architecture**: Injection script + postMessage bridge
+
+1. **Element Detection** (2-3 days)
+   - Create `injection-script.ts` that detects clicks in preview iframe
+   - Build XPath generator to identify element location in DOM
+   - Implement postMessage communication between iframe and React app
+   - Add "Inspection Mode" toggle button to Preview toolbar
+
+2. **Element Display** (1-2 days)
+   - Show selection overlay on clicked elements with bounds highlighting
+   - Display element properties panel (tag, classes, id, text content)
+   - Create visual selection highlight effect
+
+3. **Text Editing** (2-3 days)
+   - Build file search to locate element's text content in source
+   - Create inline edit UI (popup or modal)
+   - Implement file write and auto-refresh flow
+
+4. **Style Editing** (3-4 days)
+   - Extract computed styles from selected element
+   - Build style editor UI (color picker, font size, spacing, etc.)
+   - Implement CSS class/inline style updates in source
+   - Add instant visual feedback in preview
+
+5. **Source Mapping** (4-5 days)
+   - Use regex patterns to find component definitions
+   - Match CSS class names to relevant source files
+   - Fall back to user manual file selection when mapping fails
+   - Optional: Support source maps for projects that have them
+
+**Technical Constraints**:
+- Preview iframe runs on localhost (cross-origin from Electron)
+- Must inject script that communicates via postMessage
+- Cannot directly access iframe DOM from parent
+- Source mapping is heuristic-based (not 100% accurate like Lovable's Babel plugin)
+
+#### PostgreSQL + Docker Implementation Plan
+
+**Philosophy**: SQLite is default. Docker+PostgreSQL are optional, not forced.
+
+1. **Docker Detection** (2 days)
+   - Create `teddy/electron/docker/detector.ts`
+   - Functions: `isDockerInstalled()`, `isDockerDaemonRunning()`, `getDockerVersion()`
+   - Clear error messages with install guides when Docker missing
+
+2. **Container Management** (3 days)
+   - Create `teddy/electron/docker/container-manager.ts`
+   - Start/stop/restart PostgreSQL container via Docker CLI
+   - Service registry in `~/.teddy/docker/services.json`
+   - Volume mapping to `~/.teddy/docker/postgres-data/`
+   - Auto-configure `DATABASE_URL` in project's `.env`
+
+3. **Complete PostgreSQL Query Support** (2 days)
+   - Finish `database_query` tool for PostgreSQL (currently returns error)
+   - Use `psql` CLI or add `pg` npm dependency
+   - Connection validation with timeout and retry logic
+
+4. **Settings UI** (2 days)
+   - Add "Database & Services" tab to Settings
+   - Show Docker status and version
+   - PostgreSQL service controls (Start/Stop)
+   - Connection string display and edit
+   - Data backup/restore buttons
+
+5. **Migration Tooling** (2 days)
+   - Export SQLite data to SQL dump
+   - Import into PostgreSQL container
+   - Schema sync via Prisma migrations
+   - Backup original SQLite file
+
+**Hardware Tier Warnings**:
+```
+UltraTiny/Ancient: "Docker not recommended. Use SQLite."
+Tiny: "PostgreSQL may be slow. SQLite preferred."
+Small+: "PostgreSQL fully supported."
+```
 
 **Phase 4 Deliverable**: Full-stack apps with PostgreSQL, visual editing for non-coders.
 
 ### Phase 5: Distribution + Polish (Weeks 13-16)
 
-**Goal**: Easy installation, professional packaging
+**Goal**: Easy installation, professional packaging, nice-to-have integrations
 
 | Task | Priority | Effort | Status | Notes |
 |------|----------|--------|--------|-------|
@@ -618,10 +699,12 @@ model Favorite {
 | Linux AppImage | P1 | 1 day | 🔴 Not started | Universal Linux |
 | Auto-update for Teddy | P1 | 3 days | 🔴 Not started | Electron auto-updater |
 | Homebrew formula | P2 | 1 day | 🔴 Not started | `brew install ted` |
-| Multi-agent orchestration | P2 | 1 week | 🔴 Not started | Parallel agents |
+| GitHub Actions bot | P2 | 3 days | 🔴 Not started | `/ted` mentions in PR comments |
+| Figma import | P3 | 1 week | 🔴 Not started | Design-to-code workflow |
+| Multi-agent orchestration | P3 | 1 week | 🔴 Not started | Parallel agents |
 | ted_core library extraction | P3 | 2 weeks | 🔴 Not started | Eliminate subprocess overhead |
 
-**Phase 5 Deliverable**: One-click install on all platforms, auto-updates.
+**Phase 5 Deliverable**: One-click install on all platforms, auto-updates, GitHub/Figma integrations.
 
 ### Share Flow Architecture
 

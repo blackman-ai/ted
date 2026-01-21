@@ -49,19 +49,52 @@ interface SettingsProps {
   onClose: () => void;
 }
 
+interface DockerStatus {
+  installed: boolean;
+  daemonRunning: boolean;
+  version: string | null;
+  composeVersion: string | null;
+  error: string | null;
+}
+
+interface PostgresStatus {
+  installed: boolean;
+  running: boolean;
+  containerId: string | null;
+  databaseUrl: string | null;
+  port: number;
+  dataDir: string;
+}
+
 export function Settings({ onClose }: SettingsProps) {
   const [settings, setSettings] = useState<TedSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [activeTab, setActiveTab] = useState<'providers' | 'deployment' | 'hardware'>('providers');
+  const [activeTab, setActiveTab] = useState<'providers' | 'deployment' | 'database' | 'hardware'>('providers');
   const [verifyingVercelToken, setVerifyingVercelToken] = useState(false);
   const [vercelTokenValid, setVercelTokenValid] = useState<boolean | null>(null);
   const [verifyingNetlifyToken, setVerifyingNetlifyToken] = useState(false);
   const [netlifyTokenValid, setNetlifyTokenValid] = useState<boolean | null>(null);
 
+  // Docker & PostgreSQL state
+  const [dockerStatus, setDockerStatus] = useState<DockerStatus | null>(null);
+  const [postgresStatus, setPostgresStatus] = useState<PostgresStatus | null>(null);
+  const [dockerLoading, setDockerLoading] = useState(false);
+  const [postgresLoading, setPostgresLoading] = useState(false);
+  const [postgresLogs, setPostgresLogs] = useState<string | null>(null);
+  const [showLogs, setShowLogs] = useState(false);
+  const [dockerInstructions, setDockerInstructions] = useState<string | null>(null);
+
   useEffect(() => {
     loadSettings();
   }, []);
+
+  useEffect(() => {
+    if (activeTab === 'database') {
+      loadDockerStatus();
+      loadPostgresStatus();
+    }
+  }, [activeTab]);
 
   const loadSettings = async () => {
     try {
@@ -71,6 +104,102 @@ export function Settings({ onClose }: SettingsProps) {
       console.error('Failed to load settings:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadDockerStatus = async () => {
+    setDockerLoading(true);
+    try {
+      const status = await window.teddy.dockerGetStatus();
+      setDockerStatus(status);
+
+      if (!status.installed) {
+        const { instructions } = await window.teddy.dockerGetInstallInstructions();
+        setDockerInstructions(instructions);
+      } else if (!status.daemonRunning) {
+        const { instructions } = await window.teddy.dockerGetStartInstructions();
+        setDockerInstructions(instructions);
+      } else {
+        setDockerInstructions(null);
+      }
+    } catch (err) {
+      console.error('Failed to load Docker status:', err);
+    } finally {
+      setDockerLoading(false);
+    }
+  };
+
+  const loadPostgresStatus = async () => {
+    try {
+      const status = await window.teddy.postgresGetStatus();
+      setPostgresStatus(status);
+    } catch (err) {
+      console.error('Failed to load PostgreSQL status:', err);
+    }
+  };
+
+  const startPostgres = async () => {
+    setPostgresLoading(true);
+    try {
+      const result = await window.teddy.postgresStart();
+      if (result.success) {
+        await loadPostgresStatus();
+      } else {
+        alert(`Failed to start PostgreSQL: ${result.error}`);
+      }
+    } catch (err) {
+      console.error('Failed to start PostgreSQL:', err);
+      alert('Failed to start PostgreSQL');
+    } finally {
+      setPostgresLoading(false);
+    }
+  };
+
+  const stopPostgres = async () => {
+    setPostgresLoading(true);
+    try {
+      const result = await window.teddy.postgresStop();
+      if (result.success) {
+        await loadPostgresStatus();
+      } else {
+        alert(`Failed to stop PostgreSQL: ${result.error}`);
+      }
+    } catch (err) {
+      console.error('Failed to stop PostgreSQL:', err);
+      alert('Failed to stop PostgreSQL');
+    } finally {
+      setPostgresLoading(false);
+    }
+  };
+
+  const loadPostgresLogs = async () => {
+    try {
+      const { logs } = await window.teddy.postgresGetLogs(100);
+      setPostgresLogs(logs);
+      setShowLogs(true);
+    } catch (err) {
+      console.error('Failed to load PostgreSQL logs:', err);
+    }
+  };
+
+  const testPostgresConnection = async () => {
+    try {
+      const result = await window.teddy.postgresTestConnection();
+      if (result.success) {
+        alert('Connection successful! PostgreSQL is ready.');
+      } else {
+        alert(`Connection failed: ${result.error}`);
+      }
+    } catch (err) {
+      console.error('Failed to test connection:', err);
+      alert('Failed to test connection');
+    }
+  };
+
+  const copyDatabaseUrl = async () => {
+    if (postgresStatus?.databaseUrl) {
+      await navigator.clipboard.writeText(postgresStatus.databaseUrl);
+      alert('DATABASE_URL copied to clipboard!');
     }
   };
 
@@ -188,6 +317,12 @@ export function Settings({ onClose }: SettingsProps) {
             Deployment
           </button>
           <button
+            className={`settings-tab ${activeTab === 'database' ? 'active' : ''}`}
+            onClick={() => setActiveTab('database')}
+          >
+            Database
+          </button>
+          <button
             className={`settings-tab ${activeTab === 'hardware' ? 'active' : ''}`}
             onClick={() => setActiveTab('hardware')}
           >
@@ -205,7 +340,19 @@ export function Settings({ onClose }: SettingsProps) {
                 <select
                   id="provider"
                   value={settings.provider}
-                  onChange={(e) => setSettings({ ...settings, provider: e.target.value })}
+                  onChange={(e) => {
+                    const newProvider = e.target.value;
+                    // Sync the model field when provider changes
+                    let newModel = settings.model;
+                    if (newProvider === 'ollama') {
+                      newModel = settings.ollamaModel;
+                    } else if (newProvider === 'openrouter') {
+                      newModel = settings.openrouterModel;
+                    } else if (newProvider === 'anthropic') {
+                      newModel = settings.anthropicModel;
+                    }
+                    setSettings({ ...settings, provider: newProvider, model: newModel });
+                  }}
                 >
                   <option value="anthropic">Anthropic Claude</option>
                   <option value="ollama">Ollama (Local)</option>
@@ -232,7 +379,7 @@ export function Settings({ onClose }: SettingsProps) {
                     <select
                       id="anthropic-model"
                       value={settings.anthropicModel}
-                      onChange={(e) => setSettings({ ...settings, anthropicModel: e.target.value })}
+                      onChange={(e) => setSettings({ ...settings, anthropicModel: e.target.value, model: e.target.value })}
                     >
                       <option value="claude-sonnet-4-20250514">Claude Sonnet 4</option>
                       <option value="claude-3.5-sonnet-20241022">Claude 3.5 Sonnet</option>
@@ -261,11 +408,11 @@ export function Settings({ onClose }: SettingsProps) {
                       type="text"
                       id="ollama-model"
                       value={settings.ollamaModel}
-                      onChange={(e) => setSettings({ ...settings, ollamaModel: e.target.value })}
+                      onChange={(e) => setSettings({ ...settings, ollamaModel: e.target.value, model: e.target.value })}
                       placeholder="qwen2.5-coder:14b"
                     />
                     <small>
-                      {settings.hardware && (
+                      {settings.hardware?.recommendedModels?.[0] && (
                         <>Recommended for your hardware: {settings.hardware.recommendedModels[0]}</>
                       )}
                     </small>
@@ -293,7 +440,7 @@ export function Settings({ onClose }: SettingsProps) {
                       type="text"
                       id="openrouter-model"
                       value={settings.openrouterModel}
-                      onChange={(e) => setSettings({ ...settings, openrouterModel: e.target.value })}
+                      onChange={(e) => setSettings({ ...settings, openrouterModel: e.target.value, model: e.target.value })}
                       placeholder="anthropic/claude-3.5-sonnet"
                     />
                     <small>100+ models available via OpenRouter</small>
@@ -392,6 +539,213 @@ export function Settings({ onClose }: SettingsProps) {
                   <li>Static HTML/CSS/JS sites</li>
                   <li>Create React App projects</li>
                 </ul>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'database' && (
+            <div className="settings-section">
+              <h3>Database & Services</h3>
+              <p style={{ color: 'var(--text-secondary)', marginBottom: '16px' }}>
+                Manage local database services for your projects. SQLite is the default and requires no setup.
+                PostgreSQL is available for production-ready apps via Docker.
+              </p>
+
+              {/* Docker Status */}
+              <div className="database-section">
+                <div className="hardware-header">
+                  <h4>Docker Status</h4>
+                  <button className="btn-secondary" onClick={loadDockerStatus} disabled={dockerLoading}>
+                    {dockerLoading ? 'Checking...' : '🔄 Refresh'}
+                  </button>
+                </div>
+
+                {dockerStatus ? (
+                  <div className="hardware-info">
+                    <div className="info-row">
+                      <span className="label">Installed:</span>
+                      <span className="value">
+                        {dockerStatus.installed ? '✅ Yes' : '❌ No'}
+                      </span>
+                    </div>
+                    {dockerStatus.installed && (
+                      <>
+                        <div className="info-row">
+                          <span className="label">Daemon Running:</span>
+                          <span className="value">
+                            {dockerStatus.daemonRunning ? '✅ Yes' : '❌ No'}
+                          </span>
+                        </div>
+                        {dockerStatus.version && (
+                          <div className="info-row">
+                            <span className="label">Version:</span>
+                            <span className="value">{dockerStatus.version}</span>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                ) : dockerLoading ? (
+                  <p>Checking Docker status...</p>
+                ) : (
+                  <p>Click refresh to check Docker status</p>
+                )}
+
+                {dockerInstructions && (
+                  <div className="docker-instructions" style={{
+                    marginTop: '12px',
+                    padding: '12px',
+                    backgroundColor: 'var(--bg-tertiary, #2d2d2d)',
+                    borderRadius: '8px',
+                    whiteSpace: 'pre-wrap',
+                    fontFamily: 'monospace',
+                    fontSize: '12px',
+                    maxHeight: '200px',
+                    overflow: 'auto',
+                  }}>
+                    {dockerInstructions}
+                  </div>
+                )}
+              </div>
+
+              {/* PostgreSQL Service */}
+              <div className="database-section" style={{ marginTop: '24px' }}>
+                <div className="hardware-header">
+                  <h4>PostgreSQL Service</h4>
+                  <button
+                    className="btn-secondary"
+                    onClick={loadPostgresStatus}
+                    disabled={postgresLoading}
+                  >
+                    🔄 Refresh
+                  </button>
+                </div>
+
+                {!dockerStatus?.installed || !dockerStatus?.daemonRunning ? (
+                  <div style={{ padding: '16px', backgroundColor: 'var(--bg-warning, #3d3500)', borderRadius: '8px' }}>
+                    <p style={{ margin: 0 }}>
+                      ⚠️ Docker must be installed and running to use PostgreSQL.
+                      {!dockerStatus?.installed && ' Please install Docker first.'}
+                      {dockerStatus?.installed && !dockerStatus?.daemonRunning && ' Please start Docker.'}
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    {postgresStatus ? (
+                      <div className="hardware-info">
+                        <div className="info-row">
+                          <span className="label">Status:</span>
+                          <span className="value">
+                            {postgresStatus.running ? (
+                              <span style={{ color: 'var(--accent-success, #28a745)' }}>● Running</span>
+                            ) : postgresStatus.installed ? (
+                              <span style={{ color: 'var(--text-warning, #ffc107)' }}>○ Stopped</span>
+                            ) : (
+                              <span style={{ color: 'var(--text-secondary)' }}>○ Not installed</span>
+                            )}
+                          </span>
+                        </div>
+
+                        {postgresStatus.running && postgresStatus.databaseUrl && (
+                          <>
+                            <div className="info-row">
+                              <span className="label">Port:</span>
+                              <span className="value">{postgresStatus.port}</span>
+                            </div>
+                            <div className="info-row">
+                              <span className="label">DATABASE_URL:</span>
+                              <span className="value" style={{ fontFamily: 'monospace', fontSize: '11px' }}>
+                                {postgresStatus.databaseUrl.replace(/:[^:@]+@/, ':****@')}
+                              </span>
+                            </div>
+                          </>
+                        )}
+
+                        <div style={{ display: 'flex', gap: '8px', marginTop: '16px', flexWrap: 'wrap' }}>
+                          {postgresStatus.running ? (
+                            <>
+                              <button
+                                className="btn-secondary"
+                                onClick={stopPostgres}
+                                disabled={postgresLoading}
+                              >
+                                {postgresLoading ? 'Stopping...' : '⏹ Stop'}
+                              </button>
+                              <button
+                                className="btn-secondary"
+                                onClick={testPostgresConnection}
+                              >
+                                🔌 Test Connection
+                              </button>
+                              <button
+                                className="btn-secondary"
+                                onClick={copyDatabaseUrl}
+                              >
+                                📋 Copy URL
+                              </button>
+                              <button
+                                className="btn-secondary"
+                                onClick={loadPostgresLogs}
+                              >
+                                📜 View Logs
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              className="btn-primary"
+                              onClick={startPostgres}
+                              disabled={postgresLoading}
+                            >
+                              {postgresLoading ? 'Starting...' : '▶ Start PostgreSQL'}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <p>Loading PostgreSQL status...</p>
+                    )}
+                  </>
+                )}
+
+                {/* Logs Modal */}
+                {showLogs && postgresLogs && (
+                  <div style={{ marginTop: '16px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <h5>Container Logs</h5>
+                      <button className="btn-secondary" onClick={() => setShowLogs(false)}>
+                        Close
+                      </button>
+                    </div>
+                    <pre style={{
+                      padding: '12px',
+                      backgroundColor: 'var(--bg-tertiary, #1a1a1a)',
+                      borderRadius: '8px',
+                      maxHeight: '200px',
+                      overflow: 'auto',
+                      fontSize: '11px',
+                      whiteSpace: 'pre-wrap',
+                    }}>
+                      {postgresLogs}
+                    </pre>
+                  </div>
+                )}
+              </div>
+
+              {/* Usage Guide */}
+              <div className="database-section" style={{ marginTop: '24px' }}>
+                <h4>Using PostgreSQL in Your Project</h4>
+                <ol style={{ marginLeft: '20px', lineHeight: '1.8' }}>
+                  <li>Start the PostgreSQL container above</li>
+                  <li>Copy the DATABASE_URL</li>
+                  <li>Add it to your project's <code>.env</code> file</li>
+                  <li>Run <code>npx prisma migrate dev</code> to initialize your database</li>
+                  <li>Use Ted's database tools: <code>database_init</code>, <code>database_migrate</code>, <code>database_query</code></li>
+                </ol>
+
+                <div style={{ marginTop: '16px', padding: '12px', backgroundColor: 'var(--bg-tertiary, #2d2d2d)', borderRadius: '8px' }}>
+                  <strong>Note:</strong> Data is persisted in <code>~/.teddy/docker/postgres-data/</code>.
+                  Stopping or removing the container will not delete your data.
+                </div>
               </div>
             </div>
           )}
