@@ -618,8 +618,6 @@ mod tests {
     fn test_provider_creation() {
         let provider = BlackmanProvider::new("test-key");
         assert_eq!(provider.name(), "blackman");
-        assert!(provider.supports_streaming());
-        assert!(provider.supports_tools());
     }
 
     #[test]

@@ -228,7 +228,7 @@ fn parse_tool_from_json(value: &serde_json::Value) -> Option<(String, serde_json
         .cloned()?;
 
     // Map tool names: normalize various formats to our internal tool names
-    // Our tools are: file_read, file_edit, file_write, file_delete, glob, grep, shell
+    // Our tools are: file_read, file_edit, file_write, file_delete, glob, grep, shell, plan_update
     // The tool registry also has aliases (read_file -> file_read, edit_file -> file_edit, etc.)
     // but we normalize here for consistency in event emission
     let mapped_name = match name {
@@ -236,6 +236,8 @@ fn parse_tool_from_json(value: &serde_json::Value) -> Option<(String, serde_json
         "file_edit" | "edit_file" => "file_edit",
         "file_create" | "create_file" | "file_write" | "write_file" => "file_write",
         "file_delete" | "delete_file" => "file_delete",
+        // Plan tool aliases - models sometimes use different names
+        "propose_plan" | "create_plan" | "update_plan" | "plan" => "plan_update",
         _ => name,
     };
 
@@ -245,6 +247,7 @@ fn parse_tool_from_json(value: &serde_json::Value) -> Option<(String, serde_json
         "file_edit" => map_file_edit_arguments(&arguments),
         "file_write" => map_file_write_arguments(&arguments),
         "shell" => map_shell_arguments(&arguments),
+        "plan_update" => map_plan_arguments(&arguments),
         _ => arguments,
     };
 
@@ -382,6 +385,30 @@ fn map_shell_arguments(args: &serde_json::Value) -> serde_json::Value {
     for (key, value) in obj {
         let mapped_key = match key.as_str() {
             "cmd" | "shell_command" | "bash" | "exec" | "run" => "command",
+            _ => key.as_str(),
+        };
+        mapped.insert(mapped_key.to_string(), value.clone());
+    }
+
+    serde_json::Value::Object(mapped)
+}
+
+/// Map plan_update argument names from various LLM output formats
+fn map_plan_arguments(args: &serde_json::Value) -> serde_json::Value {
+    let Some(obj) = args.as_object() else {
+        return args.clone();
+    };
+
+    let mut mapped = serde_json::Map::new();
+
+    for (key, value) in obj {
+        let mapped_key = match key.as_str() {
+            // Map various names for action
+            "type" | "operation" | "mode" => "action",
+            // Map various names for content
+            "body" | "text" | "description" | "markdown" | "plan_content" => "content",
+            // Map various names for title
+            "name" | "plan_title" | "plan_name" => "title",
             _ => key.as_str(),
         };
         mapped.insert(mapped_key.to_string(), value.clone());
@@ -775,23 +802,30 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
             }
         }
 
-        // If we buffered text thinking it was a tool call but got no tool uses,
-        // try to parse JSON tool calls from the text (Ollama often outputs them as markdown)
-        if is_ollama && might_be_tool_call && tool_uses.is_empty() && !buffered_text.is_empty() {
-            eprintln!("[TOOL PARSE] Attempting to extract tools from buffered text ({} chars)", buffered_text.len());
-            eprintln!("[TOOL PARSE] Buffered text preview: {}", &buffered_text[..buffered_text.len().min(500)]);
+        // For Ollama: try to parse JSON tool calls from the text (models often output them as markdown)
+        // This handles both:
+        // 1. No native tool calls but JSON in text (older models)
+        // 2. Some native tool calls but model also put additional tools in text (mixed mode)
+        if is_ollama && !buffered_text.is_empty() {
+            // Check if the text contains what looks like tool call JSON
+            let text_has_tool_json = buffered_text.contains("\"name\"") &&
+                (buffered_text.contains("\"arguments\"") || buffered_text.contains("file_edit") || buffered_text.contains("file_write"));
 
-            // Try to extract JSON tool calls from markdown code blocks
-            let extracted_tools = extract_json_tool_calls(&buffered_text);
-            if !extracted_tools.is_empty() {
-                eprintln!("[TOOL PARSE] Extracted {} tool calls from text", extracted_tools.len());
-                for (name, input) in extracted_tools {
-                    let id = uuid::Uuid::new_v4().to_string();
-                    tool_uses.push((id, name, input));
+            if text_has_tool_json {
+                eprintln!("[TOOL PARSE] Attempting to extract tools from text ({} chars)", buffered_text.len());
+
+                // Try to extract JSON tool calls from markdown code blocks
+                let extracted_tools = extract_json_tool_calls(&buffered_text);
+                if !extracted_tools.is_empty() {
+                    eprintln!("[TOOL PARSE] Extracted {} additional tool calls from text", extracted_tools.len());
+                    for (name, input) in extracted_tools {
+                        let id = uuid::Uuid::new_v4().to_string();
+                        tool_uses.push((id, name, input));
+                    }
                 }
-            } else {
-                eprintln!("[TOOL PARSE] No tools extracted, emitting as message");
-                // No tool calls found, emit the text as a message
+            } else if tool_uses.is_empty() && might_be_tool_call {
+                // No tools found in native calls or text, emit the buffered text as a message
+                eprintln!("[TOOL PARSE] No tools found, emitting buffered text as message");
                 emitter.emit_message("assistant", buffered_text.clone(), Some(false))?;
             }
         }

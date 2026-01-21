@@ -28,6 +28,10 @@ use std::sync::LazyLock;
 static MARKDOWN_JSON_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"```(?:json)?\s*\n?\s*(\{[\s\S]*?\})\s*\n?```").unwrap());
 
+/// Regex to extract tool calls from <tool_call>...</tool_call> tags (Qwen format)
+static TOOL_CALL_TAG_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<tool_call>\s*([\s\S]*?)\s*</tool_call>").unwrap());
+
 /// ChatML special tokens that models like Qwen output - need to filter these
 static CHATML_TOKENS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"<\|im_(?:start|end)\|>(?:\w+)?").unwrap());
@@ -48,7 +52,36 @@ fn try_parse_all_json_tool_calls(text: &str) -> Vec<(String, serde_json::Value)>
     let mut results = Vec::new();
     let mut seen_keys = std::collections::HashSet::new();
 
-    // First, check for JSON inside markdown code blocks (common pattern from LLMs)
+    // Priority 1: Check for <tool_call>...</tool_call> tags (Qwen/ChatML format)
+    // This is the preferred format as it's explicitly marked
+    for caps in TOOL_CALL_TAG_PATTERN.captures_iter(text) {
+        if let Some(content_match) = caps.get(1) {
+            let content = content_match.as_str().trim();
+            // The content may have multiple JSON objects (one per line)
+            for line in content.lines() {
+                let line = line.trim();
+                if line.starts_with('{') {
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) {
+                        if let Some(name) = parsed.get("name").and_then(|n| n.as_str()) {
+                            if let Some(args) = parsed.get("arguments") {
+                                let key = format!("{}:{}", name, args);
+                                if seen_keys.insert(key) {
+                                    results.push((name.to_string(), args.clone()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // If we found tool calls in <tool_call> tags, return them
+    if !results.is_empty() {
+        return results;
+    }
+
+    // Priority 2: Check for JSON inside markdown code blocks (common pattern from LLMs)
     for caps in MARKDOWN_JSON_PATTERN.captures_iter(text) {
         if let Some(json_match) = caps.get(1) {
             let json_str = json_match.as_str();
@@ -1093,6 +1126,47 @@ mod tests {
         let text = r#"{"name": "glob"}"#;
         let result = try_parse_json_tool_call(text);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_tool_call_with_tool_call_tags() {
+        // Qwen format with <tool_call> tags
+        let text = r#"<tool_call>
+{"name": "file_edit", "arguments": {"path": "test.js", "old_string": "foo", "new_string": "bar"}}
+</tool_call>"#;
+        let results = try_parse_all_json_tool_calls(text);
+        assert_eq!(results.len(), 1);
+        let (name, args) = &results[0];
+        assert_eq!(name, "file_edit");
+        assert_eq!(args["path"], "test.js");
+    }
+
+    #[test]
+    fn test_parse_multiple_tool_calls_in_tags() {
+        // Multiple tool calls in a single <tool_call> block (as per Qwen template)
+        let text = r#"<tool_call>
+{"name": "file_edit", "arguments": {"path": "a.js", "old_string": "1", "new_string": "2"}}
+{"name": "file_edit", "arguments": {"path": "b.js", "old_string": "3", "new_string": "4"}}
+</tool_call>"#;
+        let results = try_parse_all_json_tool_calls(text);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, "file_edit");
+        assert_eq!(results[0].1["path"], "a.js");
+        assert_eq!(results[1].0, "file_edit");
+        assert_eq!(results[1].1["path"], "b.js");
+    }
+
+    #[test]
+    fn test_parse_tool_call_tags_with_surrounding_text() {
+        // Model might output explanatory text before/after
+        let text = r#"I'll edit the file now:
+<tool_call>
+{"name": "file_write", "arguments": {"path": "test.txt", "content": "hello"}}
+</tool_call>
+This will create the file."#;
+        let results = try_parse_all_json_tool_calls(text);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "file_write");
     }
 
     // ===== Provider Tests =====
