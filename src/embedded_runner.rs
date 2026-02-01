@@ -17,7 +17,7 @@ use crate::context::memory::MemoryStore;
 use crate::context::{recall, summarizer};
 use crate::embedded::{HistoryMessageData, JsonLEmitter, PlanStep};
 use crate::embeddings::EmbeddingGenerator;
-use crate::error::{Result, TedError};
+use crate::error::{ApiError, Result, TedError};
 use crate::llm::message::{ContentBlock, Message, MessageContent};
 use crate::llm::provider::{
     CompletionRequest, ContentBlockDelta, ContentBlockResponse, LlmProvider, StreamEvent,
@@ -679,8 +679,65 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
             request = request.with_system(merged_cap.system_prompt.clone());
         }
 
-        // Get streaming completion
-        let mut stream = provider.complete_stream(request).await?;
+        // Get streaming completion (with auto-trimming on context overflow)
+        let mut stream = match provider.complete_stream(request.clone()).await {
+            Ok(s) => s,
+            Err(TedError::Api(ApiError::ContextTooLong { current, limit })) => {
+                eprintln!(
+                    "[CONTEXT] Context too long ({} tokens > {} limit). Auto-trimming...",
+                    current, limit
+                );
+
+                // Get the actual limit from the model info or use the reported limit
+                let context_window = provider
+                    .get_model_info(&model)
+                    .map(|m| m.context_window)
+                    .unwrap_or(limit);
+
+                // Trim to 70% of the limit to leave room
+                let target_tokens = (context_window as f64 * 0.7) as u32;
+
+                // Use built-in token estimation
+                let mut total_tokens: u32 = messages.iter().map(|m| m.estimate_tokens()).sum();
+
+                // Remove oldest messages (after the first user message) until we fit
+                let mut removed = 0;
+                while total_tokens > target_tokens && messages.len() > 2 {
+                    // Keep at least the last 2 messages (latest user + response context)
+                    let msg_tokens = messages[1].estimate_tokens();
+                    messages.remove(1);
+                    total_tokens = total_tokens.saturating_sub(msg_tokens);
+                    removed += 1;
+                }
+
+                if removed > 0 {
+                    eprintln!("[CONTEXT] Removed {} older messages. Retrying...", removed);
+                    emitter.emit_status(
+                        "thinking",
+                        format!(
+                            "Context trimmed ({} messages removed). Retrying...",
+                            removed
+                        ),
+                        None,
+                    )?;
+                }
+
+                // Build a new request with trimmed messages
+                let mut retry_request = CompletionRequest::new(model.clone(), messages.clone())
+                    .with_max_tokens(8192)
+                    .with_temperature(0.7)
+                    .with_tools(tool_executor.tool_definitions())
+                    .with_tool_choice(ToolChoice::Auto);
+
+                if !merged_cap.system_prompt.is_empty() {
+                    retry_request = retry_request.with_system(merged_cap.system_prompt.clone());
+                }
+
+                // Retry with trimmed context
+                provider.complete_stream(retry_request).await?
+            }
+            Err(e) => return Err(e),
+        };
 
         let mut assistant_blocks: Vec<ContentBlock> = Vec::new();
         let mut current_text = String::new();

@@ -5,6 +5,8 @@
 //!
 //! A fast, portable AI coding assistant written in Rust.
 
+pub mod agents;
+pub mod beads;
 pub mod caps;
 pub mod cli;
 pub mod commands;
@@ -20,7 +22,9 @@ pub mod indexer;
 pub mod llm;
 pub mod lsp;
 pub mod mcp;
+pub mod models;
 pub mod plans;
+pub mod skills;
 pub mod tools;
 pub mod tui;
 pub mod update;

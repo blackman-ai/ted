@@ -36,6 +36,7 @@ pub fn handle_input(app: &mut App) -> Result<AppResult> {
             match app.input_mode {
                 InputMode::Normal => return handle_normal_input(app, key.code),
                 InputMode::Editing => handle_editing_input(app, key.code),
+                InputMode::SelectingModel => handle_model_selection_input(app, key.code),
             }
         }
     }
@@ -149,6 +150,25 @@ fn handle_editing_input(app: &mut App, key: KeyCode) {
         }
         KeyCode::Char(c) => {
             app.input_buffer.push(c);
+        }
+        _ => {}
+    }
+}
+
+/// Handle input in model selection mode
+fn handle_model_selection_input(app: &mut App, key: KeyCode) {
+    match key {
+        KeyCode::Enter => {
+            app.confirm_model_selection();
+        }
+        KeyCode::Esc => {
+            app.cancel_model_selection();
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.model_picker_up();
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.model_picker_down();
         }
         _ => {}
     }

@@ -12,6 +12,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use ted::skills::SkillRegistry;
+
 use clap::Parser;
 use crossterm::{
     style::{Color, ResetColor, SetForegroundColor},
@@ -63,15 +65,16 @@ async fn main() -> Result<()> {
     Settings::ensure_directories()?;
 
     // Dispatch to appropriate command
+    let verbose = cli.verbose;
     match cli.command {
         None => {
-            run_chat(ChatArgs::default(), settings).await?;
+            run_chat(ChatArgs::default(), settings, verbose).await?;
         }
         Some(Commands::Chat(args)) => {
-            run_chat(args, settings).await?;
+            run_chat(args, settings, verbose).await?;
         }
         Some(Commands::Ask(args)) => {
-            run_ask(args, settings).await?;
+            run_ask(args, settings, verbose).await?;
         }
         Some(Commands::Clear) => {
             run_clear()?;
@@ -234,7 +237,20 @@ fn check_provider_configuration(settings: &Settings, provider_name: &str) -> Res
 }
 
 /// Run interactive chat mode
-async fn run_chat(args: ChatArgs, mut settings: Settings) -> Result<()> {
+async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result<()> {
+    // Verbose output for debugging
+    if verbose > 0 {
+        eprintln!("[verbose] Ted starting in chat mode");
+        eprintln!(
+            "[verbose] Working directory: {:?}",
+            std::env::current_dir().ok()
+        );
+    }
+    if verbose > 1 {
+        eprintln!("[verbose:2] Settings: {:?}", settings.defaults);
+        eprintln!("[verbose:2] Trust mode: {}", args.trust);
+    }
+
     // Check for embedded mode (JSONL output for GUI integration)
     if args.embedded {
         return ted::embedded_runner::run_embedded_chat(args, settings).await;
@@ -250,13 +266,13 @@ async fn run_chat(args: ChatArgs, mut settings: Settings) -> Result<()> {
     settings = check_provider_configuration(&settings, &provider_name)?;
 
     // Re-determine provider in case it changed during setup
-    let provider_name = args
+    let mut provider_name = args
         .provider
         .clone()
         .unwrap_or_else(|| settings.defaults.provider.clone());
 
-    // Create the appropriate provider
-    let provider: Box<dyn LlmProvider> = match provider_name.as_str() {
+    // Create the appropriate provider (mutable so it can be changed via /settings)
+    let mut provider: Arc<dyn LlmProvider> = match provider_name.as_str() {
         "ollama" => {
             let ollama_provider =
                 OllamaProvider::with_base_url(&settings.providers.ollama.base_url);
@@ -272,7 +288,7 @@ async fn run_chat(args: ChatArgs, mut settings: Settings) -> Result<()> {
                 println!("Or switch to Anthropic: ted settings");
                 return Err(e);
             }
-            Box::new(ollama_provider)
+            Arc::new(ollama_provider)
         }
         "openrouter" => {
             let api_key = settings.get_openrouter_api_key().ok_or_else(|| {
@@ -285,14 +301,14 @@ async fn run_chat(args: ChatArgs, mut settings: Settings) -> Result<()> {
             } else {
                 OpenRouterProvider::new(api_key)
             };
-            Box::new(provider)
+            Arc::new(provider)
         }
         _ => {
             // Get API key (anthropic is the default)
             let api_key = settings.get_anthropic_api_key().ok_or_else(|| {
                 TedError::Config("No Anthropic API key found. Run 'ted' to configure.".to_string())
             })?;
-            Box::new(AnthropicProvider::new(api_key))
+            Arc::new(AnthropicProvider::new(api_key))
         }
     };
 
@@ -317,6 +333,13 @@ async fn run_chat(args: ChatArgs, mut settings: Settings) -> Result<()> {
             "openrouter" => settings.providers.openrouter.default_model.clone(),
             _ => settings.providers.anthropic.default_model.clone(),
         });
+
+    // Verbose output for provider and model selection
+    if verbose > 0 {
+        eprintln!("[verbose] Provider: {}", provider_name);
+        eprintln!("[verbose] Model: {}", model);
+        eprintln!("[verbose] Caps loaded: {:?}", cap_names);
+    }
 
     // Create conversation with system prompt from caps
     let mut conversation = Conversation::new();
@@ -404,6 +427,23 @@ async fn run_chat(args: ChatArgs, mut settings: Settings) -> Result<()> {
     )
     .with_files_in_context(args.files_in_context.clone());
     let mut tool_executor = ToolExecutor::new(tool_context, args.trust);
+
+    // Initialize skill registry and register spawn_agent tool
+    let mut skill_registry = SkillRegistry::new();
+    if let Err(e) = skill_registry.scan() {
+        if verbose > 0 {
+            eprintln!("[verbose] Failed to scan for skills: {}", e);
+        }
+    } else if verbose > 0 {
+        let skill_count = skill_registry.list_skills().len();
+        if skill_count > 0 {
+            eprintln!("[verbose] Loaded {} skill(s)", skill_count);
+        }
+    }
+    let skill_registry = Arc::new(skill_registry);
+    tool_executor
+        .registry_mut()
+        .register_spawn_agent(provider.clone(), skill_registry);
 
     // Update session info
     session_info.project_root = project_root;
@@ -508,20 +548,59 @@ async fn run_chat(args: ChatArgs, mut settings: Settings) -> Result<()> {
                         println!("\n✓ Settings updated");
                         stdout.execute(ResetColor)?;
 
-                        // Check if model changed (use correct provider)
-                        let new_model = if new_settings.defaults.provider == "ollama" {
-                            new_settings.providers.ollama.default_model.clone()
-                        } else {
-                            new_settings.providers.anthropic.default_model.clone()
+                        // Check if model changed (use correct provider's default model)
+                        let new_model = match new_settings.defaults.provider.as_str() {
+                            "ollama" => new_settings.providers.ollama.default_model.clone(),
+                            "openrouter" => new_settings.providers.openrouter.default_model.clone(),
+                            _ => new_settings.providers.anthropic.default_model.clone(),
                         };
                         if new_model != model {
                             model = new_model;
                             println!("  Model: {}", model);
                         }
 
-                        // Check if provider changed
+                        // Check if provider changed - need to recreate the provider object
                         if new_settings.defaults.provider != settings.defaults.provider {
-                            settings.defaults.provider = new_settings.defaults.provider.clone();
+                            provider_name = new_settings.defaults.provider.clone();
+                            settings.defaults.provider = provider_name.clone();
+
+                            // Recreate the provider for the new backend
+                            match provider_name.as_str() {
+                                "ollama" => {
+                                    let ollama_provider = OllamaProvider::with_base_url(
+                                        &new_settings.providers.ollama.base_url,
+                                    );
+                                    // Perform health check
+                                    if let Err(e) = ollama_provider.health_check().await {
+                                        eprintln!("Warning: Ollama is not running: {}", e);
+                                        eprintln!("Start Ollama with: ollama serve");
+                                    } else {
+                                        provider = Arc::new(ollama_provider);
+                                    }
+                                }
+                                "openrouter" => {
+                                    if let Some(api_key) = new_settings.get_openrouter_api_key() {
+                                        let new_provider = if let Some(ref base_url) =
+                                            new_settings.providers.openrouter.base_url
+                                        {
+                                            OpenRouterProvider::with_base_url(api_key, base_url)
+                                        } else {
+                                            OpenRouterProvider::new(api_key)
+                                        };
+                                        provider = Arc::new(new_provider);
+                                    } else {
+                                        eprintln!("Warning: No OpenRouter API key found");
+                                    }
+                                }
+                                _ => {
+                                    // anthropic is the default
+                                    if let Some(api_key) = new_settings.get_anthropic_api_key() {
+                                        provider = Arc::new(AnthropicProvider::new(api_key));
+                                    } else {
+                                        eprintln!("Warning: No Anthropic API key found");
+                                    }
+                                }
+                            }
                             println!("  Provider: {}", settings.defaults.provider);
                         }
 
@@ -1259,9 +1338,50 @@ async fn run_agent_loop_inner(
             request = request.with_system(system_prompt);
         }
 
-        // Get response with retry logic for rate limits
+        // Get response with retry logic for rate limits and context overflow
         let (response_content, stop_reason) =
-            get_response_with_retry(provider, request, stream, active_caps).await?;
+            match get_response_with_retry(provider, request.clone(), stream, active_caps).await {
+                Ok(result) => result,
+                Err(TedError::Api(ApiError::ContextTooLong { current, limit })) => {
+                    // Auto-trim conversation and retry
+                    let mut stdout = io::stdout();
+                    stdout.execute(SetForegroundColor(Color::Yellow))?;
+                    println!(
+                    "\n⚠ Context too long ({} tokens > {} limit). Auto-trimming older messages...",
+                    current, limit
+                );
+                    stdout.execute(ResetColor)?;
+
+                    // Get the actual limit from the model info or use the reported limit
+                    let context_window = provider
+                        .get_model_info(model)
+                        .map(|m| m.context_window)
+                        .unwrap_or(limit);
+
+                    // Trim the conversation to fit within 70% of the limit to leave room
+                    let target_tokens = (context_window as f64 * 0.7) as u32;
+                    let removed = conversation.trim_to_fit(target_tokens);
+
+                    if removed > 0 {
+                        println!("  Removed {} older messages. Retrying...\n", removed);
+                    }
+
+                    // Build a new request with trimmed messages
+                    let mut retry_request =
+                        CompletionRequest::new(model, conversation.messages.clone())
+                            .with_max_tokens(settings.defaults.max_tokens)
+                            .with_temperature(settings.defaults.temperature)
+                            .with_tools(tool_executor.tool_definitions());
+
+                    if let Some(ref system_prompt) = conversation.system_prompt {
+                        retry_request = retry_request.with_system(system_prompt);
+                    }
+
+                    // Retry with trimmed context
+                    get_response_with_retry(provider, retry_request, stream, active_caps).await?
+                }
+                Err(e) => return Err(e),
+            };
 
         // Extract text content for context storage
         let text_content: String = response_content
@@ -1590,7 +1710,15 @@ async fn stream_response(
 }
 
 /// Run single question mode
-async fn run_ask(args: ted::cli::AskArgs, settings: Settings) -> Result<()> {
+async fn run_ask(args: ted::cli::AskArgs, settings: Settings, verbose: u8) -> Result<()> {
+    if verbose > 0 {
+        eprintln!(
+            "[verbose] Starting ask mode with provider: {}",
+            args.provider
+                .as_ref()
+                .unwrap_or(&settings.defaults.provider)
+        );
+    }
     // Determine which provider to use
     let provider_name = args
         .provider

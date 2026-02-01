@@ -8,6 +8,7 @@
 
 use crate::caps::loader::CapLoader;
 use crate::config::Settings;
+use crate::models::{ModelInfo, ModelRegistry, Provider};
 use crate::plans::{PlanInfo, PlanStatus, PlanStore};
 use crate::tui::editor::{CommandResult, Editor, EditorMode};
 
@@ -47,6 +48,8 @@ pub enum InputMode {
     Normal,
     /// Editing a text field
     Editing,
+    /// Selecting from a model list
+    SelectingModel,
 }
 
 /// Main menu items
@@ -174,6 +177,37 @@ pub enum CapsMenuItem {
     Back,
 }
 
+/// Display info for a model in the picker
+#[derive(Debug, Clone)]
+pub struct ModelDisplayInfo {
+    pub id: String,
+    pub name: String,
+    pub tier: String,
+    pub description: String,
+    pub recommended: bool,
+}
+
+impl From<&ModelInfo> for ModelDisplayInfo {
+    fn from(model: &ModelInfo) -> Self {
+        Self {
+            id: model.id.clone(),
+            name: model.display_name().to_string(),
+            tier: model.tier.display_name().to_string(),
+            description: model.description.clone(),
+            recommended: model.recommended,
+        }
+    }
+}
+
+/// Which provider's model we're selecting
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelSelectionTarget {
+    Anthropic,
+    Ollama,
+    OpenRouter,
+    Blackman,
+}
+
 /// Application state
 pub struct App {
     /// Current settings
@@ -214,6 +248,16 @@ pub struct App {
     pub plan_scroll: usize,
     /// Vim editor for plan editing
     pub editor: Option<Editor>,
+    /// Model registry for model picker
+    pub model_registry: ModelRegistry,
+    /// Available models for the model picker
+    pub available_models: Vec<ModelDisplayInfo>,
+    /// Selection index in model picker
+    pub model_picker_index: usize,
+    /// Which provider we're selecting a model for
+    pub model_selection_target: Option<ModelSelectionTarget>,
+    /// Scroll offset for the model picker
+    pub model_picker_scroll: usize,
 }
 
 impl App {
@@ -222,6 +266,7 @@ impl App {
         let loader = CapLoader::new();
         let available_caps = Self::load_caps_list(&loader, &settings.defaults.caps);
         let available_plans = Self::load_plans_list();
+        let model_registry = ModelRegistry::new();
 
         Self {
             settings,
@@ -243,6 +288,11 @@ impl App {
             current_plan_content: String::new(),
             plan_scroll: 0,
             editor: None,
+            model_registry,
+            available_models: Vec::new(),
+            model_picker_index: 0,
+            model_selection_target: None,
+            model_picker_scroll: 0,
         }
     }
 
@@ -433,6 +483,100 @@ impl App {
         self.input_mode = InputMode::Normal;
     }
 
+    /// Start model selection for a provider
+    pub fn start_model_selection(&mut self, target: ModelSelectionTarget) {
+        let provider = match target {
+            ModelSelectionTarget::Anthropic => Provider::Anthropic,
+            ModelSelectionTarget::Ollama => Provider::Ollama,
+            ModelSelectionTarget::OpenRouter => Provider::OpenRouter,
+            ModelSelectionTarget::Blackman => Provider::Blackman,
+        };
+
+        // Load models for this provider
+        let models = self.model_registry.models_for_provider(&provider);
+        self.available_models = models.into_iter().map(ModelDisplayInfo::from).collect();
+
+        // Find current model in list and set selection
+        let current_model = match target {
+            ModelSelectionTarget::Anthropic => &self.settings.providers.anthropic.default_model,
+            ModelSelectionTarget::Ollama => &self.settings.providers.ollama.default_model,
+            ModelSelectionTarget::OpenRouter => &self.settings.providers.openrouter.default_model,
+            ModelSelectionTarget::Blackman => &self.settings.providers.blackman.default_model,
+        };
+
+        // Find index of current model (or 0 if not found)
+        self.model_picker_index = self
+            .available_models
+            .iter()
+            .position(|m| &m.id == current_model)
+            .unwrap_or(0);
+
+        self.model_selection_target = Some(target);
+        self.model_picker_scroll = 0;
+        self.input_mode = InputMode::SelectingModel;
+    }
+
+    /// Cancel model selection
+    pub fn cancel_model_selection(&mut self) {
+        self.available_models.clear();
+        self.model_selection_target = None;
+        self.model_picker_index = 0;
+        self.model_picker_scroll = 0;
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Confirm model selection
+    pub fn confirm_model_selection(&mut self) {
+        if let Some(target) = self.model_selection_target {
+            if let Some(model) = self.available_models.get(self.model_picker_index) {
+                let model_id = model.id.clone();
+                let model_name = model.name.clone();
+
+                match target {
+                    ModelSelectionTarget::Anthropic => {
+                        self.settings.providers.anthropic.default_model = model_id;
+                    }
+                    ModelSelectionTarget::Ollama => {
+                        self.settings.providers.ollama.default_model = model_id;
+                    }
+                    ModelSelectionTarget::OpenRouter => {
+                        self.settings.providers.openrouter.default_model = model_id;
+                    }
+                    ModelSelectionTarget::Blackman => {
+                        self.settings.providers.blackman.default_model = model_id;
+                    }
+                }
+
+                self.mark_modified();
+                self.set_status(&format!("Model set to: {}", model_name), false);
+            }
+        }
+
+        self.cancel_model_selection();
+    }
+
+    /// Move model picker selection up
+    pub fn model_picker_up(&mut self) {
+        if !self.available_models.is_empty() {
+            if self.model_picker_index > 0 {
+                self.model_picker_index -= 1;
+            } else {
+                self.model_picker_index = self.available_models.len() - 1;
+            }
+        }
+    }
+
+    /// Move model picker selection down
+    pub fn model_picker_down(&mut self) {
+        if !self.available_models.is_empty() {
+            if self.model_picker_index < self.available_models.len() - 1 {
+                self.model_picker_index += 1;
+            } else {
+                self.model_picker_index = 0;
+            }
+        }
+    }
+
     /// Mark settings as modified
     pub fn mark_modified(&mut self) {
         self.settings_modified = true;
@@ -592,9 +736,8 @@ impl App {
                         self.start_editing(&current);
                     }
                     ProviderItem::AnthropicModel => {
-                        // Start editing Anthropic model
-                        let current = self.settings.providers.anthropic.default_model.clone();
-                        self.start_editing(&current);
+                        // Open model picker for Anthropic
+                        self.start_model_selection(ModelSelectionTarget::Anthropic);
                     }
                     ProviderItem::OllamaBaseUrl => {
                         // Start editing Ollama base URL
@@ -602,9 +745,8 @@ impl App {
                         self.start_editing(&current);
                     }
                     ProviderItem::OllamaModel => {
-                        // Start editing Ollama model
-                        let current = self.settings.providers.ollama.default_model.clone();
-                        self.start_editing(&current);
+                        // Open model picker for Ollama
+                        self.start_model_selection(ModelSelectionTarget::Ollama);
                     }
                     ProviderItem::TestConnection => {
                         // Test connection based on current provider
@@ -1361,14 +1503,19 @@ mod tests {
     }
 
     #[test]
-    fn test_app_select_providers_model_starts_editing() {
+    fn test_app_select_providers_model_opens_picker() {
         let settings = Settings::default();
         let mut app = App::new(settings);
         app.screen = Screen::Providers;
 
         app.provider_index = 2; // AnthropicModel
         app.select();
-        assert_eq!(app.input_mode, InputMode::Editing);
+        assert_eq!(app.input_mode, InputMode::SelectingModel);
+        assert_eq!(
+            app.model_selection_target,
+            Some(ModelSelectionTarget::Anthropic)
+        );
+        assert!(!app.available_models.is_empty());
     }
 
     #[test]
@@ -1383,14 +1530,19 @@ mod tests {
     }
 
     #[test]
-    fn test_app_select_providers_ollama_model_starts_editing() {
+    fn test_app_select_providers_ollama_model_opens_picker() {
         let settings = Settings::default();
         let mut app = App::new(settings);
         app.screen = Screen::Providers;
 
         app.provider_index = 4; // OllamaModel
         app.select();
-        assert_eq!(app.input_mode, InputMode::Editing);
+        assert_eq!(app.input_mode, InputMode::SelectingModel);
+        assert_eq!(
+            app.model_selection_target,
+            Some(ModelSelectionTarget::Ollama)
+        );
+        assert!(!app.available_models.is_empty());
     }
 
     #[test]

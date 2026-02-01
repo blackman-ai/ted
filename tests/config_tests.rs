@@ -10,7 +10,7 @@ fn test_settings_default_values() {
     // Check default configuration values
     assert_eq!(
         settings.providers.anthropic.default_model,
-        "claude-sonnet-4-20250514"
+        "claude-sonnet-4-5-20250514"
     );
     assert!((settings.defaults.temperature - 0.7).abs() < f32::EPSILON);
     assert_eq!(settings.defaults.max_tokens, 8192);

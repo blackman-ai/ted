@@ -65,6 +65,18 @@ pub enum TedError {
     /// LSP server errors
     #[error("LSP error: {0}")]
     Lsp(String),
+
+    /// Agent errors
+    #[error("Agent error: {0}")]
+    Agent(String),
+
+    /// Skill errors
+    #[error("Skill error: {0}")]
+    Skill(String),
+
+    /// Bead errors
+    #[error("Bead error: {0}")]
+    Bead(String),
 }
 
 /// API-specific error types

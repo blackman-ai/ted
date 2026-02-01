@@ -310,7 +310,6 @@ impl OllamaProvider {
                                             .join("\n"),
                                     };
                                     // Format tool result clearly for Ollama models
-                                    // Make it VERY clear what to do next
                                     let is_err = is_error.unwrap_or(false);
                                     if is_err {
                                         text_parts.push(format!(
@@ -319,7 +318,7 @@ impl OllamaProvider {
                                         ));
                                     } else {
                                         text_parts.push(format!(
-                                            "[TOOL RESULT - SUCCESS]\nResult: {}\n\n**IMPORTANT: You MUST now output a tool call. Do NOT just describe what you will do. Output the JSON tool call NOW:**\n```json\n{{\"name\": \"file_edit\", \"arguments\": {{\"path\": \"...\", \"old_string\": \"...\", \"new_string\": \"...\"}}}}\n```\nOR if you need more info:\n```json\n{{\"name\": \"file_read\", \"arguments\": {{\"path\": \"index.html\"}}}}\n```",
+                                            "[TOOL RESULT - SUCCESS]\nResult: {}\n\nNow either continue with another tool call if more work is needed, or respond with your final answer in plain text.",
                                             content_str
                                         ));
                                     }
@@ -373,14 +372,19 @@ impl OllamaProvider {
         // Structure: PERSONA first (most important), then tools, then persona reminder
         let enhanced_system = if !request.tools.is_empty() {
             let tool_guidance = r#"
-YOU ARE A CODE GENERATOR. Your job is to CREATE and FIX code by writing actual files.
+You are a helpful AI coding assistant with access to tools for working with code and files.
 
-**CRITICAL RULES:**
+**WHEN TO USE TOOLS:**
+- Use tools ONLY when the user asks you to work with code, files, or run commands
+- For simple questions, greetings, or conversations, just respond with plain text - NO tools needed
+- NEVER use the shell tool with "echo" to communicate - just output your response directly
+
+**RULES FOR CODING TASKS:**
 
 1. IF FILE CONTENTS ARE PROVIDED IN [PROJECT CONTEXT]: Use file_edit DIRECTLY - do NOT read files first!
 2. FOR NEW PROJECTS: Ask 1-2 quick clarifying questions, then BUILD with file_write
-3. AFTER ANY TOOL RESULT: Continue with more edits if needed, or give your final answer
-4. NEVER give manual instructions - YOU do the work using tools
+3. AFTER ANY TOOL RESULT: Continue with more edits if needed, or give your final answer in plain text
+4. For coding tasks, YOU do the work using tools - don't just describe what to do
 5. NEVER suggest external platforms (WordPress.com, Wix, etc.) - you CREATE it yourself
 
 AVAILABLE TOOLS:

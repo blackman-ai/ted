@@ -10,7 +10,9 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 
-use super::app::{App, ContextItem, InputMode, MainMenuItem, ProviderItem, Screen};
+use super::app::{
+    App, ContextItem, InputMode, MainMenuItem, ModelSelectionTarget, ProviderItem, Screen,
+};
 use super::editor::EditorMode;
 use crate::plans::PlanStatus;
 
@@ -46,6 +48,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
     // Draw input popup if editing
     if app.input_mode == InputMode::Editing {
         draw_input_popup(frame, app);
+    }
+
+    // Draw model picker popup if selecting
+    if app.input_mode == InputMode::SelectingModel {
+        draw_model_picker_popup(frame, app);
     }
 }
 
@@ -90,6 +97,7 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
         let help = match app.input_mode {
             InputMode::Normal => "↑↓: Navigate | Enter: Select | q: Back | ?: Help",
             InputMode::Editing => "Enter: Confirm | Esc: Cancel",
+            InputMode::SelectingModel => "↑↓/jk: Navigate | Enter: Select | Esc: Cancel",
         };
         (help.to_string(), Style::default().fg(Color::DarkGray))
     };
@@ -691,6 +699,111 @@ fn draw_input_popup(frame: &mut Frame, app: &App) {
     let input = Paragraph::new(input_display).style(Style::default().fg(Color::White));
 
     frame.render_widget(input, inner);
+}
+
+/// Draw model picker popup for selecting models
+fn draw_model_picker_popup(frame: &mut Frame, app: &App) {
+    let popup_area = centered_rect(70, 70, frame.area());
+
+    // Clear the area behind the popup
+    frame.render_widget(Clear, popup_area);
+
+    // Determine title based on target
+    let title = match app.model_selection_target {
+        Some(ModelSelectionTarget::Anthropic) => " Select Anthropic Model ",
+        Some(ModelSelectionTarget::Ollama) => " Select Ollama Model ",
+        Some(ModelSelectionTarget::OpenRouter) => " Select OpenRouter Model ",
+        Some(ModelSelectionTarget::Blackman) => " Select Blackman Model ",
+        None => " Select Model ",
+    };
+
+    // Draw the popup
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    if app.available_models.is_empty() {
+        let empty_msg = Paragraph::new("No models available for this provider")
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(empty_msg, inner);
+        return;
+    }
+
+    // Calculate visible area
+    let visible_height = inner.height as usize;
+    let total_models = app.available_models.len();
+
+    // Adjust scroll to keep selected item visible
+    let scroll = if app.model_picker_index < visible_height / 2 {
+        0
+    } else if app.model_picker_index + visible_height / 2 >= total_models {
+        total_models.saturating_sub(visible_height)
+    } else {
+        app.model_picker_index.saturating_sub(visible_height / 2)
+    };
+
+    // Build list items
+    let items: Vec<ListItem> = app
+        .available_models
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible_height)
+        .map(|(i, model)| {
+            let is_selected = i == app.model_picker_index;
+            let prefix = if is_selected { "▶ " } else { "  " };
+
+            // Show tier indicator
+            let tier_badge = match model.tier.as_str() {
+                "High" => "[H]",
+                "Medium" => "[M]",
+                "Low" => "[L]",
+                _ => "[?]",
+            };
+
+            // Show recommended badge
+            let recommended = if model.recommended { " ★" } else { "" };
+
+            // Style based on selection and tier
+            let style = if is_selected {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                match model.tier.as_str() {
+                    "High" => Style::default().fg(Color::Green),
+                    "Medium" => Style::default().fg(Color::Yellow),
+                    "Low" => Style::default().fg(Color::White),
+                    _ => Style::default(),
+                }
+            };
+
+            // Format: [H] Model Name ★
+            //         Description...
+            let line1 = format!("{}{} {}{}", prefix, tier_badge, model.name, recommended);
+            let line2 = if !model.description.is_empty() && is_selected {
+                format!("     {}", model.description)
+            } else {
+                String::new()
+            };
+
+            if line2.is_empty() {
+                ListItem::new(line1).style(style)
+            } else {
+                ListItem::new(vec![
+                    Line::from(Span::styled(line1, style)),
+                    Line::from(Span::styled(line2, Style::default().fg(Color::DarkGray))),
+                ])
+            }
+        })
+        .collect();
+
+    let list = List::new(items).block(Block::default().borders(Borders::NONE));
+    frame.render_widget(list, inner);
 }
 
 /// Helper function to create a centered rect

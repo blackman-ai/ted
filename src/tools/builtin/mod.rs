@@ -12,6 +12,7 @@ mod glob;
 mod grep;
 mod plan;
 mod shell;
+mod spawn_agent;
 
 pub use database::{DatabaseInitTool, DatabaseMigrateTool, DatabaseQueryTool, DatabaseSeedTool};
 pub use file_changeset::FileChangeSetTool;
@@ -22,3 +23,4 @@ pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use plan::PlanUpdateTool;
 pub use shell::ShellTool;
+pub use spawn_agent::SpawnAgentTool;

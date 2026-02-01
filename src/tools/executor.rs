@@ -39,6 +39,11 @@ impl ToolExecutor {
         self.registry.definitions()
     }
 
+    /// Get mutable access to the tool registry for registration of additional tools
+    pub fn registry_mut(&mut self) -> &mut ToolRegistry {
+        &mut self.registry
+    }
+
     /// Execute a tool use from the LLM response
     pub async fn execute_tool_use(
         &mut self,

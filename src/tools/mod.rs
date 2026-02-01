@@ -32,7 +32,8 @@ use std::sync::Arc;
 
 use crate::error::Result;
 use crate::indexer::RecallSender;
-use crate::llm::provider::ToolDefinition;
+use crate::llm::provider::{LlmProvider, ToolDefinition};
+use crate::skills::SkillRegistry;
 use tokio::sync::mpsc;
 
 /// Shell output event for streaming command output
@@ -402,6 +403,21 @@ impl ToolRegistry {
         let mut registry = Self::with_builtins();
         registry.load_external_tools();
         registry
+    }
+
+    /// Register the spawn_agent tool with its required dependencies
+    ///
+    /// This must be called separately from `with_builtins()` because the spawn_agent
+    /// tool requires an LLM provider and skill registry to function.
+    pub fn register_spawn_agent(
+        &mut self,
+        provider: Arc<dyn LlmProvider>,
+        skill_registry: Arc<SkillRegistry>,
+    ) {
+        self.register(Arc::new(builtin::SpawnAgentTool::new(
+            provider,
+            skill_registry,
+        )));
     }
 
     /// Load external tools from the default directory (~/.ted/tools/)

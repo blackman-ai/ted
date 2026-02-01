@@ -247,7 +247,7 @@ fn default_anthropic_api_key_env() -> String {
 }
 
 fn default_anthropic_model() -> String {
-    "claude-sonnet-4-20250514".to_string()
+    "claude-sonnet-4-5-20250514".to_string()
 }
 
 fn default_ollama_base_url() -> String {
@@ -263,7 +263,7 @@ fn default_openrouter_api_key_env() -> String {
 }
 
 fn default_openrouter_model() -> String {
-    "anthropic/claude-3.5-sonnet".to_string()
+    "anthropic/claude-sonnet-4.5".to_string()
 }
 
 fn default_blackman_api_key_env() -> String {
@@ -271,7 +271,7 @@ fn default_blackman_api_key_env() -> String {
 }
 
 fn default_blackman_model() -> String {
-    "claude-sonnet-4-20250514".to_string()
+    "claude-sonnet-4-5-20250514".to_string()
 }
 
 fn default_blackman_base_url() -> String {
