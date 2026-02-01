@@ -37,13 +37,26 @@ export interface TedSettings {
   openrouterApiKey: string;
   openrouterModel: string;
 
+  // Blackman AI - optimized routing with cost savings
+  blackmanApiKey: string;
+  blackmanBaseUrl: string;
+  blackmanModel: string;
+
   // Deployment
   vercelToken: string;
   netlifyToken: string;
 
   // Hardware info
   hardware: HardwareInfo | null;
+
+  // User preferences
+  experienceLevel: 'beginner' | 'intermediate' | 'advanced';
 }
+
+/** Default Blackman API URL */
+const BLACKMAN_URLS = {
+  production: 'https://app.useblackman.ai',
+} as const;
 
 interface SettingsProps {
   onClose: () => void;
@@ -98,8 +111,25 @@ export function Settings({ onClose }: SettingsProps) {
 
   const loadSettings = async () => {
     try {
-      const result = await window.teddy.getSettings();
-      setSettings(result);
+      const result = await window.teddy.getSettings() as Partial<TedSettings>;
+      // Ensure Blackman fields have defaults (for backwards compatibility)
+      setSettings({
+        provider: result.provider || 'anthropic',
+        model: result.model || 'claude-sonnet-4-20250514',
+        anthropicApiKey: result.anthropicApiKey || '',
+        anthropicModel: result.anthropicModel || 'claude-sonnet-4-20250514',
+        ollamaBaseUrl: result.ollamaBaseUrl || 'http://localhost:11434',
+        ollamaModel: result.ollamaModel || 'qwen2.5-coder:7b',
+        openrouterApiKey: result.openrouterApiKey || '',
+        openrouterModel: result.openrouterModel || 'anthropic/claude-3.5-sonnet',
+        blackmanApiKey: result.blackmanApiKey || '',
+        blackmanBaseUrl: result.blackmanBaseUrl || BLACKMAN_URLS.production,
+        blackmanModel: result.blackmanModel || 'claude-sonnet-4-20250514',
+        vercelToken: result.vercelToken || '',
+        netlifyToken: result.netlifyToken || '',
+        hardware: result.hardware || null,
+        experienceLevel: result.experienceLevel || 'beginner',
+      });
     } catch (err) {
       console.error('Failed to load settings:', err);
     } finally {
@@ -348,6 +378,8 @@ export function Settings({ onClose }: SettingsProps) {
                       newModel = settings.ollamaModel;
                     } else if (newProvider === 'openrouter') {
                       newModel = settings.openrouterModel;
+                    } else if (newProvider === 'blackman') {
+                      newModel = settings.blackmanModel;
                     } else if (newProvider === 'anthropic') {
                       newModel = settings.anthropicModel;
                     }
@@ -355,6 +387,7 @@ export function Settings({ onClose }: SettingsProps) {
                   }}
                 >
                   <option value="anthropic">Anthropic Claude</option>
+                  <option value="blackman">Blackman AI (Optimized)</option>
                   <option value="ollama">Ollama (Local)</option>
                   <option value="openrouter">OpenRouter</option>
                 </select>
@@ -444,6 +477,53 @@ export function Settings({ onClose }: SettingsProps) {
                       placeholder="anthropic/claude-3.5-sonnet"
                     />
                     <small>100+ models available via OpenRouter</small>
+                  </div>
+                </>
+              )}
+
+              {settings.provider === 'blackman' && (
+                <>
+                  <h4>Blackman AI Settings</h4>
+                  <div style={{
+                    padding: '12px',
+                    backgroundColor: 'var(--bg-tertiary, #2d2d2d)',
+                    borderRadius: '8px',
+                    marginBottom: '16px'
+                  }}>
+                    <strong>Optimized Routing</strong>
+                    <p style={{ margin: '8px 0 0', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                      Blackman AI automatically routes requests to optimal models based on task complexity,
+                      saving 15-30% on costs while maintaining quality.
+                    </p>
+                  </div>
+                  <div className="form-group">
+                    <label htmlFor="blackman-key">API Key</label>
+                    <input
+                      type="password"
+                      id="blackman-key"
+                      value={settings.blackmanApiKey}
+                      onChange={(e) => setSettings({ ...settings, blackmanApiKey: e.target.value })}
+                      placeholder="bm-..."
+                    />
+                    <small>
+                      Get your API key from <a href="https://app.useblackman.ai/api-keys" target="_blank" rel="noopener noreferrer">app.useblackman.ai</a>.
+                      You can also set BLACKMAN_API_KEY environment variable.
+                    </small>
+                  </div>
+                  <div className="form-group">
+                    <label htmlFor="blackman-model">Default Model</label>
+                    <select
+                      id="blackman-model"
+                      value={settings.blackmanModel}
+                      onChange={(e) => setSettings({ ...settings, blackmanModel: e.target.value, model: e.target.value })}
+                    >
+                      <option value="claude-sonnet-4-20250514">Claude Sonnet 4</option>
+                      <option value="claude-3-7-sonnet">Claude 3.7 Sonnet</option>
+                      <option value="gpt-4o">GPT-4o</option>
+                      <option value="gpt-4o-mini">GPT-4o Mini</option>
+                      <option value="deepseek-chat">DeepSeek Chat</option>
+                    </select>
+                    <small>Blackman may route to different models based on task complexity</small>
                   </div>
                 </>
               )}
@@ -752,19 +832,34 @@ export function Settings({ onClose }: SettingsProps) {
 
           {activeTab === 'hardware' && (
             <div className="settings-section">
-              <div className="hardware-header">
+              <h3>Your Preferences</h3>
+              <div className="form-group">
+                <label htmlFor="experience-level">Experience Level</label>
+                <select
+                  id="experience-level"
+                  value={settings.experienceLevel || 'beginner'}
+                  onChange={(e) => setSettings({ ...settings, experienceLevel: e.target.value as 'beginner' | 'intermediate' | 'advanced' })}
+                >
+                  <option value="beginner">Beginner - I'm new to coding</option>
+                  <option value="intermediate">Intermediate - I know some coding</option>
+                  <option value="advanced">Advanced - I'm a developer</option>
+                </select>
+                <small>This affects how detailed explanations are when building your app</small>
+              </div>
+
+              <div className="hardware-header" style={{ marginTop: '24px' }}>
                 <h3>Hardware Profile</h3>
                 <button className="btn-secondary" onClick={detectHardware}>
                   🔄 Re-detect
                 </button>
               </div>
 
-              {settings.hardware ? (
+              {settings.hardware && settings.hardware.cpuBrand ? (
                 <div className="hardware-info">
                   <div className="info-row">
                     <span className="label">Tier:</span>
                     <span className="value">
-                      <strong>{settings.hardware.tier}</strong> ({settings.hardware.tierDescription})
+                      <strong>{settings.hardware.tier}</strong> {settings.hardware.tierDescription && `(${settings.hardware.tierDescription})`}
                     </span>
                   </div>
 
@@ -802,14 +897,18 @@ export function Settings({ onClose }: SettingsProps) {
                     </div>
                   )}
 
-                  <h4>What You Can Build</h4>
-                  <ul className="capabilities-list">
-                    {settings.hardware.capabilities.map((cap, i) => (
-                      <li key={i} className="capability">✓ {cap}</li>
-                    ))}
-                  </ul>
+                  {settings.hardware.capabilities && settings.hardware.capabilities.length > 0 && (
+                    <>
+                      <h4>What You Can Build</h4>
+                      <ul className="capabilities-list">
+                        {settings.hardware.capabilities.map((cap, i) => (
+                          <li key={i} className="capability">✓ {cap}</li>
+                        ))}
+                      </ul>
+                    </>
+                  )}
 
-                  {settings.hardware.limitations.length > 0 && (
+                  {settings.hardware.limitations && settings.hardware.limitations.length > 0 && (
                     <>
                       <h4>Limitations</h4>
                       <ul className="capabilities-list">
@@ -820,20 +919,28 @@ export function Settings({ onClose }: SettingsProps) {
                     </>
                   )}
 
-                  <h4>Recommended Models</h4>
-                  <ul className="models-list">
-                    {settings.hardware.recommendedModels.slice(0, 3).map((model, i) => (
-                      <li key={i}>• {model}</li>
-                    ))}
-                  </ul>
+                  {settings.hardware.recommendedModels && settings.hardware.recommendedModels.length > 0 && (
+                    <>
+                      <h4>Recommended Models</h4>
+                      <ul className="models-list">
+                        {settings.hardware.recommendedModels.slice(0, 3).map((model, i) => (
+                          <li key={i}>• {model}</li>
+                        ))}
+                      </ul>
+                    </>
+                  )}
 
-                  <h4>Expected Performance</h4>
-                  <div className="info-row">
-                    <span className="label">AI Response Time:</span>
-                    <span className="value">
-                      {settings.hardware.expectedResponseTime[0]}-{settings.hardware.expectedResponseTime[1]} seconds
-                    </span>
-                  </div>
+                  {settings.hardware.expectedResponseTime && (
+                    <>
+                      <h4>Expected Performance</h4>
+                      <div className="info-row">
+                        <span className="label">AI Response Time:</span>
+                        <span className="value">
+                          {settings.hardware.expectedResponseTime[0]}-{settings.hardware.expectedResponseTime[1]} seconds
+                        </span>
+                      </div>
+                    </>
+                  )}
                 </div>
               ) : (
                 <div className="hardware-empty">

@@ -50,6 +50,10 @@ pub struct ProvidersConfig {
     #[serde(default)]
     pub openrouter: OpenRouterConfig,
 
+    /// Blackman AI configuration (optimized routing with cost savings)
+    #[serde(default)]
+    pub blackman: BlackmanConfig,
+
     /// OpenAI configuration (future)
     #[serde(default)]
     pub openai: Option<OpenAIConfig>,
@@ -109,6 +113,37 @@ pub struct OpenRouterConfig {
     /// Base URL for API (for custom endpoints)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
+}
+
+/// Blackman AI configuration (optimized routing with cost savings)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlackmanConfig {
+    /// API key (if stored directly, not recommended)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+
+    /// Environment variable name for API key
+    #[serde(default = "default_blackman_api_key_env")]
+    pub api_key_env: String,
+
+    /// Default model to use
+    #[serde(default = "default_blackman_model")]
+    pub default_model: String,
+
+    /// Base URL for API
+    #[serde(default = "default_blackman_base_url")]
+    pub base_url: String,
+}
+
+impl Default for BlackmanConfig {
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            api_key_env: default_blackman_api_key_env(),
+            default_model: default_blackman_model(),
+            base_url: default_blackman_base_url(),
+        }
+    }
 }
 
 /// OpenAI configuration (placeholder for future)
@@ -229,6 +264,18 @@ fn default_openrouter_api_key_env() -> String {
 
 fn default_openrouter_model() -> String {
     "anthropic/claude-3.5-sonnet".to_string()
+}
+
+fn default_blackman_api_key_env() -> String {
+    "BLACKMAN_API_KEY".to_string()
+}
+
+fn default_blackman_model() -> String {
+    "claude-sonnet-4-20250514".to_string()
+}
+
+fn default_blackman_base_url() -> String {
+    "https://app.useblackman.ai".to_string()
 }
 
 fn default_caps() -> Vec<String> {
@@ -392,6 +439,22 @@ impl Settings {
             .or_else(|| self.providers.openrouter.api_key.clone())
     }
 
+    /// Get the API key for Blackman AI, checking env var first
+    pub fn get_blackman_api_key(&self) -> Option<String> {
+        // Priority: env var > config file
+        std::env::var(&self.providers.blackman.api_key_env)
+            .ok()
+            .or_else(|| self.providers.blackman.api_key.clone())
+    }
+
+    /// Get the Blackman base URL, checking env var first
+    pub fn get_blackman_base_url(&self) -> String {
+        // Priority: env var > config file
+        std::env::var("BLACKMAN_BASE_URL")
+            .ok()
+            .unwrap_or_else(|| self.providers.blackman.base_url.clone())
+    }
+
     /// Get the ted home directory (~/.ted)
     pub fn ted_home() -> PathBuf {
         dirs::home_dir()
@@ -487,7 +550,10 @@ impl Settings {
         self.defaults.max_tokens = tier.max_context_tokens() as u32;
 
         // For ancient/tiny tiers, prefer local models
-        if matches!(tier, HardwareTier::UltraTiny | HardwareTier::Ancient | HardwareTier::Tiny) {
+        if matches!(
+            tier,
+            HardwareTier::UltraTiny | HardwareTier::Ancient | HardwareTier::Tiny
+        ) {
             self.defaults.provider = "ollama".to_string();
             let models = tier.recommended_models();
             if !models.is_empty() {
@@ -782,26 +848,30 @@ mod tests {
 
     #[test]
     fn test_effective_tier_with_override() {
-        let mut settings = Settings::default();
-        settings.hardware = Some(HardwareConfig {
-            tier: HardwareTier::Ancient,
-            tier_override: Some(HardwareTier::Small),
-            adaptive_mode: true,
-            last_detection: None,
-        });
+        let settings = Settings {
+            hardware: Some(HardwareConfig {
+                tier: HardwareTier::Ancient,
+                tier_override: Some(HardwareTier::Small),
+                adaptive_mode: true,
+                last_detection: None,
+            }),
+            ..Default::default()
+        };
 
         assert_eq!(settings.effective_tier(), HardwareTier::Small);
     }
 
     #[test]
     fn test_effective_tier_without_override() {
-        let mut settings = Settings::default();
-        settings.hardware = Some(HardwareConfig {
-            tier: HardwareTier::Medium,
-            tier_override: None,
-            adaptive_mode: true,
-            last_detection: None,
-        });
+        let settings = Settings {
+            hardware: Some(HardwareConfig {
+                tier: HardwareTier::Medium,
+                tier_override: None,
+                adaptive_mode: true,
+                last_detection: None,
+            }),
+            ..Default::default()
+        };
 
         assert_eq!(settings.effective_tier(), HardwareTier::Medium);
     }
@@ -814,13 +884,15 @@ mod tests {
 
     #[test]
     fn test_apply_hardware_adaptive_config() {
-        let mut settings = Settings::default();
-        settings.hardware = Some(HardwareConfig {
-            tier: HardwareTier::Ancient,
-            tier_override: None,
-            adaptive_mode: true,
-            last_detection: None,
-        });
+        let mut settings = Settings {
+            hardware: Some(HardwareConfig {
+                tier: HardwareTier::Ancient,
+                tier_override: None,
+                adaptive_mode: true,
+                last_detection: None,
+            }),
+            ..Default::default()
+        };
 
         settings.apply_hardware_adaptive_config();
 
@@ -831,13 +903,15 @@ mod tests {
 
     #[test]
     fn test_get_hardware_warnings() {
-        let mut settings = Settings::default();
-        settings.hardware = Some(HardwareConfig {
-            tier: HardwareTier::Ancient,
-            tier_override: None,
-            adaptive_mode: true,
-            last_detection: None,
-        });
+        let settings = Settings {
+            hardware: Some(HardwareConfig {
+                tier: HardwareTier::Ancient,
+                tier_override: None,
+                adaptive_mode: true,
+                last_detection: None,
+            }),
+            ..Default::default()
+        };
 
         let warnings = settings.get_hardware_warnings();
         assert!(!warnings.is_empty());

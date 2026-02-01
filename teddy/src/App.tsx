@@ -110,6 +110,7 @@ function App() {
           }
 
           let newContent = originalContent;
+          let editError: string | null = null;
 
           if (data.operation === 'replace' && data.new_text !== undefined) {
             // If old_text is empty string or undefined, it means replace entire file content
@@ -118,7 +119,19 @@ function App() {
               newContent = data.new_text;
             } else {
               console.log('[APP] Applying replace: old_text length:', data.old_text.length, 'new_text length:', data.new_text.length);
-              newContent = originalContent.replace(data.old_text, data.new_text);
+              // Check if old_text exists in the file before replacing
+              if (!originalContent.includes(data.old_text)) {
+                // Generate helpful error message similar to file-applier.ts
+                const firstLine = data.old_text.split('\n')[0].trim();
+                const hasPartialMatch = firstLine && originalContent.includes(firstLine);
+                editError = hasPartialMatch
+                  ? `Found partial match for "${firstLine.substring(0, 50)}..." but full text differs. The file may have changed.`
+                  : `The text to replace was not found in the file. The model may be hallucinating file content.`;
+                console.error(`[APP] Edit failed for ${data.path}: ${editError}`);
+                console.error('[APP] old_text was:', data.old_text.substring(0, 200));
+              } else {
+                newContent = originalContent.replace(data.old_text, data.new_text);
+              }
             }
           } else {
             console.log('[APP] Not applying replace - operation:', data.operation, 'has old_text:', data.old_text !== undefined, 'has new_text:', data.new_text !== undefined);
@@ -129,15 +142,21 @@ function App() {
           );
           console.log('[APP] Change already exists?', exists);
           if (!exists) {
-            console.log('[APP] Adding pending change for:', data.path);
-            addPendingChange({
-              type: 'edit',
-              path: data.path,
-              operation: data.operation,
-              originalContent: originalContent,
-              newContent: newContent,
-              timestamp: event.timestamp,
-            });
+            // Only add if there's an actual change OR if there's an error to report
+            if (newContent !== originalContent || editError) {
+              console.log('[APP] Adding pending change for:', data.path, editError ? '(with error)' : '');
+              addPendingChange({
+                type: 'edit',
+                path: data.path,
+                operation: data.operation,
+                originalContent: originalContent,
+                newContent: newContent,
+                timestamp: event.timestamp,
+                error: editError || undefined,
+              });
+            } else {
+              console.log('[APP] Skipping pending change - no actual change for:', data.path);
+            }
           }
         } else if (event.type === 'file_delete') {
           const data = event.data as { path: string };

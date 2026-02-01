@@ -42,10 +42,25 @@ pub fn execute(args: &SystemArgs, format: &OutputFormat) -> Result<()> {
             architecture: format!("{:?}", profile.architecture),
             is_sbc: profile.is_sbc,
             cpu_year: profile.cpu_year,
-            recommended_models: profile.tier.recommended_models().iter().map(|s| s.to_string()).collect(),
+            recommended_models: profile
+                .tier
+                .recommended_models()
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             expected_response_time: profile.tier.expected_response_time(),
-            capabilities: profile.tier.capabilities().iter().map(|s| s.to_string()).collect(),
-            limitations: profile.tier.limitations().iter().map(|s| s.to_string()).collect(),
+            capabilities: profile
+                .tier
+                .capabilities()
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            limitations: profile
+                .tier
+                .limitations()
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
         };
         println!("{}", serde_json::to_string_pretty(&info)?);
         return Ok(());
@@ -58,11 +73,7 @@ pub fn execute(args: &SystemArgs, format: &OutputFormat) -> Result<()> {
     println!(
         "RAM: {}GB{}",
         profile.ram_gb,
-        if profile.ram_gb < 16 {
-            " ⚠️ "
-        } else {
-            ""
-        }
+        if profile.ram_gb < 16 { " ⚠️ " } else { "" }
     );
     println!(
         "Storage: {}",
@@ -109,10 +120,7 @@ pub fn execute(args: &SystemArgs, format: &OutputFormat) -> Result<()> {
     // Show expected performance
     let (min_time, max_time) = profile.tier.expected_response_time();
     println!("\n=== Expected Performance ===");
-    println!(
-        "AI Response Time: {}-{} seconds",
-        min_time, max_time
-    );
+    println!("AI Response Time: {}-{} seconds", min_time, max_time);
     println!(
         "Context Window: {} tokens",
         profile.tier.max_context_tokens()

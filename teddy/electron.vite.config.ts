@@ -27,6 +27,9 @@ export default defineConfig({
   renderer: {
     plugins: [react()],
     root: path.resolve(__dirname, '.'),
+    server: {
+      port: 5174  // Avoid conflict with Blackman UI on 5173
+    },
     build: {
       rollupOptions: {
         input: {

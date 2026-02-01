@@ -48,7 +48,10 @@ impl Tool for DatabaseInitTool {
         if provider != "sqlite" && provider != "postgresql" {
             return Ok(ToolResult::error(
                 tool_use_id,
-                format!("Invalid provider '{}'. Use 'sqlite' or 'postgresql'.", provider),
+                format!(
+                    "Invalid provider '{}'. Use 'sqlite' or 'postgresql'.",
+                    provider
+                ),
             ));
         }
 
@@ -162,7 +165,9 @@ impl Tool for DatabaseInitTool {
         } else {
             output.push_str("💡 PostgreSQL requires a running database server.\n");
             output.push_str("   Set DATABASE_URL in .env to your connection string:\n");
-            output.push_str("   DATABASE_URL=\"postgresql://user:password@localhost:5432/dbname\"\n\n");
+            output.push_str(
+                "   DATABASE_URL=\"postgresql://user:password@localhost:5432/dbname\"\n\n",
+            );
         }
 
         // Add guidance for next steps
@@ -172,10 +177,7 @@ impl Tool for DatabaseInitTool {
         output.push_str("3. Use @prisma/client in your code to query the database\n\n");
 
         if !models_desc.is_empty() {
-            output.push_str(&format!(
-                "💭 You mentioned needing: {}\n",
-                models_desc
-            ));
+            output.push_str(&format!("💭 You mentioned needing: {}\n", models_desc));
             output.push_str("   I can help you define these models in the schema. Let me know!\n");
         }
 
@@ -186,7 +188,10 @@ impl Tool for DatabaseInitTool {
         let provider = input["provider"].as_str().unwrap_or("sqlite");
         Some(PermissionRequest {
             tool_name: "database_init".to_string(),
-            action_description: format!("Initialize {} database with Prisma (installs dependencies, creates schema)", provider),
+            action_description: format!(
+                "Initialize {} database with Prisma (installs dependencies, creates schema)",
+                provider
+            ),
             affected_paths: vec![
                 "prisma/schema.prisma".to_string(),
                 "package.json".to_string(),
@@ -328,7 +333,10 @@ impl Tool for DatabaseMigrateTool {
             Ok(gen_output) => {
                 if !gen_output.status.success() {
                     let stderr = String::from_utf8_lossy(&gen_output.stderr);
-                    output.push_str(&format!("⚠️ Warning: Client generation failed: {}\n", stderr));
+                    output.push_str(&format!(
+                        "⚠️ Warning: Client generation failed: {}\n",
+                        stderr
+                    ));
                 } else {
                     output.push_str("✅ Prisma client generated\n\n");
                 }
@@ -395,9 +403,9 @@ impl Tool for DatabaseQueryTool {
         input: Value,
         context: &ToolContext,
     ) -> Result<ToolResult> {
-        let query = input["query"].as_str().ok_or_else(|| {
-            crate::error::TedError::InvalidInput("query is required".to_string())
-        })?;
+        let query = input["query"]
+            .as_str()
+            .ok_or_else(|| crate::error::TedError::InvalidInput("query is required".to_string()))?;
         let allow_write = input["allow_write"].as_bool().unwrap_or(false);
 
         // Check if this is a write query
@@ -438,7 +446,9 @@ impl Tool for DatabaseQueryTool {
         };
 
         // For SQLite, use sqlite3 directly
-        if schema_content.contains("provider = \"sqlite\"") || schema_content.contains("provider = 'sqlite'") {
+        if schema_content.contains("provider = \"sqlite\"")
+            || schema_content.contains("provider = 'sqlite'")
+        {
             // Find the database file
             let db_path = context.working_directory.join("prisma/dev.db");
             if !db_path.exists() {
@@ -497,13 +507,15 @@ impl Tool for DatabaseQueryTool {
             let database_url = if env_path.exists() {
                 // Try to read DATABASE_URL from .env
                 match std::fs::read_to_string(&env_path) {
-                    Ok(content) => {
-                        content
-                            .lines()
-                            .find(|line| line.starts_with("DATABASE_URL="))
-                            .map(|line| line.trim_start_matches("DATABASE_URL=").trim_matches('"').to_string())
-                    }
-                    Err(_) => None
+                    Ok(content) => content
+                        .lines()
+                        .find(|line| line.starts_with("DATABASE_URL="))
+                        .map(|line| {
+                            line.trim_start_matches("DATABASE_URL=")
+                                .trim_matches('"')
+                                .to_string()
+                        }),
+                    Err(_) => None,
                 }
             } else {
                 None
@@ -514,34 +526,31 @@ impl Tool for DatabaseQueryTool {
                 _ => {
                     return Ok(ToolResult::error(
                         tool_use_id,
-                        "PostgreSQL DATABASE_URL not found in .env file. Set DATABASE_URL=\"postgresql://user:password@localhost:5432/dbname\" in your .env file, or start the PostgreSQL container from Teddy's Settings → Database & Services.",
+                        "PostgreSQL DATABASE_URL not found in .env file. Set DATABASE_URL=\"postgresql://user:password@localhost:5432/dbname\" in your .env file, or start the PostgreSQL container (ted-postgres).",
                     ));
                 }
             };
 
             // Execute query using psql
-            // First check if we're using Docker (teddy-postgres container) or external PostgreSQL
-            let query_result = if database_url.contains("localhost") || database_url.contains("127.0.0.1") {
-                // Try to use psql inside the teddy-postgres container first
-                Command::new("docker")
-                    .args([
-                        "exec", "teddy-postgres",
-                        "psql", &database_url,
-                        "-c", query,
-                    ])
-                    .current_dir(&context.working_directory)
-                    .stdin(Stdio::null())
-                    .output()
-                    .await
-            } else {
-                // External PostgreSQL - try to use local psql
-                Command::new("psql")
-                    .args([&database_url, "-c", query])
-                    .current_dir(&context.working_directory)
-                    .stdin(Stdio::null())
-                    .output()
-                    .await
-            };
+            // First check if we're using Docker (ted-postgres container) or external PostgreSQL
+            let query_result =
+                if database_url.contains("localhost") || database_url.contains("127.0.0.1") {
+                    // Try to use psql inside the ted-postgres container first
+                    Command::new("docker")
+                        .args(["exec", "ted-postgres", "psql", &database_url, "-c", query])
+                        .current_dir(&context.working_directory)
+                        .stdin(Stdio::null())
+                        .output()
+                        .await
+                } else {
+                    // External PostgreSQL - try to use local psql
+                    Command::new("psql")
+                        .args([&database_url, "-c", query])
+                        .current_dir(&context.working_directory)
+                        .stdin(Stdio::null())
+                        .output()
+                        .await
+                };
 
             match query_result {
                 Ok(output) => {
@@ -550,7 +559,8 @@ impl Tool for DatabaseQueryTool {
 
                     if !output.status.success() {
                         // If Docker command failed, try local psql as fallback
-                        if database_url.contains("localhost") || database_url.contains("127.0.0.1") {
+                        if database_url.contains("localhost") || database_url.contains("127.0.0.1")
+                        {
                             let fallback_result = Command::new("psql")
                                 .args([&database_url, "-c", query])
                                 .current_dir(&context.working_directory)
@@ -582,7 +592,7 @@ impl Tool for DatabaseQueryTool {
                                 Err(e) => {
                                     return Ok(ToolResult::error(
                                         tool_use_id,
-                                        format!("PostgreSQL query failed: {}. Neither teddy-postgres container nor local psql is available.", e),
+                                        format!("PostgreSQL query failed: {}. Neither ted-postgres container nor local psql is available.", e),
                                     ));
                                 }
                             }
@@ -609,12 +619,15 @@ impl Tool for DatabaseQueryTool {
                     if database_url.contains("localhost") || database_url.contains("127.0.0.1") {
                         Ok(ToolResult::error(
                             tool_use_id,
-                            format!("Failed to execute PostgreSQL query: {}. Ensure the teddy-postgres container is running (start it from Teddy's Settings → Database & Services) or that psql is installed locally.", e),
+                            format!("Failed to execute PostgreSQL query: {}. Ensure the ted-postgres container is running or that psql is installed locally.", e),
                         ))
                     } else {
                         Ok(ToolResult::error(
                             tool_use_id,
-                            format!("Failed to execute PostgreSQL query: {}. Is psql installed?", e),
+                            format!(
+                                "Failed to execute PostgreSQL query: {}. Is psql installed?",
+                                e
+                            ),
                         ))
                     }
                 }
@@ -638,7 +651,11 @@ impl Tool for DatabaseQueryTool {
             action_description: format!(
                 "Execute {} SQL query: {}",
                 if is_write { "WRITE" } else { "read-only" },
-                if query.len() > 100 { &query[..100] } else { query }
+                if query.len() > 100 {
+                    &query[..100]
+                } else {
+                    query
+                }
             ),
             affected_paths: vec!["prisma/dev.db".to_string()],
             is_destructive: is_write,
@@ -780,12 +797,10 @@ main()
 
                 Ok(ToolResult::success(tool_use_id, output))
             }
-            Err(e) => {
-                Ok(ToolResult::error(
-                    tool_use_id,
-                    format!("Failed to run seed: {}", e),
-                ))
-            }
+            Err(e) => Ok(ToolResult::error(
+                tool_use_id,
+                format!("Failed to run seed: {}", e),
+            )),
         }
     }
 
@@ -858,11 +873,7 @@ mod tests {
         let context = create_test_context(&temp_dir);
 
         let result = tool
-            .execute(
-                "test-id".to_string(),
-                serde_json::json!({}),
-                &context,
-            )
+            .execute("test-id".to_string(), serde_json::json!({}), &context)
             .await
             .unwrap();
 
@@ -902,11 +913,7 @@ mod tests {
         let context = create_test_context(&temp_dir);
 
         let result = tool
-            .execute(
-                "test-id".to_string(),
-                serde_json::json!({}),
-                &context,
-            )
+            .execute("test-id".to_string(), serde_json::json!({}), &context)
             .await
             .unwrap();
 
@@ -960,11 +967,7 @@ mod tests {
         let context = create_test_context(&temp_dir);
 
         let result = tool
-            .execute(
-                "test-id".to_string(),
-                serde_json::json!({}),
-                &context,
-            )
+            .execute("test-id".to_string(), serde_json::json!({}), &context)
             .await
             .unwrap();
 
@@ -1019,11 +1022,7 @@ mod tests {
         let context = create_test_context(&temp_dir);
 
         let result = tool
-            .execute(
-                "test-id".to_string(),
-                serde_json::json!({}),
-                &context,
-            )
+            .execute("test-id".to_string(), serde_json::json!({}), &context)
             .await;
 
         assert!(result.is_err()); // Missing required parameter
@@ -1051,7 +1050,9 @@ mod tests {
             .unwrap();
 
         assert!(result.is_error());
-        assert!(result.output_text().contains("Write operations are not allowed"));
+        assert!(result
+            .output_text()
+            .contains("Write operations are not allowed"));
     }
 
     #[tokio::test]
@@ -1111,11 +1112,7 @@ mod tests {
         let context = create_test_context(&temp_dir);
 
         let result = tool
-            .execute(
-                "test-id".to_string(),
-                serde_json::json!({}),
-                &context,
-            )
+            .execute("test-id".to_string(), serde_json::json!({}), &context)
             .await
             .unwrap();
 
@@ -1133,11 +1130,7 @@ mod tests {
         let context = create_test_context(&temp_dir);
 
         let result = tool
-            .execute(
-                "test-id".to_string(),
-                serde_json::json!({}),
-                &context,
-            )
+            .execute("test-id".to_string(), serde_json::json!({}), &context)
             .await
             .unwrap();
 

@@ -40,9 +40,26 @@ impl Tool for FileReadTool {
         input: Value,
         context: &ToolContext,
     ) -> Result<ToolResult> {
+        // Flexible parameter name lookup - support common alternatives models might use
         let path_str = input["path"]
             .as_str()
+            .or_else(|| input["file"].as_str())
+            .or_else(|| input["file_path"].as_str())
+            .or_else(|| input["filepath"].as_str())
             .ok_or_else(|| crate::error::TedError::InvalidInput("path is required".to_string()))?;
+
+        // Check if this file was already provided in the context
+        // If so, return a short reminder instead of re-reading
+        if context.is_file_in_context(path_str) {
+            return Ok(ToolResult::success(
+                tool_use_id,
+                format!(
+                    "STOP: {} was already provided in [PROJECT CONTEXT] above. \
+                    Do NOT read it again. Use file_edit with the EXACT text from the context.",
+                    path_str
+                ),
+            ));
+        }
 
         let offset = input["offset"].as_u64().unwrap_or(1) as usize;
         let limit = input["limit"].as_u64().unwrap_or(2000) as usize;

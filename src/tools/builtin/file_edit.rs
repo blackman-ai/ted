@@ -41,17 +41,36 @@ impl Tool for FileEditTool {
         input: Value,
         context: &ToolContext,
     ) -> Result<ToolResult> {
+        // Flexible parameter name lookup - support common alternatives models might use
         let path_str = input["path"]
             .as_str()
+            .or_else(|| input["file"].as_str())
+            .or_else(|| input["file_path"].as_str())
+            .or_else(|| input["filepath"].as_str())
             .ok_or_else(|| crate::error::TedError::InvalidInput("path is required".to_string()))?;
 
-        let old_string = input["old_string"].as_str().ok_or_else(|| {
-            crate::error::TedError::InvalidInput("old_string is required".to_string())
-        })?;
+        let old_string = input["old_string"]
+            .as_str()
+            .or_else(|| input["old"].as_str())
+            .or_else(|| input["old_text"].as_str())
+            .or_else(|| input["search"].as_str())
+            .or_else(|| input["find"].as_str())
+            .or_else(|| input["original"].as_str())
+            .or_else(|| input["from"].as_str())
+            .ok_or_else(|| {
+                crate::error::TedError::InvalidInput("old_string is required".to_string())
+            })?;
 
-        let new_string = input["new_string"].as_str().ok_or_else(|| {
-            crate::error::TedError::InvalidInput("new_string is required".to_string())
-        })?;
+        let new_string = input["new_string"]
+            .as_str()
+            .or_else(|| input["new"].as_str())
+            .or_else(|| input["new_text"].as_str())
+            .or_else(|| input["replace"].as_str())
+            .or_else(|| input["replacement"].as_str())
+            .or_else(|| input["to"].as_str())
+            .ok_or_else(|| {
+                crate::error::TedError::InvalidInput("new_string is required".to_string())
+            })?;
 
         let replace_all = input["replace_all"].as_bool().unwrap_or(false);
 
@@ -474,5 +493,76 @@ mod tests {
             .await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_edit_alternative_param_names() {
+        // Test flexible parameter names for better model compatibility
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        std::fs::write(&file_path, "Hello World").unwrap();
+
+        let tool = FileEditTool;
+        let context = create_test_context(&temp_dir);
+
+        // Test using "file" instead of "path"
+        let result = tool
+            .execute(
+                "test-id".to_string(),
+                serde_json::json!({
+                    "file": file_path.to_string_lossy().to_string(),
+                    "old_string": "World",
+                    "new_string": "Rust"
+                }),
+                &context,
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error());
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "Hello Rust");
+
+        // Reset file
+        std::fs::write(&file_path, "Hello Rust").unwrap();
+
+        // Test using "old" and "new" instead of "old_string" and "new_string"
+        let result = tool
+            .execute(
+                "test-id".to_string(),
+                serde_json::json!({
+                    "path": file_path.to_string_lossy().to_string(),
+                    "old": "Rust",
+                    "new": "World"
+                }),
+                &context,
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error());
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "Hello World");
+
+        // Reset file
+        std::fs::write(&file_path, "Hello World").unwrap();
+
+        // Test using "search" and "replace"
+        let result = tool
+            .execute(
+                "test-id".to_string(),
+                serde_json::json!({
+                    "file_path": file_path.to_string_lossy().to_string(),
+                    "search": "World",
+                    "replace": "Universe"
+                }),
+                &context,
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error());
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "Hello Universe");
     }
 }

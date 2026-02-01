@@ -80,8 +80,8 @@
 | **Deploy & Infra** | Deploy integration | ✅ Complete | Vercel deploy with one-click, Cloudflare tunnel sharing |
 | | Dev server detection | ✅ Complete | Auto-detects Vite/Next.js, sets correct ports |
 | | Settings UI | ✅ Complete | Full settings UI with Hardware/Providers/Deployment tabs |
-| **Future Features** | Docker support | ❌ Stubbed | Button exists, not functional (Phase 4) |
-| | PostgreSQL | ❌ Stubbed | Button exists, not functional (Phase 4) |
+| **Future Features** | Docker support | ✅ Complete | Docker detection + service controls in Settings (toolbar buttons still disabled) |
+| | PostgreSQL | ✅ Complete | Container management + status UI in Settings |
 
 ---
 
@@ -432,7 +432,7 @@ These are the features we **must** have to compete. Prioritized by user impact.
 | **MCP protocol** | ✅ Complete | Full stdio server implementation |
 | **OpenRouter provider** | ✅ Complete | 100+ models accessible |
 | **Multi-session** | ✅ Complete | Full session CRUD + UI |
-| **LSP integration** | ✅ Complete | Autocomplete, go-to-def, hover |
+| **LSP integration** | ✅ Complete | Autocomplete, go-to-def, hover (file path completions pending) |
 | **VS Code extension** | ✅ Complete | Full IDE integration |
 | **Settings UI** | ✅ Complete | Hardware/Providers/Deployment/Database tabs |
 | **File watching** | ✅ Complete | chokidar with ignore patterns |
@@ -580,7 +580,7 @@ model Favorite {
 | **Error recovery + retry** | P0 | 2 days | ✅ Done | Exponential backoff, circuit breaker, smart defaults |
 | **Multi-file context** | P0 | 3 days | ✅ Done | FileChangeSetTool with atomic/incremental modes, integrated with embedded_runner |
 | **Conversation memory/RAG** | P0 | 5 days | ✅ Done | Embeddings, SQLite storage, summarization, recall integration complete |
-| **LSP integration** | P0 | 1 week | ✅ Done | Autocomplete, go-to-def, hover - `ted lsp` command |
+| **LSP integration** | P0 | 1 week | ✅ Done | Autocomplete, go-to-def, hover - `ted lsp` command (file path completions pending) |
 | **VS Code extension** | P0 | 1 week | ✅ Done | Full IDE integration in `vscode-extension/` |
 | Thermal monitoring (Pi) | P1 | 2 days | 🔴 Not started | Pause inference at 80°C, UltraTiny tier |
 | Minimal Electron mode (Pi) | P1 | 3 days | 🔴 Not started | Reduce UI overhead for 8GB RAM |

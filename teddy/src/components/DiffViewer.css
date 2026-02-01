@@ -397,3 +397,42 @@
   border-color: var(--accent, #007acc);
   color: var(--accent, #007acc);
 }
+
+/* Error states */
+.change-badge.change-error {
+  background: var(--danger, #f44336);
+  color: white;
+}
+
+.diff-item.change-error {
+  border-left: 3px solid var(--danger, #f44336);
+  background: rgba(244, 67, 54, 0.1);
+}
+
+.diff-item.change-error:hover {
+  background: rgba(244, 67, 54, 0.15);
+}
+
+.diff-item.change-error.selected {
+  border-left-color: var(--danger, #f44336);
+  background: rgba(244, 67, 54, 0.2);
+}
+
+.diff-error-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: rgba(244, 67, 54, 0.15);
+  border-bottom: 1px solid var(--danger, #f44336);
+  color: var(--danger, #f44336);
+}
+
+.diff-error-icon {
+  font-size: 1.2rem;
+}
+
+.diff-error-message {
+  font-size: 0.85rem;
+  line-height: 1.4;
+}

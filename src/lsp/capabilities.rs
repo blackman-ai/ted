@@ -50,7 +50,6 @@ pub fn server_capabilities() -> ServerCapabilities {
         // - document_formatting_provider
         // - rename_provider
         // - diagnostic_provider
-
         ..Default::default()
     }
 }

@@ -53,6 +53,16 @@ export class FileApplier {
         if (!event.data.old_text || event.data.new_text === undefined) {
           throw new Error('Replace operation requires old_text and new_text');
         }
+        // Check if old_text exists in the file
+        if (!content.includes(event.data.old_text)) {
+          // Try to find a close match to give helpful feedback
+          const firstLine = event.data.old_text.split('\n')[0].trim();
+          const hasPartialMatch = firstLine && content.includes(firstLine);
+          const hint = hasPartialMatch
+            ? `Found partial match for "${firstLine.substring(0, 50)}..." but full text differs. The file may have changed.`
+            : `The text to replace was not found in the file. The model may be hallucinating file content.`;
+          throw new Error(`Edit failed: old_text not found in ${event.data.path}. ${hint}`);
+        }
         newContent = content.replace(event.data.old_text, event.data.new_text);
         break;
 

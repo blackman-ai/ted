@@ -39,13 +39,22 @@ impl Tool for FileWriteTool {
         input: Value,
         context: &ToolContext,
     ) -> Result<ToolResult> {
+        // Flexible parameter name lookup - support common alternatives models might use
         let path_str = input["path"]
             .as_str()
+            .or_else(|| input["file"].as_str())
+            .or_else(|| input["file_path"].as_str())
+            .or_else(|| input["filepath"].as_str())
             .ok_or_else(|| crate::error::TedError::InvalidInput("path is required".to_string()))?;
 
-        let content = input["content"].as_str().ok_or_else(|| {
-            crate::error::TedError::InvalidInput("content is required".to_string())
-        })?;
+        let content = input["content"]
+            .as_str()
+            .or_else(|| input["text"].as_str())
+            .or_else(|| input["body"].as_str())
+            .or_else(|| input["data"].as_str())
+            .ok_or_else(|| {
+                crate::error::TedError::InvalidInput("content is required".to_string())
+            })?;
 
         // Resolve path
         let path = if PathBuf::from(path_str).is_absolute() {

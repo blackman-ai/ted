@@ -12,7 +12,7 @@ type ProjectType = 'vite' | 'nextjs' | 'static' | 'unknown';
 
 // Track server state globally so it persists across tab switches
 let globalServerRunning = false;
-let globalServerPort = 8080;
+let globalServerPort = 8081;  // Avoid conflict with Blackman backend on 8080
 let globalServerPid: number | null = null;
 let globalProjectType: ProjectType = 'unknown';
 
@@ -264,7 +264,7 @@ export function Preview({ projectPath }: PreviewProps) {
   }, [url]);
 
   const handlePortChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const newPort = parseInt(e.target.value) || 8080;
+    const newPort = parseInt(e.target.value) || 8081;
     setPort(newPort);
     globalServerPort = newPort;
     const newUrl = `http://localhost:${newPort}`;

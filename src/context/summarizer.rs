@@ -214,7 +214,10 @@ mod tests {
     fn test_extract_tags() {
         let messages = vec![
             create_test_message(Role::User, "I need to add authentication to my API"),
-            create_test_message(Role::Assistant, "I'll help you implement JWT authentication"),
+            create_test_message(
+                Role::Assistant,
+                "I'll help you implement JWT authentication",
+            ),
         ];
 
         let tags = extract_tags(&messages);

@@ -40,11 +40,6 @@ impl CircuitBreaker {
         }
     }
 
-    /// Create with default settings (5 failures, 10 second cooldown)
-    pub fn default() -> Self {
-        Self::new(5, 10)
-    }
-
     /// Get current circuit state
     pub fn state(&self) -> CircuitState {
         let failures = self.failure_count.load(Ordering::Relaxed);
@@ -92,7 +87,10 @@ impl CircuitBreaker {
                 .unwrap_or_default()
                 .as_secs();
             self.opened_at.store(now, Ordering::Relaxed);
-            eprintln!("[CIRCUIT_BREAKER] Circuit opened after {} failures. Cooldown: {}s", failures, self.cooldown_secs);
+            eprintln!(
+                "[CIRCUIT_BREAKER] Circuit opened after {} failures. Cooldown: {}s",
+                failures, self.cooldown_secs
+            );
         }
     }
 
@@ -105,6 +103,13 @@ impl CircuitBreaker {
     pub fn reset(&self) {
         self.failure_count.store(0, Ordering::Relaxed);
         self.opened_at.store(0, Ordering::Relaxed);
+    }
+}
+
+impl Default for CircuitBreaker {
+    /// Create with default settings (5 failures, 10 second cooldown)
+    fn default() -> Self {
+        Self::new(5, 10)
     }
 }
 

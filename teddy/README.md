@@ -12,8 +12,8 @@ Teddy is a cross-platform desktop application that brings AI-assisted coding to 
 - 💬 **AI Chat** - Natural language interface to generate and modify code
 - 🔄 **Live Preview** - See your web apps running in real-time
 - 📊 **Git Integration** - Automatic commits for every AI-generated change
-- 🐳 **Docker Ready** - Container runtime support (coming soon)
-- 🚀 **One-Click Deploy** - Deploy to cloud platforms (coming soon)
+- 🐳 **Docker + PostgreSQL** - Optional container management via Settings → Database
+- 🚀 **One-Click Deploy** - Vercel/Netlify deploy from the Preview tab (tokens required)
 
 ## Prerequisites
 

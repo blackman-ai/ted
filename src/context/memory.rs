@@ -6,7 +6,7 @@
 //! This module provides persistent storage for conversation history with semantic search.
 //! Uses SQLite for storage and in-memory vector search for simplicity and portability.
 
-use crate::embeddings::{EmbeddingGenerator, search::SearchResult};
+use crate::embeddings::{search::SearchResult, EmbeddingGenerator};
 use crate::error::{Result, TedError};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
@@ -42,9 +42,8 @@ pub struct MemoryStore {
 impl MemoryStore {
     /// Open or create a memory store at the given path
     pub fn open<P: AsRef<Path>>(path: P, embedding_generator: EmbeddingGenerator) -> Result<Self> {
-        let conn = Connection::open(path).map_err(|e| {
-            TedError::Context(format!("Failed to open memory store: {}", e))
-        })?;
+        let conn = Connection::open(path)
+            .map_err(|e| TedError::Context(format!("Failed to open memory store: {}", e)))?;
 
         let store = Self {
             conn,
@@ -126,7 +125,8 @@ impl MemoryStore {
         let mut results: Vec<SearchResult> = memories
             .iter()
             .map(|memory| {
-                let score = EmbeddingGenerator::cosine_similarity(&query_embedding, &memory.embedding);
+                let score =
+                    EmbeddingGenerator::cosine_similarity(&query_embedding, &memory.embedding);
                 SearchResult {
                     content: format!(
                         "[{}] {}\nFiles: {}\nTags: {}",
@@ -148,7 +148,11 @@ impl MemoryStore {
             .collect();
 
         // Sort by score (descending)
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // Return top K
         results.truncate(top_k);
@@ -325,7 +329,10 @@ impl MemoryStore {
         let id_str = id.to_string();
 
         self.conn
-            .execute("DELETE FROM conversation_memory WHERE id = ?1", params![id_str])
+            .execute(
+                "DELETE FROM conversation_memory WHERE id = ?1",
+                params![id_str],
+            )
             .map_err(|e| TedError::Context(format!("Failed to delete memory: {}", e)))?;
 
         Ok(())
@@ -339,6 +346,17 @@ impl MemoryStore {
                 row.get(0)
             })
             .map_err(|e| TedError::Context(format!("Failed to count memories: {}", e)))?;
+
+        Ok(count)
+    }
+
+    /// Clear all memories from the database
+    pub fn clear_all(&self) -> Result<usize> {
+        let count = self.count()?;
+
+        self.conn
+            .execute("DELETE FROM conversation_memory", [])
+            .map_err(|e| TedError::Context(format!("Failed to clear memories: {}", e)))?;
 
         Ok(count)
     }

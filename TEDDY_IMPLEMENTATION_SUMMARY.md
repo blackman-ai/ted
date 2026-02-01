@@ -334,14 +334,11 @@ Expected:
 
 ### Expected for V1
 
-1. **No file tree refresh** - Manual reload required after external changes
-2. **No Docker runtime** - Buttons stubbed, functionality not implemented
-3. **No auto dev server** - User must start manually
-4. **Basic preview** - Just an iframe, no smart detection
-5. **No diff view** - Can't review AI changes before applying
-6. **No undo** - Must use Git to revert
-7. **Single session** - Can't run multiple Ted instances
-8. **No context selection** - Sends entire project (future: smart selection)
+1. **Ollama tool-call parsing** - Tool calls arrive as raw JSON text (needs UI-side parsing)
+2. **Memory panel stubbed** - No recent memory list or semantic search wiring yet
+3. **External file change UX** - Open file does not auto-reload on external edits
+4. **LSP path completions** - File path suggestions missing in `ted lsp`
+5. **Toolbar buttons disabled** - Docker/Postgres/Deploy buttons are disabled (features live in Settings/Preview)
 
 ### Not Blockers
 
@@ -352,9 +349,7 @@ Expected:
 
 ---
 
-## Next Steps
-
-### Immediate (Week 1)
+## Suggested QA
 
 1. **Test the build**
    ```bash
@@ -363,21 +358,14 @@ Expected:
    npm run dev
    ```
 
-2. **Try the vertical slice**
+2. **Exercise the vertical slice**
    - Open a test project
    - Send a prompt
-   - Verify file creation works
+   - Verify file creation + review/apply flow
 
-3. **Fix any critical bugs**
-   - File path issues
-   - Parser errors
-   - UI crashes
-
-### Short-term (Week 2-3)
-
-1. **Add basic tests**
-   - Unit tests for TedParser
-   - Integration test for file applier
+3. **Verify integrations**
+   - File watcher refresh
+   - Deploy (Vercel/Netlify) and share (tunnel)
 
 2. **Improve error handling**
    - Better error messages

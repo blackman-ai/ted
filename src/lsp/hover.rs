@@ -126,9 +126,7 @@ fn find_js_documentation(lines: &[&str], word: &str) -> Option<String> {
                             j = j.saturating_sub(1);
                         }
                         break;
-                    } else if !prev.is_empty()
-                        && !prev.starts_with("//")
-                        && !prev.starts_with("*")
+                    } else if !prev.is_empty() && !prev.starts_with("//") && !prev.starts_with("*")
                     {
                         break;
                     }
@@ -137,17 +135,16 @@ fn find_js_documentation(lines: &[&str], word: &str) -> Option<String> {
 
                 if !doc_lines.is_empty() {
                     doc_lines.reverse();
-                    return Some(format!(
-                        "**{}**\n\n{}",
-                        word,
-                        doc_lines.join("\n")
-                    ));
+                    return Some(format!("**{}**\n\n{}", word, doc_lines.join("\n")));
                 }
             }
 
             // Return basic signature info
             let signature = extract_signature(line, word);
-            return Some(format!("**{}**\n\n```{}\n{}\n```", word, "typescript", signature));
+            return Some(format!(
+                "**{}**\n\n```{}\n{}\n```",
+                word, "typescript", signature
+            ));
         }
     }
 
@@ -199,8 +196,7 @@ fn find_rust_documentation(lines: &[&str], word: &str) -> Option<String> {
 fn find_python_documentation(lines: &[&str], word: &str) -> Option<String> {
     for (i, line) in lines.iter().enumerate() {
         // Look for function/class definitions
-        if line.contains(&format!("def {}(", word)) || line.contains(&format!("class {}:", word))
-        {
+        if line.contains(&format!("def {}(", word)) || line.contains(&format!("class {}:", word)) {
             // Look for docstring below
             if i + 1 < lines.len() {
                 let next = lines[i + 1].trim();

@@ -323,7 +323,7 @@ Now that Teddy is running:
 1. **Read the Architecture** - [ARCHITECTURE.md](./ARCHITECTURE.md)
 2. **Explore the Code** - Start with `src/App.tsx`
 3. **Customize the UI** - Edit components and styles
-4. **Add Features** - See `TODO.md` for ideas
+4. **Add Features** - See `ROADMAP.md` and `MVP_LIMITATIONS.md` for ideas
 5. **Contribute** - Open a PR!
 
 ---

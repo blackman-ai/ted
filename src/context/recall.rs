@@ -130,7 +130,6 @@ pub async fn store_conversation(
 ///     ).await?;
 /// }
 /// ```
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,7 +147,8 @@ mod tests {
         let summary = "Added authentication system to the application".to_string();
         let files = vec!["src/auth.rs".to_string()];
         let tags = vec!["auth".to_string(), "security".to_string()];
-        let content = "User: Add authentication\nAssistant: I'll add JWT authentication...".to_string();
+        let content =
+            "User: Add authentication\nAssistant: I'll add JWT authentication...".to_string();
 
         store_conversation(
             conversation_id,
@@ -163,13 +163,9 @@ mod tests {
         .unwrap();
 
         // Recall related conversation
-        let recalled = recall_relevant_context(
-            "How do I add login to my app?",
-            &store,
-            3,
-        )
-        .await
-        .unwrap();
+        let recalled = recall_relevant_context("How do I add login to my app?", &store, 3)
+            .await
+            .unwrap();
 
         assert!(recalled.is_some());
         let context = recalled.unwrap();

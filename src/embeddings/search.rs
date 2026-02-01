@@ -6,8 +6,8 @@
 //! This module provides semantic search over conversation history and code context
 //! using vector similarity and optional hybrid search with keyword matching.
 
-use crate::error::Result;
 use super::EmbeddingGenerator;
+use crate::error::Result;
 
 /// A search result with similarity score
 #[derive(Debug, Clone)]
@@ -28,7 +28,9 @@ pub struct SemanticSearch {
 impl SemanticSearch {
     /// Create a new semantic search engine
     pub fn new(embedding_generator: EmbeddingGenerator) -> Self {
-        Self { embedding_generator }
+        Self {
+            embedding_generator,
+        }
     }
 
     /// Search for similar texts using cosine similarity
@@ -44,8 +46,12 @@ impl SemanticSearch {
         let query_embedding = self.embedding_generator.embed(query).await?;
 
         // Generate embeddings for all candidates
-        let candidate_texts: Vec<String> = candidates.iter().map(|(text, _)| text.clone()).collect();
-        let candidate_embeddings = self.embedding_generator.embed_batch(&candidate_texts).await?;
+        let candidate_texts: Vec<String> =
+            candidates.iter().map(|(text, _)| text.clone()).collect();
+        let candidate_embeddings = self
+            .embedding_generator
+            .embed_batch(&candidate_texts)
+            .await?;
 
         // Calculate similarities
         let mut results: Vec<SearchResult> = candidates
@@ -62,7 +68,11 @@ impl SemanticSearch {
             .collect();
 
         // Sort by score (descending)
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // Return top K results
         results.truncate(top_k);
@@ -84,7 +94,8 @@ impl SemanticSearch {
         let semantic_results = self.search(query, candidates, candidates.len()).await?;
 
         // Simple keyword scoring (BM25-like)
-        let query_tokens: Vec<String> = query.split_whitespace().map(|s| s.to_lowercase()).collect();
+        let query_tokens: Vec<String> =
+            query.split_whitespace().map(|s| s.to_lowercase()).collect();
         let keyword_scores: Vec<f32> = candidates
             .iter()
             .map(|(text, _)| {
@@ -111,7 +122,10 @@ impl SemanticSearch {
         // Normalize keyword scores to 0-1 range
         let max_keyword_score = keyword_scores.iter().cloned().fold(0.0f32, f32::max);
         let normalized_keyword_scores: Vec<f32> = if max_keyword_score > 0.0 {
-            keyword_scores.iter().map(|s| s / max_keyword_score).collect()
+            keyword_scores
+                .iter()
+                .map(|s| s / max_keyword_score)
+                .collect()
         } else {
             keyword_scores
         };
@@ -128,7 +142,11 @@ impl SemanticSearch {
             .collect();
 
         // Sort by combined score
-        combined_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        combined_results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // Return top K
         combined_results.truncate(top_k);

@@ -49,6 +49,8 @@ export interface TedSettings {
   vercelToken: string;
   netlifyToken: string;
   hardware: HardwareInfo | null;
+  /** User's experience level - affects verbosity and explanations */
+  experienceLevel: 'beginner' | 'intermediate' | 'advanced';
 }
 
 export interface SessionInfo {

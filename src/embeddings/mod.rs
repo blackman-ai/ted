@@ -76,14 +76,22 @@ impl EmbeddingGenerator {
                 // Check if it's a model not found error
                 let error_msg = format!("{:?}", e);
                 if error_msg.contains("MODEL_NOT_FOUND") {
-                    eprintln!("[EMBEDDINGS] Model '{}' not found, attempting to pull...", self.config.model);
+                    eprintln!(
+                        "[EMBEDDINGS] Model '{}' not found, attempting to pull...",
+                        self.config.model
+                    );
 
                     if self.pull_model().await.is_ok() {
-                        eprintln!("[EMBEDDINGS] Successfully pulled '{}', retrying embed", self.config.model);
+                        eprintln!(
+                            "[EMBEDDINGS] Successfully pulled '{}', retrying embed",
+                            self.config.model
+                        );
                         // Retry after pulling
                         return self.embed_impl(text).await;
                     } else {
-                        eprintln!("[EMBEDDINGS] Failed to pull model, embedding will be unavailable");
+                        eprintln!(
+                            "[EMBEDDINGS] Failed to pull model, embedding will be unavailable"
+                        );
                     }
                 }
                 Err(e)
@@ -95,9 +103,22 @@ impl EmbeddingGenerator {
     async fn embed_impl(&self, text: &str) -> Result<Vec<f32>> {
         let url = format!("{}/api/embed", self.config.base_url);
 
+        // Truncate text to avoid exceeding model's context length
+        // nomic-embed-text has ~8192 token context, roughly 4 chars per token
+        // Use 24000 chars (~6000 tokens) to be safe
+        let truncated_text = if text.len() > 24000 {
+            eprintln!(
+                "[EMBEDDINGS] Truncating text from {} to 24000 chars for embedding",
+                text.len()
+            );
+            &text[..24000]
+        } else {
+            text
+        };
+
         let request = EmbeddingRequest {
             model: self.config.model.clone(),
-            input: text.to_string(),
+            input: truncated_text.to_string(),
         };
 
         let response = self
@@ -126,15 +147,12 @@ impl EmbeddingGenerator {
             }));
         }
 
-        let embedding_response: EmbeddingResponse = response
-            .json()
-            .await
-            .map_err(|e| {
-                TedError::Api(crate::error::ApiError::InvalidResponse(format!(
-                    "Failed to parse embedding response: {}",
-                    e
-                )))
-            })?;
+        let embedding_response: EmbeddingResponse = response.json().await.map_err(|e| {
+            TedError::Api(crate::error::ApiError::InvalidResponse(format!(
+                "Failed to parse embedding response: {}",
+                e
+            )))
+        })?;
 
         // Ollama returns a single embedding in the array
         embedding_response
@@ -277,22 +295,27 @@ mod tests {
         let generator = EmbeddingGenerator::new();
         let result = generator.embed("Hello, world!").await;
 
-        assert!(result.is_ok(), "Failed to generate embedding: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Failed to generate embedding: {:?}",
+            result.err()
+        );
         let embedding = result.unwrap();
         assert!(!embedding.is_empty(), "Embedding should not be empty");
 
         // nomic-embed-text produces 768-dimensional embeddings
-        assert_eq!(embedding.len(), 768, "Expected 768-dimensional embedding from nomic-embed-text");
+        assert_eq!(
+            embedding.len(),
+            768,
+            "Expected 768-dimensional embedding from nomic-embed-text"
+        );
     }
 
     #[tokio::test]
     #[ignore] // Run with: cargo test -- --ignored
     async fn test_embed_batch_integration() {
         let generator = EmbeddingGenerator::new();
-        let texts = vec![
-            "Hello, world!".to_string(),
-            "Goodbye, world!".to_string(),
-        ];
+        let texts = vec!["Hello, world!".to_string(), "Goodbye, world!".to_string()];
 
         let result = generator.embed_batch(&texts).await;
         assert!(result.is_ok());
@@ -323,8 +346,11 @@ mod tests {
 
         // text1 and text2 are semantically similar, should have higher similarity
         // than text1 and text3
-        assert!(sim_1_2 > sim_1_3,
+        assert!(
+            sim_1_2 > sim_1_3,
             "Similar texts should have higher similarity. sim_1_2={}, sim_1_3={}",
-            sim_1_2, sim_1_3);
+            sim_1_2,
+            sim_1_3
+        );
     }
 }

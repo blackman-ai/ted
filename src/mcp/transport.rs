@@ -9,8 +9,8 @@ use std::io::{self, BufRead, Write};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::error::Result;
 use super::protocol::{JsonRpcRequest, JsonRpcResponse};
+use crate::error::Result;
 
 /// Stdio transport for MCP
 pub struct StdioTransport {
@@ -47,7 +47,9 @@ impl StdioTransport {
             }
         }
 
-        Err(crate::error::TedError::Config("EOF reached on stdin".to_string()))
+        Err(crate::error::TedError::Config(
+            "EOF reached on stdin".to_string(),
+        ))
     }
 
     /// Write a JSON-RPC response to stdout

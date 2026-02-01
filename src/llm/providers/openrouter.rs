@@ -66,7 +66,11 @@ impl OpenRouterProvider {
     }
 
     /// Convert internal messages to OpenRouter/OpenAI format
-    fn convert_messages(&self, messages: &[Message], system: Option<&str>) -> Vec<OpenRouterMessage> {
+    fn convert_messages(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+    ) -> Vec<OpenRouterMessage> {
         let mut result = Vec::new();
 
         // Add system message first if provided
@@ -126,7 +130,10 @@ impl OpenRouterProvider {
                                     ToolResultContent::Blocks(blocks) => blocks
                                         .iter()
                                         .filter_map(|b| {
-                                            if let crate::llm::message::ToolResultBlock::Text { text } = b {
+                                            if let crate::llm::message::ToolResultBlock::Text {
+                                                text,
+                                            } = b
+                                            {
                                                 Some(text.clone())
                                             } else {
                                                 None
@@ -247,11 +254,11 @@ impl OpenRouterProvider {
                     let (current, limit) = Self::parse_token_counts(&message);
                     TedError::Api(ApiError::ContextTooLong { current, limit })
                 }
-                "model_not_found" => {
-                    TedError::Api(ApiError::ModelNotFound(message))
-                }
+                "model_not_found" => TedError::Api(ApiError::ModelNotFound(message)),
                 _ => {
-                    if message.contains("context") || message.contains("token") && message.contains("limit") {
+                    if message.contains("context")
+                        || message.contains("token") && message.contains("limit")
+                    {
                         let (current, limit) = Self::parse_token_counts(&message);
                         TedError::Api(ApiError::ContextTooLong { current, limit })
                     } else {
@@ -455,8 +462,8 @@ impl LlmProvider for OpenRouterProvider {
     fn supports_model(&self, model: &str) -> bool {
         // OpenRouter supports many models - check our curated list
         // or allow any model string (OpenRouter will validate)
-        self.available_models().iter().any(|m| m.id == model)
-            || model.contains("/") // OpenRouter uses provider/model format
+        self.available_models().iter().any(|m| m.id == model) || model.contains("/")
+        // OpenRouter uses provider/model format
     }
 
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
@@ -489,7 +496,9 @@ impl LlmProvider for OpenRouterProvider {
 
         // Convert response to our format
         let choice = api_response.choices.into_iter().next().ok_or_else(|| {
-            TedError::Api(ApiError::InvalidResponse("No choices in response".to_string()))
+            TedError::Api(ApiError::InvalidResponse(
+                "No choices in response".to_string(),
+            ))
         })?;
 
         let mut content = Vec::new();
@@ -578,7 +587,13 @@ impl LlmProvider for OpenRouterProvider {
         let event_stream = byte_stream
             .map(|result| result.map_err(|e| TedError::Api(ApiError::StreamError(e.to_string()))))
             .scan(
-                (String::new(), false, 0usize, None::<usize>, std::collections::HashMap::new()),
+                (
+                    String::new(),
+                    false,
+                    0usize,
+                    None::<usize>,
+                    std::collections::HashMap::new(),
+                ),
                 |state: &mut StreamState, result| {
                     let (buffer, message_started, content_idx, tool_idx, tool_args) = state;
 
@@ -643,32 +658,44 @@ impl LlmProvider for OpenRouterProvider {
                                     if let Some(tool_calls) = delta.tool_calls {
                                         for tc in tool_calls {
                                             let tc_index = tc.index.unwrap_or(0);
-                                            let tool_id = tc.id.clone().unwrap_or_else(|| format!("tool_{}", tc_index));
+                                            let tool_id = tc
+                                                .id
+                                                .clone()
+                                                .unwrap_or_else(|| format!("tool_{}", tc_index));
 
                                             // Start new tool use block
                                             if tool_idx.is_none() || *tool_idx != Some(tc_index) {
                                                 // Close previous content block if any
                                                 if *content_idx > 0 || tool_idx.is_some() {
                                                     let prev_idx = tool_idx.unwrap_or(*content_idx);
-                                                    events.push(Ok(StreamEvent::ContentBlockStop {
-                                                        index: prev_idx,
-                                                    }));
+                                                    events.push(Ok(
+                                                        StreamEvent::ContentBlockStop {
+                                                            index: prev_idx,
+                                                        },
+                                                    ));
                                                 }
 
                                                 *tool_idx = Some(tc_index);
                                                 let block_index = *content_idx + tc_index + 1;
 
                                                 if let Some(ref func) = tc.function {
-                                                    events.push(Ok(StreamEvent::ContentBlockStart {
-                                                        index: block_index,
-                                                        content_block: ContentBlockResponse::ToolUse {
-                                                            id: tool_id.clone(),
-                                                            name: func.name.clone().unwrap_or_default(),
-                                                            input: serde_json::Value::Object(
-                                                                serde_json::Map::new(),
-                                                            ),
+                                                    events.push(Ok(
+                                                        StreamEvent::ContentBlockStart {
+                                                            index: block_index,
+                                                            content_block:
+                                                                ContentBlockResponse::ToolUse {
+                                                                    id: tool_id.clone(),
+                                                                    name: func
+                                                                        .name
+                                                                        .clone()
+                                                                        .unwrap_or_default(),
+                                                                    input:
+                                                                        serde_json::Value::Object(
+                                                                            serde_json::Map::new(),
+                                                                        ),
+                                                                },
                                                         },
-                                                    }));
+                                                    ));
                                                 }
                                             }
 
@@ -681,12 +708,15 @@ impl LlmProvider for OpenRouterProvider {
                                                         .push_str(args);
 
                                                     let block_index = *content_idx + tc_index + 1;
-                                                    events.push(Ok(StreamEvent::ContentBlockDelta {
-                                                        index: block_index,
-                                                        delta: ContentBlockDelta::InputJsonDelta {
-                                                            partial_json: args.clone(),
+                                                    events.push(Ok(
+                                                        StreamEvent::ContentBlockDelta {
+                                                            index: block_index,
+                                                            delta:
+                                                                ContentBlockDelta::InputJsonDelta {
+                                                                    partial_json: args.clone(),
+                                                                },
                                                         },
-                                                    }));
+                                                    ));
                                                 }
                                             }
                                         }
@@ -708,7 +738,9 @@ impl LlmProvider for OpenRouterProvider {
                                         let stop_reason = match finish_reason.as_str() {
                                             "stop" => Some(StopReason::EndTurn),
                                             "length" => Some(StopReason::MaxTokens),
-                                            "tool_calls" | "function_call" => Some(StopReason::ToolUse),
+                                            "tool_calls" | "function_call" => {
+                                                Some(StopReason::ToolUse)
+                                            }
                                             _ => Some(StopReason::EndTurn),
                                         };
 
@@ -1054,8 +1086,8 @@ mod tests {
             },
         }];
 
-        let request = CompletionRequest::new("openai/gpt-4o", vec![Message::user("Hello")])
-            .with_tools(tools);
+        let request =
+            CompletionRequest::new("openai/gpt-4o", vec![Message::user("Hello")]).with_tools(tools);
 
         let built = provider.build_request(&request, false);
 

@@ -63,7 +63,7 @@ const DEFAULT_CONFIG: AppConfig = {
   recentProjects: [],
   reviewModeEnabled: true,
   previewAutoStart: true,
-  previewPort: 8080,
+  previewPort: 8081,  // Avoid conflict with Blackman backend on 8080
 };
 
 class TeddyStorage {

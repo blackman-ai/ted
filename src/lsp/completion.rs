@@ -102,19 +102,21 @@ fn extract_js_identifiers(content: &str) -> Vec<String> {
         if ch.is_alphanumeric() || ch == '_' || ch == '$' {
             current.push(ch);
         } else {
-            if !current.is_empty() && !current.chars().next().unwrap().is_numeric() {
-                if !identifiers.contains(&current) {
-                    identifiers.push(current.clone());
-                }
+            if !current.is_empty()
+                && !current.chars().next().unwrap().is_numeric()
+                && !identifiers.contains(&current)
+            {
+                identifiers.push(current.clone());
             }
             current.clear();
         }
     }
 
-    if !current.is_empty() && !current.chars().next().unwrap().is_numeric() {
-        if !identifiers.contains(&current) {
-            identifiers.push(current);
-        }
+    if !current.is_empty()
+        && !current.chars().next().unwrap().is_numeric()
+        && !identifiers.contains(&current)
+    {
+        identifiers.push(current);
     }
 
     identifiers
@@ -151,8 +153,7 @@ fn js_snippets() -> Vec<CompletionItem> {
             label: "for".to_string(),
             kind: Some(CompletionItemKind::SNIPPET),
             insert_text: Some(
-                "for (let ${1:i} = 0; ${1:i} < ${2:array}.length; ${1:i}++) {\n\t$0\n}"
-                    .to_string(),
+                "for (let ${1:i} = 0; ${1:i} < ${2:array}.length; ${1:i}++) {\n\t$0\n}".to_string(),
             ),
             insert_text_format: Some(InsertTextFormat::SNIPPET),
             detail: Some("For loop".to_string()),
@@ -237,10 +238,11 @@ fn extract_rust_identifiers(content: &str) -> Vec<String> {
         if ch.is_alphanumeric() || ch == '_' {
             current.push(ch);
         } else {
-            if !current.is_empty() && !current.chars().next().unwrap().is_numeric() {
-                if !identifiers.contains(&current) {
-                    identifiers.push(current.clone());
-                }
+            if !current.is_empty()
+                && !current.chars().next().unwrap().is_numeric()
+                && !identifiers.contains(&current)
+            {
+                identifiers.push(current.clone());
             }
             current.clear();
         }
@@ -255,8 +257,9 @@ fn rust_snippets() -> Vec<CompletionItem> {
         CompletionItem {
             label: "fn".to_string(),
             kind: Some(CompletionItemKind::SNIPPET),
-            insert_text: Some("fn ${1:name}(${2:params}) ${3:-> ${4:ReturnType} }{\n\t$0\n}"
-                .to_string()),
+            insert_text: Some(
+                "fn ${1:name}(${2:params}) ${3:-> ${4:ReturnType} }{\n\t$0\n}".to_string(),
+            ),
             insert_text_format: Some(InsertTextFormat::SNIPPET),
             detail: Some("Function".to_string()),
             ..Default::default()
@@ -346,10 +349,11 @@ fn extract_python_identifiers(content: &str) -> Vec<String> {
         if ch.is_alphanumeric() || ch == '_' {
             current.push(ch);
         } else {
-            if !current.is_empty() && !current.chars().next().unwrap().is_numeric() {
-                if !identifiers.contains(&current) {
-                    identifiers.push(current.clone());
-                }
+            if !current.is_empty()
+                && !current.chars().next().unwrap().is_numeric()
+                && !identifiers.contains(&current)
+            {
+                identifiers.push(current.clone());
             }
             current.clear();
         }
@@ -431,10 +435,7 @@ fn generic_completions(prefix: &str, content: &str) -> Result<Vec<CompletionItem
     // Deduplicate and filter by prefix
     let mut seen = std::collections::HashSet::new();
     for word in words {
-        if word.starts_with(word_prefix)
-            && word != word_prefix
-            && !seen.contains(&word)
-        {
+        if word.starts_with(word_prefix) && word != word_prefix && !seen.contains(&word) {
             seen.insert(word.clone());
             items.push(CompletionItem {
                 label: word,

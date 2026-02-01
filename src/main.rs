@@ -401,7 +401,8 @@ async fn run_chat(args: ChatArgs, mut settings: Settings) -> Result<()> {
         project_root.clone(),
         session_id.0,
         args.trust,
-    );
+    )
+    .with_files_in_context(args.files_in_context.clone());
     let mut tool_executor = ToolExecutor::new(tool_context, args.trust);
 
     // Update session info

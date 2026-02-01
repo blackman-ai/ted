@@ -83,9 +83,15 @@ impl Tool for ShellTool {
         input: Value,
         context: &ToolContext,
     ) -> Result<ToolResult> {
-        let command = input["command"].as_str().ok_or_else(|| {
-            crate::error::TedError::InvalidInput("command is required".to_string())
-        })?;
+        // Flexible parameter name lookup - support common alternatives models might use
+        let command = input["command"]
+            .as_str()
+            .or_else(|| input["cmd"].as_str())
+            .or_else(|| input["run"].as_str())
+            .or_else(|| input["exec"].as_str())
+            .ok_or_else(|| {
+                crate::error::TedError::InvalidInput("command is required".to_string())
+            })?;
 
         let timeout_secs = input["timeout"]
             .as_u64()

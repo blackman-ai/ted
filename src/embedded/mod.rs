@@ -4,8 +4,8 @@
 //! Embedded mode for GUI integration
 //!
 //! When Ted runs with --embedded flag, it outputs JSONL events to stdout
-//! instead of running the interactive TUI. This allows desktop apps like
-//! Teddy to spawn Ted as a subprocess and receive structured events.
+//! instead of running the interactive TUI. This allows desktop apps and
+//! IDE extensions to spawn Ted as a subprocess and receive structured events.
 
 use serde::{Deserialize, Serialize};
 use serde_json;

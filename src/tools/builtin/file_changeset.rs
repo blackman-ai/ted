@@ -11,8 +11,7 @@ use std::path::Path;
 use crate::error::{Result, TedError};
 use crate::llm::provider::{ToolDefinition, ToolInputSchema};
 use crate::tools::{
-    ChangeSetMode, FileChangeSet, FileOperation, PermissionRequest, Tool,
-    ToolContext, ToolResult,
+    ChangeSetMode, FileChangeSet, FileOperation, PermissionRequest, Tool, ToolContext, ToolResult,
 };
 
 pub struct FileChangeSetTool;
@@ -212,7 +211,11 @@ impl Tool for FileChangeSetTool {
                 FileOperation::Read { path } => {
                     preview.push_str(&format!("Read {}\n", path));
                 }
-                FileOperation::Edit { path, old_string, new_string } => {
+                FileOperation::Edit {
+                    path,
+                    old_string,
+                    new_string,
+                } => {
                     preview.push_str(&format!("Edit {}\n", path));
                     let old_preview = if old_string.len() > 50 {
                         format!("{}...", &old_string[..50])
@@ -237,7 +240,10 @@ impl Tool for FileChangeSetTool {
         }
 
         if !changeset.related_files.is_empty() {
-            preview.push_str(&format!("\nRelated files: {}\n", changeset.related_files.join(", ")));
+            preview.push_str(&format!(
+                "\nRelated files: {}\n",
+                changeset.related_files.join(", ")
+            ));
         }
 
         if changeset.mode == ChangeSetMode::Atomic {

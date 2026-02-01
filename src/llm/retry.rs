@@ -26,9 +26,9 @@ impl Default for RetryConfig {
     fn default() -> Self {
         Self {
             max_retries: 5,
-            base_delay_ms: 1000,  // Start at 1 second
-            max_delay_ms: 16000,  // Cap at 16 seconds
-            jitter: 0.25,         // ±25% randomization
+            base_delay_ms: 1000, // Start at 1 second
+            max_delay_ms: 16000, // Cap at 16 seconds
+            jitter: 0.25,        // ±25% randomization
         }
     }
 }
@@ -99,18 +99,28 @@ where
         match operation().await {
             Ok(result) => {
                 if attempt > 0 {
-                    eprintln!("[RETRY] {} succeeded after {} attempts", operation_name, attempt + 1);
+                    eprintln!(
+                        "[RETRY] {} succeeded after {} attempts",
+                        operation_name,
+                        attempt + 1
+                    );
                 }
                 return Ok(result);
             }
             Err(error) => {
                 if !is_retryable(&error) {
-                    eprintln!("[RETRY] {} failed with non-retryable error: {}", operation_name, error);
+                    eprintln!(
+                        "[RETRY] {} failed with non-retryable error: {}",
+                        operation_name, error
+                    );
                     return Err(error);
                 }
 
                 if attempt >= config.max_retries {
-                    eprintln!("[RETRY] {} exhausted all {} retries", operation_name, config.max_retries);
+                    eprintln!(
+                        "[RETRY] {} exhausted all {} retries",
+                        operation_name, config.max_retries
+                    );
                     return Err(error);
                 }
 
@@ -183,23 +193,33 @@ mod tests {
     #[test]
     fn test_is_retryable() {
         // Retryable errors
-        assert!(is_retryable(&TedError::Api(ApiError::Network("timeout".to_string()))));
+        assert!(is_retryable(&TedError::Api(ApiError::Network(
+            "timeout".to_string()
+        ))));
         assert!(is_retryable(&TedError::Api(ApiError::RateLimited(60))));
         assert!(is_retryable(&TedError::Api(ApiError::Timeout)));
         assert!(is_retryable(&TedError::Api(ApiError::ServerError {
             status: 500,
             message: "Internal error".to_string(),
         })));
-        assert!(is_retryable(&TedError::Api(ApiError::StreamError("connection lost".to_string()))));
+        assert!(is_retryable(&TedError::Api(ApiError::StreamError(
+            "connection lost".to_string()
+        ))));
 
         // Non-retryable errors
-        assert!(!is_retryable(&TedError::Api(ApiError::AuthenticationFailed)));
-        assert!(!is_retryable(&TedError::Api(ApiError::ModelNotFound("model".to_string()))));
+        assert!(!is_retryable(&TedError::Api(
+            ApiError::AuthenticationFailed
+        )));
+        assert!(!is_retryable(&TedError::Api(ApiError::ModelNotFound(
+            "model".to_string()
+        ))));
         assert!(!is_retryable(&TedError::Api(ApiError::ContextTooLong {
             current: 10000,
             limit: 8000,
         })));
-        assert!(!is_retryable(&TedError::Api(ApiError::InvalidResponse("bad json".to_string()))));
+        assert!(!is_retryable(&TedError::Api(ApiError::InvalidResponse(
+            "bad json".to_string()
+        ))));
     }
 
     #[tokio::test]

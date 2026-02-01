@@ -262,9 +262,7 @@ mod tests {
 
     #[test]
     fn test_description() {
-        assert!(HardwareTier::Ancient
-            .description()
-            .contains("2010-2015"));
+        assert!(HardwareTier::Ancient.description().contains("2010-2015"));
     }
 
     #[test]

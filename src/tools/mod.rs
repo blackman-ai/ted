@@ -62,9 +62,7 @@ pub enum ChangeSetMode {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FileOperation {
     /// Read a file
-    Read {
-        path: String,
-    },
+    Read { path: String },
     /// Edit a file (find and replace)
     Edit {
         path: String,
@@ -72,14 +70,9 @@ pub enum FileOperation {
         new_string: String,
     },
     /// Write/create a new file
-    Write {
-        path: String,
-        content: String,
-    },
+    Write { path: String, content: String },
     /// Delete a file
-    Delete {
-        path: String,
-    },
+    Delete { path: String },
 }
 
 /// A set of related file changes
@@ -112,6 +105,8 @@ pub struct ToolContext {
     recall_sender: Option<RecallSender>,
     /// Optional sender for shell output streaming
     shell_output_sender: Option<ShellOutputSender>,
+    /// Files already provided in the context (to avoid re-reading)
+    pub files_in_context: Vec<String>,
 }
 
 impl std::fmt::Debug for ToolContext {
@@ -126,6 +121,7 @@ impl std::fmt::Debug for ToolContext {
                 "has_shell_output_sender",
                 &self.shell_output_sender.is_some(),
             )
+            .field("files_in_context", &self.files_in_context.len())
             .finish()
     }
 }
@@ -145,7 +141,26 @@ impl ToolContext {
             trust_mode,
             recall_sender: None,
             shell_output_sender: None,
+            files_in_context: Vec::new(),
         }
+    }
+
+    /// Set the list of files already provided in context
+    pub fn with_files_in_context(mut self, files: Vec<String>) -> Self {
+        self.files_in_context = files;
+        self
+    }
+
+    /// Check if a file is already in context
+    pub fn is_file_in_context(&self, path: &str) -> bool {
+        let normalized_path = normalize_context_path(path);
+        self.files_in_context.iter().any(|f| {
+            let normalized_file = normalize_context_path(f);
+            // Match by filename or full path (normalized for separators and ./ prefixes)
+            normalized_file == normalized_path
+                || normalized_file.ends_with(&format!("/{}", normalized_path))
+                || normalized_path.ends_with(&format!("/{}", normalized_file))
+        })
     }
 
     /// Set the recall sender for memory integration.
@@ -230,6 +245,14 @@ impl ToolContext {
                 .to_path_buf()
         }
     }
+}
+
+fn normalize_context_path(path: &str) -> String {
+    let mut normalized = path.replace('\\', "/");
+    while normalized.starts_with("./") {
+        normalized = normalized.trim_start_matches("./").to_string();
+    }
+    normalized
 }
 
 /// Result of tool execution

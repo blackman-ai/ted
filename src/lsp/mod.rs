@@ -9,22 +9,22 @@
 //! - Hover information
 //! - Diagnostics (via linting)
 
-mod server;
 mod capabilities;
 mod completion;
 mod definition;
 mod hover;
+mod server;
 
 pub use server::TedLanguageServer;
 
-use tower_lsp::{LspService, Server};
 use tokio::io::{stdin, stdout};
+use tower_lsp::{LspService, Server};
 
 /// Start the LSP server on stdio
 pub async fn start_server() -> anyhow::Result<()> {
     tracing::info!("Starting Ted LSP server...");
 
-    let (service, socket) = LspService::new(|client| TedLanguageServer::new(client));
+    let (service, socket) = LspService::new(TedLanguageServer::new);
 
     let stdin = stdin();
     let stdout = stdout();

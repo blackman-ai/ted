@@ -92,14 +92,7 @@ impl SystemProfile {
         let vram_gb = None;
 
         // Determine hardware tier based on all factors
-        let tier = Self::determine_tier(
-            ram_gb,
-            cpu_cores,
-            cpu_year,
-            architecture,
-            is_sbc,
-            has_ssd,
-        );
+        let tier = Self::determine_tier(ram_gb, cpu_cores, cpu_year, architecture, is_sbc, has_ssd);
 
         Ok(SystemProfile {
             ram_gb,
@@ -256,14 +249,14 @@ impl SystemProfile {
                 }
             }
             // Modern Macs typically have SSDs
-            return true;
+            true
         }
 
         #[cfg(target_os = "windows")]
         {
             // On Windows, we'd need to use WMI or similar
             // For now, assume SSD on Windows (most modern Windows machines have SSDs)
-            return true;
+            true
         }
 
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -382,10 +375,7 @@ mod tests {
             SystemProfile::estimate_cpu_year("AMD Ryzen 9 5900X"),
             Some(2021)
         );
-        assert_eq!(
-            SystemProfile::estimate_cpu_year("Apple M1"),
-            Some(2021)
-        );
+        assert_eq!(SystemProfile::estimate_cpu_year("Apple M1"), Some(2021));
         assert_eq!(SystemProfile::estimate_cpu_year("Unknown CPU"), None);
     }
 
@@ -393,40 +383,19 @@ mod tests {
     fn test_determine_tier() {
         // Large tier
         assert_eq!(
-            SystemProfile::determine_tier(
-                32,
-                8,
-                Some(2021),
-                CpuArchitecture::X86_64,
-                false,
-                true
-            ),
+            SystemProfile::determine_tier(32, 8, Some(2021), CpuArchitecture::X86_64, false, true),
             HardwareTier::Large
         );
 
         // Ancient tier
         assert_eq!(
-            SystemProfile::determine_tier(
-                8,
-                2,
-                Some(2010),
-                CpuArchitecture::X86_64,
-                false,
-                false
-            ),
+            SystemProfile::determine_tier(8, 2, Some(2010), CpuArchitecture::X86_64, false, false),
             HardwareTier::Ancient
         );
 
         // UltraTiny tier (SBC)
         assert_eq!(
-            SystemProfile::determine_tier(
-                8,
-                4,
-                Some(2020),
-                CpuArchitecture::ARM64,
-                true,
-                true
-            ),
+            SystemProfile::determine_tier(8, 4, Some(2020), CpuArchitecture::ARM64, true, true),
             HardwareTier::UltraTiny
         );
     }

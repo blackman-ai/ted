@@ -41,14 +41,29 @@ impl Tool for GlobTool {
         input: Value,
         context: &ToolContext,
     ) -> Result<ToolResult> {
-        let pattern = input["pattern"].as_str().ok_or_else(|| {
-            crate::error::TedError::InvalidInput("pattern is required".to_string())
-        })?;
+        // Flexible parameter name lookup - support common alternatives models might use
+        let pattern = input["pattern"]
+            .as_str()
+            .or_else(|| input["glob"].as_str())
+            .or_else(|| input["query"].as_str())
+            .or_else(|| input["search"].as_str())
+            .ok_or_else(|| {
+                crate::error::TedError::InvalidInput("pattern is required".to_string())
+            })?;
 
-        let limit = input["limit"].as_u64().unwrap_or(100) as usize;
+        let limit = input["limit"]
+            .as_u64()
+            .or_else(|| input["max"].as_u64())
+            .or_else(|| input["count"].as_u64())
+            .unwrap_or(100) as usize;
 
-        // Resolve base path
-        let base_path = if let Some(path_str) = input["path"].as_str() {
+        // Resolve base path with flexible parameter names
+        let path_str = input["path"]
+            .as_str()
+            .or_else(|| input["dir"].as_str())
+            .or_else(|| input["directory"].as_str())
+            .or_else(|| input["base"].as_str());
+        let base_path = if let Some(path_str) = path_str {
             if PathBuf::from(path_str).is_absolute() {
                 PathBuf::from(path_str)
             } else {

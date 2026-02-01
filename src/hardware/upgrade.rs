@@ -73,8 +73,7 @@ impl SystemProfile {
                         current: format!("{}GB", self.ram_gb),
                         recommended: "16GB".to_string(),
                         estimated_cost: "$30-40 (used DDR3)".to_string(),
-                        performance_gain: "Use larger 3b models, 2-3x faster responses"
-                            .to_string(),
+                        performance_gain: "Use larger 3b models, 2-3x faster responses".to_string(),
                         priority: if !self.has_ssd { 2 } else { 1 },
                     });
                 }

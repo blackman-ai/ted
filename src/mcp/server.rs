@@ -8,10 +8,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::error::Result;
-use crate::tools::{Tool as TedTool, ToolContext, ToolExecutor, ToolOutput};
 use super::protocol::*;
 use super::transport::StdioTransport;
+use crate::error::Result;
+use crate::tools::{Tool as TedTool, ToolContext, ToolExecutor, ToolOutput};
 
 /// Adapter to expose Ted tools through MCP protocol
 struct TedToolAdapter {
@@ -54,7 +54,8 @@ pub struct McpServer {
     initialized: Arc<RwLock<bool>>,
     /// Transport layer
     transport: Arc<StdioTransport>,
-    /// Tool executor
+    /// Tool executor (reserved for future use)
+    #[allow(dead_code)]
     executor: Arc<ToolExecutor>,
 }
 
@@ -115,10 +116,7 @@ impl McpServer {
             "initialized" => self.handle_initialized(request).await,
             "tools/list" => self.handle_tools_list(request).await,
             "tools/call" => self.handle_tools_call(request).await,
-            _ => Self::error_response(
-                request.id,
-                JsonRpcError::method_not_found(),
-            ),
+            _ => Self::error_response(request.id, JsonRpcError::method_not_found()),
         }
     }
 
@@ -128,17 +126,11 @@ impl McpServer {
             Some(ref p) => match serde_json::from_value(p.clone()) {
                 Ok(params) => params,
                 Err(_) => {
-                    return Self::error_response(
-                        request.id,
-                        JsonRpcError::invalid_params(),
-                    );
+                    return Self::error_response(request.id, JsonRpcError::invalid_params());
                 }
             },
             None => {
-                return Self::error_response(
-                    request.id,
-                    JsonRpcError::invalid_params(),
-                );
+                return Self::error_response(request.id, JsonRpcError::invalid_params());
             }
         };
 
@@ -201,17 +193,11 @@ impl McpServer {
             Some(ref p) => match serde_json::from_value(p.clone()) {
                 Ok(params) => params,
                 Err(_) => {
-                    return Self::error_response(
-                        request.id,
-                        JsonRpcError::invalid_params(),
-                    );
+                    return Self::error_response(request.id, JsonRpcError::invalid_params());
                 }
             },
             None => {
-                return Self::error_response(
-                    request.id,
-                    JsonRpcError::invalid_params(),
-                );
+                return Self::error_response(request.id, JsonRpcError::invalid_params());
             }
         };
 
@@ -244,7 +230,9 @@ impl McpServer {
             uuid::Uuid::new_v4(),
             false, // Not in trust mode
         );
-        let args = params.arguments.unwrap_or(Value::Object(serde_json::Map::new()));
+        let args = params
+            .arguments
+            .unwrap_or(Value::Object(serde_json::Map::new()));
         let tool_use_id = uuid::Uuid::new_v4().to_string();
 
         let result = match tool.execute(tool_use_id, args, &context).await {

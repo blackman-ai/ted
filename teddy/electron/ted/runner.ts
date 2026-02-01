@@ -11,13 +11,20 @@ export interface TedRunnerOptions {
   tedBinaryPath?: string;  // Path to Ted binary (defaults to bundled)
   workingDirectory: string; // Project directory
   trust?: boolean;          // Auto-approve tool uses
-  provider?: string;        // LLM provider (ollama, anthropic)
+  provider?: string;        // LLM provider (ollama, anthropic, blackman)
   model?: string;           // Model to use
   caps?: string[];          // Active caps
   historyFile?: string;     // Path to conversation history JSON file
   reviewMode?: boolean;     // Review mode - emit file events but don't execute modifications
   sessionId?: string;       // Resume a specific session by ID
   projectHasFiles?: boolean; // Whether the project has existing files (for enforcement)
+  systemPromptFile?: string; // Path to file with additional system prompt (for frontend customization)
+  filesInContext?: string[]; // Files already provided in context (Ted won't re-read them)
+  // API keys - passed as environment variables to Ted
+  anthropicApiKey?: string;
+  blackmanApiKey?: string;
+  blackmanBaseUrl?: string;
+  openrouterApiKey?: string;
 }
 
 /**
@@ -63,14 +70,31 @@ export class TedRunner extends EventEmitter {
     const tedPath = this.getTedBinaryPath();
     const args = this.buildArgs(prompt);
 
+    // Build environment with API keys from settings
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      // Ensure Ted uses embedded mode
+      TED_EMBEDDED: '1',
+    };
+
+    // Pass API keys from settings (Ted will read these)
+    if (this.options.anthropicApiKey) {
+      env.ANTHROPIC_API_KEY = this.options.anthropicApiKey;
+    }
+    if (this.options.blackmanApiKey) {
+      env.BLACKMAN_API_KEY = this.options.blackmanApiKey;
+    }
+    if (this.options.blackmanBaseUrl) {
+      env.BLACKMAN_BASE_URL = this.options.blackmanBaseUrl;
+    }
+    if (this.options.openrouterApiKey) {
+      env.OPENROUTER_API_KEY = this.options.openrouterApiKey;
+    }
+
     this.process = spawn(tedPath, args, {
       cwd: this.options.workingDirectory,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        // Ensure Ted uses embedded mode
-        TED_EMBEDDED: '1',
-      }
+      env,
     });
 
     // Handle stdout (JSONL events)
@@ -232,6 +256,16 @@ export class TedRunner extends EventEmitter {
     // Tell Ted if the project has existing files (for enforcement logic)
     if (this.options.projectHasFiles) {
       args.push('--project-has-files');
+    }
+
+    // Add custom system prompt file if provided (for Teddy's opinionated defaults)
+    if (this.options.systemPromptFile) {
+      args.push('--system-prompt-file', this.options.systemPromptFile);
+    }
+
+    // Tell Ted which files are already in context (to avoid re-reading)
+    if (this.options.filesInContext && this.options.filesInContext.length > 0) {
+      args.push('--files-in-context', this.options.filesInContext.join(','));
     }
 
     // Add the prompt as the final argument

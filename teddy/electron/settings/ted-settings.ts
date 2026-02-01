@@ -35,10 +35,23 @@ export interface TedSettings {
   ollamaModel: string;
   openrouterApiKey: string;
   openrouterModel: string;
+  // Blackman AI - optimized routing with cost savings
+  blackmanApiKey: string;
+  blackmanBaseUrl: string;
+  blackmanModel: string;
   vercelToken: string;
   netlifyToken: string;
   hardware: HardwareInfo | null;
+  /** User's experience level - affects verbosity and explanations */
+  experienceLevel: 'beginner' | 'intermediate' | 'advanced';
 }
+
+/** Default Blackman API URLs for different environments */
+export const BLACKMAN_URLS = {
+  production: 'https://app.useblackman.ai',
+  staging: 'https://staging.useblackman.ai',
+  development: 'http://localhost:8080',
+} as const;
 
 /**
  * Get Ted's settings directory
@@ -62,9 +75,13 @@ export async function loadTedSettings(): Promise<TedSettings> {
     ollamaModel: 'qwen2.5-coder:7b',
     openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
     openrouterModel: 'anthropic/claude-3.5-sonnet',
+    blackmanApiKey: process.env.BLACKMAN_API_KEY || '',
+    blackmanBaseUrl: process.env.BLACKMAN_BASE_URL || BLACKMAN_URLS.production,
+    blackmanModel: 'claude-sonnet-4-20250514',
     vercelToken: process.env.VERCEL_TOKEN || '',
     netlifyToken: process.env.NETLIFY_AUTH_TOKEN || '',
     hardware: null,
+    experienceLevel: 'beginner',
   };
 
   if (!existsSync(settingsPath)) {
@@ -85,9 +102,13 @@ export async function loadTedSettings(): Promise<TedSettings> {
       ollamaModel: rawSettings.providers?.ollama?.default_model || defaultSettings.ollamaModel,
       openrouterApiKey: rawSettings.providers?.openrouter?.api_key || defaultSettings.openrouterApiKey,
       openrouterModel: rawSettings.providers?.openrouter?.default_model || defaultSettings.openrouterModel,
+      blackmanApiKey: rawSettings.providers?.blackman?.api_key || defaultSettings.blackmanApiKey,
+      blackmanBaseUrl: rawSettings.providers?.blackman?.base_url || defaultSettings.blackmanBaseUrl,
+      blackmanModel: rawSettings.providers?.blackman?.default_model || defaultSettings.blackmanModel,
       vercelToken: rawSettings.deploy?.vercel_token || defaultSettings.vercelToken,
       netlifyToken: rawSettings.deploy?.netlify_token || defaultSettings.netlifyToken,
       hardware: rawSettings.hardware || null,
+      experienceLevel: rawSettings.teddy?.experience_level || defaultSettings.experienceLevel,
     };
   } catch (err) {
     console.error('[TED-SETTINGS] Failed to load settings:', err);
@@ -129,6 +150,8 @@ export async function saveTedSettings(settings: TedSettings): Promise<void> {
         return settings.ollamaModel;
       case 'openrouter':
         return settings.openrouterModel;
+      case 'blackman':
+        return settings.blackmanModel;
       case 'anthropic':
       default:
         return settings.anthropicModel;
@@ -154,6 +177,13 @@ export async function saveTedSettings(settings: TedSettings): Promise<void> {
   }
   rawSettings.providers.openrouter.default_model = settings.openrouterModel;
 
+  rawSettings.providers.blackman = rawSettings.providers.blackman || {};
+  if (settings.blackmanApiKey) {
+    rawSettings.providers.blackman.api_key = settings.blackmanApiKey;
+  }
+  rawSettings.providers.blackman.base_url = settings.blackmanBaseUrl;
+  rawSettings.providers.blackman.default_model = settings.blackmanModel;
+
   if (settings.hardware) {
     rawSettings.hardware = settings.hardware;
   }
@@ -166,6 +196,10 @@ export async function saveTedSettings(settings: TedSettings): Promise<void> {
   if (settings.netlifyToken) {
     rawSettings.deploy.netlify_token = settings.netlifyToken;
   }
+
+  // Save Teddy-specific settings
+  rawSettings.teddy = rawSettings.teddy || {};
+  rawSettings.teddy.experience_level = settings.experienceLevel;
 
   // Write settings
   writeFileSync(settingsPath, JSON.stringify(rawSettings, null, 2), 'utf-8');

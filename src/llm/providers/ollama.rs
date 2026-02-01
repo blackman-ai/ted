@@ -28,22 +28,71 @@ use std::sync::LazyLock;
 static MARKDOWN_JSON_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"```(?:json)?\s*\n?\s*(\{[\s\S]*?\})\s*\n?```").unwrap());
 
-/// Regex to extract tool calls from <tool_call>...</tool_call> tags (Qwen format)
-static TOOL_CALL_TAG_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"<tool_call>\s*([\s\S]*?)\s*</tool_call>").unwrap());
-
 /// ChatML special tokens that models like Qwen output - need to filter these
 static CHATML_TOKENS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"<\|im_(?:start|end)\|>(?:\w+)?").unwrap());
+
+/// Regex to parse Qwen-style XML tool calls: <function=name><parameter=key>value</parameter></function>
+/// Also handles the variant: <tool_call><function=name>...</function></tool_call>
+static QWEN_TOOL_CALL_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:<tool_call>\s*)?<function=(\w+)>([\s\S]*?)</function>(?:\s*</tool_call>)?")
+        .unwrap()
+});
+
+/// Regex to parse parameters within a Qwen-style tool call
+static QWEN_PARAMETER_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<parameter=(\w+)>\s*([\s\S]*?)\s*</parameter>").unwrap());
 
 /// Strip ChatML special tokens from text (like <|im_start|>, <|im_end|>assistant, etc.)
 fn strip_chatml_tokens(text: &str) -> String {
     CHATML_TOKENS.replace_all(text, "").to_string()
 }
 
+/// Try to parse Qwen-style XML tool calls from text
+/// Format: <function=name><parameter=key>value</parameter>...</function>
+/// Returns vector of (tool_name, arguments as JSON)
+fn try_parse_qwen_tool_calls(text: &str) -> Vec<(String, serde_json::Value)> {
+    let mut results = Vec::new();
+    let mut seen_keys = std::collections::HashSet::new();
+
+    for caps in QWEN_TOOL_CALL_PATTERN.captures_iter(text) {
+        if let (Some(name_match), Some(params_match)) = (caps.get(1), caps.get(2)) {
+            let name = name_match.as_str().to_string();
+            let params_text = params_match.as_str();
+
+            // Parse all parameters into a JSON object
+            let mut args = serde_json::Map::new();
+            for param_caps in QWEN_PARAMETER_PATTERN.captures_iter(params_text) {
+                if let (Some(key_match), Some(value_match)) = (param_caps.get(1), param_caps.get(2))
+                {
+                    let key = key_match.as_str().to_string();
+                    let value = value_match.as_str().trim().to_string();
+
+                    // Try to parse as JSON first, fall back to string
+                    let json_value =
+                        serde_json::from_str(&value).unwrap_or(serde_json::Value::String(value));
+                    args.insert(key, json_value);
+                }
+            }
+
+            let args_value = serde_json::Value::Object(args);
+            let key = format!("{}:{}", name, args_value);
+            if seen_keys.insert(key) {
+                results.push((name, args_value));
+            }
+        }
+    }
+
+    results
+}
+
 /// Try to parse ALL JSON tool calls from text content
 /// Returns vector of (tool_name, arguments) for all found tool calls
 /// DEDUPLICATES identical tool calls - if the model outputs the same call 3 times, we only return it once
+/// Supports multiple formats:
+/// 1. JSON in markdown code blocks: ```json {"name": "tool", "arguments": {...}} ```
+/// 2. Raw JSON: {"name": "tool", "arguments": {...}}
+/// 3. Qwen XML format: <function=tool><parameter=key>value</parameter></function>
 fn try_parse_all_json_tool_calls(text: &str) -> Vec<(String, serde_json::Value)> {
     // First, strip any ChatML special tokens that models like Qwen output
     let cleaned_text = strip_chatml_tokens(text);
@@ -52,36 +101,13 @@ fn try_parse_all_json_tool_calls(text: &str) -> Vec<(String, serde_json::Value)>
     let mut results = Vec::new();
     let mut seen_keys = std::collections::HashSet::new();
 
-    // Priority 1: Check for <tool_call>...</tool_call> tags (Qwen/ChatML format)
-    // This is the preferred format as it's explicitly marked
-    for caps in TOOL_CALL_TAG_PATTERN.captures_iter(text) {
-        if let Some(content_match) = caps.get(1) {
-            let content = content_match.as_str().trim();
-            // The content may have multiple JSON objects (one per line)
-            for line in content.lines() {
-                let line = line.trim();
-                if line.starts_with('{') {
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) {
-                        if let Some(name) = parsed.get("name").and_then(|n| n.as_str()) {
-                            if let Some(args) = parsed.get("arguments") {
-                                let key = format!("{}:{}", name, args);
-                                if seen_keys.insert(key) {
-                                    results.push((name.to_string(), args.clone()));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    // First, check for Qwen-style XML tool calls (highest priority for Qwen models)
+    let qwen_results = try_parse_qwen_tool_calls(text);
+    if !qwen_results.is_empty() {
+        return qwen_results;
     }
 
-    // If we found tool calls in <tool_call> tags, return them
-    if !results.is_empty() {
-        return results;
-    }
-
-    // Priority 2: Check for JSON inside markdown code blocks (common pattern from LLMs)
+    // Next, check for JSON inside markdown code blocks (common pattern from LLMs)
     for caps in MARKDOWN_JSON_PATTERN.captures_iter(text) {
         if let Some(json_match) = caps.get(1) {
             let json_str = json_match.as_str();
@@ -293,7 +319,7 @@ impl OllamaProvider {
                                         ));
                                     } else {
                                         text_parts.push(format!(
-                                            "[TOOL RESULT - SUCCESS]\nThe tool executed successfully!\nResult: {}\n\nThis step is COMPLETE. Now proceed to your NEXT task. Do NOT repeat this tool call.",
+                                            "[TOOL RESULT - SUCCESS]\nResult: {}\n\n**IMPORTANT: You MUST now output a tool call. Do NOT just describe what you will do. Output the JSON tool call NOW:**\n```json\n{{\"name\": \"file_edit\", \"arguments\": {{\"path\": \"...\", \"old_string\": \"...\", \"new_string\": \"...\"}}}}\n```\nOR if you need more info:\n```json\n{{\"name\": \"file_read\", \"arguments\": {{\"path\": \"index.html\"}}}}\n```",
                                             content_str
                                         ));
                                     }
@@ -347,43 +373,50 @@ impl OllamaProvider {
         // Structure: PERSONA first (most important), then tools, then persona reminder
         let enhanced_system = if !request.tools.is_empty() {
             let tool_guidance = r#"
-YOU ARE A CODE GENERATOR. Your job is to CREATE working projects by writing actual files.
+YOU ARE A CODE GENERATOR. Your job is to CREATE and FIX code by writing actual files.
 
 **CRITICAL RULES:**
 
-1. FIRST MESSAGE: Ask 1-2 brief clarifying questions (plain text, no tools)
-   - What style/look do they want?
-   - Any specific features needed?
-
-2. AFTER USER RESPONDS: Immediately start BUILDING with tools!
-   - Use file_write to create files
-   - Use shell to run setup commands (npm init, etc.)
-   - NEVER give manual instructions - YOU do the work
-
-3. NEVER suggest external platforms (WordPress.com, Wix, etc.)
-   - You CREATE the project yourself using your tools
-   - For blogs: create a simple HTML/CSS site or lightweight framework
-   - For apps: scaffold the project and write the code
-
-4. NEVER use shell/echo to communicate - just write text directly
+1. IF FILE CONTENTS ARE PROVIDED IN [PROJECT CONTEXT]: Use file_edit DIRECTLY - do NOT read files first!
+2. FOR NEW PROJECTS: Ask 1-2 quick clarifying questions, then BUILD with file_write
+3. AFTER ANY TOOL RESULT: Continue with more edits if needed, or give your final answer
+4. NEVER give manual instructions - YOU do the work using tools
+5. NEVER suggest external platforms (WordPress.com, Wix, etc.) - you CREATE it yourself
 
 AVAILABLE TOOLS:
-- file_write: {"path": "file.html", "content": "..."} - Create/update files
-- shell: {"command": "npm init -y"} - Run commands (NOT for echo!)
-- plan_update: {"action": "create", "title": "...", "content": "- [ ] Task"}
+- file_write: Create new files with {"name": "file_write", "arguments": {"path": "file.html", "content": "..."}}
+- file_edit: Edit existing files with {"name": "file_edit", "arguments": {"path": "file.js", "old_string": "exact old code", "new_string": "new code"}}
+- file_read: Read files with {"name": "file_read", "arguments": {"path": "file.js"}}
+- shell: Run commands with {"name": "shell", "arguments": {"command": "npm install"}}
 
-WORKFLOW EXAMPLE:
-User: Make me a blog
-Assistant: Great! Quick questions:
-- Do you want a minimalist or feature-rich design?
-- Any color preferences?
+WORKFLOW WHEN FILES ARE ALREADY PROVIDED:
+If you see "=== filename ===" sections with file contents in the [PROJECT CONTEXT], you already have the code!
+1. Find ALL the places that need changes (may be in multiple files)
+2. Use file_edit for EACH change needed - you can make multiple edits
+3. After each edit succeeds, continue with the next edit if more are needed
+4. When all edits are done, explain what you fixed
 
-User: Simple and clean, blue colors
-Assistant: [Uses file_write to create index.html, styles.css, etc.]
-[Uses shell to set up any needed dependencies]
-[Creates actual working files in the project directory]
+FOR MULTI-FILE FIXES:
+If the bug requires changes in multiple files, make them one at a time:
+- First file_edit for file1.js
+- After success, file_edit for file2.js
+- Continue until all files are fixed
+- Then give your summary
 
-REMEMBER: You are a BUILDER, not an instructor. Create the actual files!
+MULTIPLE EDITS TO SAME FILE:
+If you need to change multiple parts of ONE file, include ALL changes in a single file_edit.
+Use a larger old_string that contains all the code you need to change, and new_string with all fixes.
+This is important because after you edit a file, the old content no longer exists.
+
+HOW TO FIX CODE - EXAMPLE:
+If the provided index.html contains:
+  <button id="click-me">Click</button>
+And it's not working, you would output:
+```json
+{"name": "file_edit", "arguments": {"path": "index.html", "old_string": "<button id=\"click-me\">Click</button>", "new_string": "<button id=\"click-me\" onclick=\"handleClick()\">Click</button>"}}
+```
+
+IMPORTANT: The old_string must be EXACTLY copied from the file. Do not paraphrase or guess.
 "#;
 
             match &request.system {
@@ -438,6 +471,79 @@ REMEMBER: You are a BUILDER, not an instructor. Create the actual files!
                 message: body.to_string(),
             })
         }
+    }
+
+    /// Pull a model from Ollama registry
+    /// This is called automatically when a model is not found
+    pub async fn pull_model(&self, model: &str) -> Result<()> {
+        let url = format!("{}/api/pull", self.base_url);
+
+        #[derive(Serialize)]
+        struct PullRequest {
+            name: String,
+            stream: bool,
+        }
+
+        eprintln!(
+            "[OLLAMA] Pulling model '{}'... (this may take a while)",
+            model
+        );
+
+        let request = PullRequest {
+            name: model.to_string(),
+            stream: true, // Stream so we can show progress
+        };
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| TedError::Api(ApiError::Network(e.to_string())))?;
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body = response.text().await.unwrap_or_default();
+            return Err(TedError::Api(ApiError::ServerError {
+                status,
+                message: format!("Failed to pull model '{}': {}", model, body),
+            }));
+        }
+
+        // Stream the pull progress
+        let mut stream = response.bytes_stream();
+        use futures::StreamExt;
+
+        while let Some(chunk) = stream.next().await {
+            if let Ok(bytes) = chunk {
+                // Parse progress updates from the stream
+                if let Ok(text) = std::str::from_utf8(&bytes) {
+                    for line in text.lines() {
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+                            if let Some(status) = json.get("status").and_then(|s| s.as_str()) {
+                                // Show download progress
+                                if let Some(completed) =
+                                    json.get("completed").and_then(|c| c.as_u64())
+                                {
+                                    if let Some(total) = json.get("total").and_then(|t| t.as_u64())
+                                    {
+                                        let pct = (completed as f64 / total as f64 * 100.0) as u32;
+                                        eprint!("\r[OLLAMA] {}: {}%", status, pct);
+                                    }
+                                } else {
+                                    eprintln!("[OLLAMA] {}", status);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!(); // New line after progress
+
+        eprintln!("[OLLAMA] Successfully pulled '{}'", model);
+        Ok(())
     }
 
     /// Parse a streaming chunk from Ollama's NDJSON response
@@ -557,14 +663,54 @@ impl LlmProvider for OllamaProvider {
         let status = response.status().as_u16();
 
         if !response.status().is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(self.parse_error(status, &body));
+            let body_text = response.text().await.unwrap_or_default();
+            let err = self.parse_error(status, &body_text);
+
+            // Auto-pull model if not found
+            if let TedError::Api(ApiError::ModelNotFound(_)) = &err {
+                eprintln!(
+                    "[OLLAMA] Model '{}' not found, attempting to pull...",
+                    request.model
+                );
+                if self.pull_model(&request.model).await.is_ok() {
+                    // Retry the request after pulling
+                    return Box::pin(self.complete(request)).await;
+                }
+            }
+            return Err(err);
         }
 
-        let api_response: OllamaResponse = response.json().await?;
+        let response_text = response.text().await?;
+
+        #[cfg(debug_assertions)]
+        eprintln!("[OLLAMA DEBUG] Raw response: {} chars", response_text.len());
+        #[cfg(debug_assertions)]
+        if response_text.len() < 500 {
+            eprintln!("[OLLAMA DEBUG] Response body: {}", response_text);
+        } else {
+            eprintln!(
+                "[OLLAMA DEBUG] Response preview: {}...",
+                &response_text[..500]
+            );
+        }
+
+        let api_response: OllamaResponse = serde_json::from_str(&response_text).map_err(|e| {
+            eprintln!("[OLLAMA ERROR] Failed to parse response: {}", e);
+            eprintln!(
+                "[OLLAMA ERROR] Response was: {}",
+                &response_text[..response_text.len().min(1000)]
+            );
+            TedError::Api(ApiError::ServerError {
+                status: 200,
+                message: format!("Failed to parse Ollama response: {}", e),
+            })
+        })?;
 
         // Convert response to our format
         let mut content: Vec<ContentBlockResponse> = Vec::new();
+
+        #[cfg(debug_assertions)]
+        let msg_content_len = api_response.message.content.len();
 
         // Add text content
         if !api_response.message.content.is_empty() {
@@ -584,6 +730,13 @@ impl LlmProvider for OllamaProvider {
             }
         }
 
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[OLLAMA DEBUG] Parsed response - content blocks: {}, message content len: {}",
+            content.len(),
+            msg_content_len
+        );
+
         // Determine stop reason
         let stop_reason = if content
             .iter()
@@ -595,6 +748,9 @@ impl LlmProvider for OllamaProvider {
         } else {
             None
         };
+
+        #[cfg(debug_assertions)]
+        eprintln!("[OLLAMA DEBUG] Stop reason: {:?}", stop_reason);
 
         Ok(CompletionResponse {
             id: format!("ollama-{}", uuid::Uuid::new_v4()),
@@ -618,6 +774,40 @@ impl LlmProvider for OllamaProvider {
         let body = self.build_request(&request, true);
         let model = request.model.clone();
 
+        // Debug: Log what we're sending to Ollama
+        eprintln!(
+            "[OLLAMA DEBUG] Sending {} messages to Ollama",
+            body.messages.len()
+        );
+        for (i, msg) in body.messages.iter().enumerate() {
+            // Use char_indices to safely truncate at character boundary
+            let content_preview = if msg.content.chars().count() > 200 {
+                let end_idx = msg
+                    .content
+                    .char_indices()
+                    .nth(200)
+                    .map(|(i, _)| i)
+                    .unwrap_or(msg.content.len());
+                format!(
+                    "{}... ({} chars total)",
+                    &msg.content[..end_idx],
+                    msg.content.len()
+                )
+            } else {
+                msg.content.clone()
+            };
+            eprintln!(
+                "[OLLAMA DEBUG] Message {}: role={}, content={}",
+                i, msg.role, content_preview
+            );
+            if let Some(ref tools) = msg.tool_calls {
+                eprintln!("[OLLAMA DEBUG]   tool_calls: {:?}", tools.len());
+            }
+        }
+        if let Some(ref system) = body.system {
+            eprintln!("[OLLAMA DEBUG] System prompt: {} chars", system.len());
+        }
+
         let response = self
             .client
             .post(&url)
@@ -638,8 +828,21 @@ impl LlmProvider for OllamaProvider {
         let status = response.status().as_u16();
 
         if !response.status().is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(self.parse_error(status, &body));
+            let body_text = response.text().await.unwrap_or_default();
+            let err = self.parse_error(status, &body_text);
+
+            // Auto-pull model if not found
+            if let TedError::Api(ApiError::ModelNotFound(_)) = &err {
+                eprintln!(
+                    "[OLLAMA] Model '{}' not found, attempting to pull...",
+                    request.model
+                );
+                if self.pull_model(&request.model).await.is_ok() {
+                    // Retry the request after pulling
+                    return Box::pin(self.complete_stream(request)).await;
+                }
+            }
+            return Err(err);
         }
 
         let byte_stream = response.bytes_stream();
@@ -1128,45 +1331,83 @@ mod tests {
         assert!(result.is_none());
     }
 
+    // ===== Qwen XML Format Tool Call Parsing Tests =====
+
     #[test]
-    fn test_parse_tool_call_with_tool_call_tags() {
-        // Qwen format with <tool_call> tags
-        let text = r#"<tool_call>
-{"name": "file_edit", "arguments": {"path": "test.js", "old_string": "foo", "new_string": "bar"}}
-</tool_call>"#;
+    fn test_try_parse_qwen_tool_calls_simple() {
+        let text = r#"<function=glob><parameter=pattern>*</parameter></function>"#;
+        let results = try_parse_qwen_tool_calls(text);
+        assert_eq!(results.len(), 1);
+        let (name, args) = &results[0];
+        assert_eq!(name, "glob");
+        assert_eq!(args["pattern"], "*");
+    }
+
+    #[test]
+    fn test_try_parse_qwen_tool_calls_with_tool_call_wrapper() {
+        let text = r#"<tool_call><function=file_read><parameter=path>src/main.rs</parameter></function></tool_call>"#;
+        let results = try_parse_qwen_tool_calls(text);
+        assert_eq!(results.len(), 1);
+        let (name, args) = &results[0];
+        assert_eq!(name, "file_read");
+        assert_eq!(args["path"], "src/main.rs");
+    }
+
+    #[test]
+    fn test_try_parse_qwen_tool_calls_multiple_parameters() {
+        let text = r#"<function=file_write><parameter=path>test.txt</parameter><parameter=content>Hello World</parameter></function>"#;
+        let results = try_parse_qwen_tool_calls(text);
+        assert_eq!(results.len(), 1);
+        let (name, args) = &results[0];
+        assert_eq!(name, "file_write");
+        assert_eq!(args["path"], "test.txt");
+        assert_eq!(args["content"], "Hello World");
+    }
+
+    #[test]
+    fn test_try_parse_qwen_tool_calls_with_newlines() {
+        let text = r#"<function=glob>
+<parameter=pattern>
+**/*.rs
+</parameter>
+</function>"#;
+        let results = try_parse_qwen_tool_calls(text);
+        assert_eq!(results.len(), 1);
+        let (name, args) = &results[0];
+        assert_eq!(name, "glob");
+        assert_eq!(args["pattern"], "**/*.rs");
+    }
+
+    #[test]
+    fn test_try_parse_qwen_tool_calls_with_surrounding_text() {
+        let text = r#"I'll help you explore the project.
+
+<function=glob><parameter=pattern>*</parameter></function>
+
+Let me see what files exist."#;
+        let results = try_parse_qwen_tool_calls(text);
+        assert_eq!(results.len(), 1);
+        let (name, args) = &results[0];
+        assert_eq!(name, "glob");
+        assert_eq!(args["pattern"], "*");
+    }
+
+    #[test]
+    fn test_try_parse_qwen_tool_calls_no_match() {
+        let text = "This is just regular text without any tool calls.";
+        let results = try_parse_qwen_tool_calls(text);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_try_parse_all_prefers_qwen_format() {
+        // When Qwen format is present, it should be parsed even if there's also JSON
+        let text = r#"<function=glob><parameter=pattern>*.rs</parameter></function>"#;
         let results = try_parse_all_json_tool_calls(text);
         assert_eq!(results.len(), 1);
         let (name, args) = &results[0];
-        assert_eq!(name, "file_edit");
-        assert_eq!(args["path"], "test.js");
-    }
-
-    #[test]
-    fn test_parse_multiple_tool_calls_in_tags() {
-        // Multiple tool calls in a single <tool_call> block (as per Qwen template)
-        let text = r#"<tool_call>
-{"name": "file_edit", "arguments": {"path": "a.js", "old_string": "1", "new_string": "2"}}
-{"name": "file_edit", "arguments": {"path": "b.js", "old_string": "3", "new_string": "4"}}
-</tool_call>"#;
-        let results = try_parse_all_json_tool_calls(text);
-        assert_eq!(results.len(), 2);
-        assert_eq!(results[0].0, "file_edit");
-        assert_eq!(results[0].1["path"], "a.js");
-        assert_eq!(results[1].0, "file_edit");
-        assert_eq!(results[1].1["path"], "b.js");
-    }
-
-    #[test]
-    fn test_parse_tool_call_tags_with_surrounding_text() {
-        // Model might output explanatory text before/after
-        let text = r#"I'll edit the file now:
-<tool_call>
-{"name": "file_write", "arguments": {"path": "test.txt", "content": "hello"}}
-</tool_call>
-This will create the file."#;
-        let results = try_parse_all_json_tool_calls(text);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].0, "file_write");
+        assert_eq!(name, "glob");
+        assert_eq!(args["pattern"], "*.rs");
     }
 
     // ===== Provider Tests =====

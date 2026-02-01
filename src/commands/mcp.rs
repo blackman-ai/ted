@@ -11,7 +11,10 @@ use crate::tools::ToolExecutor;
 /// Execute the MCP server command
 pub async fn execute(args: &McpArgs) -> Result<()> {
     eprintln!("[TED MCP] Starting Model Context Protocol server");
-    eprintln!("[TED MCP] Protocol version: {}", crate::mcp::PROTOCOL_VERSION);
+    eprintln!(
+        "[TED MCP] Protocol version: {}",
+        crate::mcp::PROTOCOL_VERSION
+    );
 
     let project_dir = if let Some(ref project) = args.project {
         eprintln!("[TED MCP] Project directory: {}", project);

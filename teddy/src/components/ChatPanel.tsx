@@ -25,6 +25,31 @@ interface ProcessedMessage {
   data?: any;
 }
 
+/**
+ * Strip tool call markup from assistant messages
+ * Handles multiple formats:
+ * - Qwen XML: <function=name>...</function> or <tool_call>...</tool_call>
+ * - JSON in code blocks: ```json {"name": "tool", ...} ```
+ */
+function stripToolCallMarkup(content: string): string {
+  // Remove Qwen-style XML tool calls: <function=name>...</function>
+  let cleaned = content.replace(/<function=\w+>[\s\S]*?<\/function>/g, '');
+
+  // Remove <tool_call>...</tool_call> wrappers (with or without content)
+  cleaned = cleaned.replace(/<\/?tool_call>/g, '');
+
+  // Remove JSON tool calls in markdown code blocks
+  cleaned = cleaned.replace(/```(?:json)?\s*\n?\s*\{[\s\S]*?"name"\s*:\s*"[\w_]+"\s*,\s*"arguments"[\s\S]*?\}\s*\n?```/g, '');
+
+  // Remove standalone JSON tool calls
+  cleaned = cleaned.replace(/\{[\s\S]*?"name"\s*:\s*"(?:glob|file_read|file_write|file_edit|shell|grep)"[\s\S]*?"arguments"[\s\S]*?\}/g, '');
+
+  // Clean up extra whitespace left behind
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+
+  return cleaned;
+}
+
 export function ChatPanel({ onSendMessage, onStop, events, isRunning }: ChatPanelProps) {
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -218,10 +243,20 @@ export function ChatPanel({ onSendMessage, onStop, events, isRunning }: ChatPane
   const renderMessage = (msg: ProcessedMessage) => {
     switch (msg.type) {
       case 'message':
+        // For assistant messages, strip out tool call markup before displaying
+        const displayContent = msg.role === 'assistant'
+          ? stripToolCallMarkup(msg.content)
+          : msg.content;
+
+        // Don't render empty messages (e.g., if the message was only tool calls)
+        if (!displayContent.trim()) {
+          return null;
+        }
+
         return (
           <div key={msg.id} className={`message ${msg.role}`}>
             <div className="message-content">
-              {msg.content}
+              {displayContent}
             </div>
           </div>
         );

@@ -161,6 +161,16 @@ pub struct ChatArgs {
     /// Project has existing files - used by enforcement logic to determine if editing is expected
     #[arg(long, hide = true)]
     pub project_has_files: bool,
+
+    /// Path to a file containing additional system prompt text to append
+    /// This allows frontends to inject custom guidance without modifying Ted's core
+    #[arg(long, hide = true)]
+    pub system_prompt_file: Option<PathBuf>,
+
+    /// Comma-separated list of files already provided in the context
+    /// When file_read is called for one of these, returns a short reminder instead
+    #[arg(long, hide = true, value_delimiter = ',')]
+    pub files_in_context: Vec<String>,
 }
 
 /// Arguments for the ask subcommand

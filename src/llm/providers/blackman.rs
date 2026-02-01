@@ -6,6 +6,19 @@
 //! Implements the LlmProvider trait for Blackman AI, which provides optimized
 //! cloud routing with 15-30% cost savings through prompt optimization and
 //! semantic caching. OpenAI-compatible API.
+//!
+//! ## Action Routing
+//!
+//! This provider supports intelligent action routing via the `X-Blackman-Action` header.
+//! When tools are included in a request, the provider automatically detects the action
+//! type and sends it to Blackman for optimal model routing:
+//!
+//! - `agent_file_search` - glob/grep operations
+//! - `agent_file_read` - reading file contents
+//! - `agent_code_edit` - writing/editing code files
+//! - `agent_bash_command` - shell command execution
+//! - `agent_planning` - architecture/planning tasks
+//! - `chat` - simple conversation without tools
 
 use async_trait::async_trait;
 use futures::Stream;
@@ -20,7 +33,10 @@ use crate::llm::provider::{
     ModelInfo, StopReason, StreamEvent, ToolChoice, ToolDefinition, Usage,
 };
 
-const BLACKMAN_API_URL: &str = "https://app.useblackman.ai/v1/chat/completions";
+/// Default Blackman API base URL (without endpoint path)
+const BLACKMAN_API_BASE_URL: &str = "https://app.useblackman.ai";
+/// The completions endpoint path
+const COMPLETIONS_ENDPOINT: &str = "/v1/completions";
 
 /// Blackman AI provider - optimized cloud routing with cost savings
 pub struct BlackmanProvider {
@@ -35,16 +51,33 @@ impl BlackmanProvider {
         Self {
             client: Client::new(),
             api_key: api_key.into(),
-            base_url: BLACKMAN_API_URL.to_string(),
+            base_url: BLACKMAN_API_BASE_URL.to_string(),
         }
     }
 
     /// Create with a custom base URL
+    ///
+    /// The base_url can be either:
+    /// - Just the domain (e.g., "https://app.useblackman.ai") - /v1/completions will be appended
+    /// - Full URL with path (e.g., "https://app.useblackman.ai/v1/completions") - used as-is
     pub fn with_base_url(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
+        let base = base_url.into();
+        // Normalize: remove trailing slash
+        let base = base.trim_end_matches('/').to_string();
         Self {
             client: Client::new(),
             api_key: api_key.into(),
-            base_url: base_url.into(),
+            base_url: base,
+        }
+    }
+
+    /// Get the full API endpoint URL
+    fn api_url(&self) -> String {
+        // If base_url already contains /v1/, use it as-is
+        if self.base_url.contains("/v1/") {
+            self.base_url.clone()
+        } else {
+            format!("{}{}", self.base_url, COMPLETIONS_ENDPOINT)
         }
     }
 
@@ -108,9 +141,12 @@ impl BlackmanProvider {
                                     ToolResultContent::Text(t) => t.clone(),
                                     ToolResultContent::Blocks(blocks) => {
                                         // Concatenate block contents
-                                        blocks.iter()
+                                        blocks
+                                            .iter()
                                             .filter_map(|b| match b {
-                                                crate::llm::message::ToolResultBlock::Text { text } => Some(text.clone()),
+                                                crate::llm::message::ToolResultBlock::Text {
+                                                    text,
+                                                } => Some(text.clone()),
                                                 _ => None,
                                             })
                                             .collect::<Vec<_>>()
@@ -179,6 +215,93 @@ impl BlackmanProvider {
                 }
             })
             .collect()
+    }
+
+    /// Detect action type from tools for Blackman routing optimization.
+    ///
+    /// This maps Ted's tools to Blackman's action types for intelligent routing:
+    /// - File search (glob, grep) → agent_file_search (mini tier)
+    /// - File read → agent_file_read (mini tier)
+    /// - File write/edit → agent_code_edit (core tier)
+    /// - Shell → agent_bash_command (core tier)
+    /// - No tools → chat (mini tier)
+    ///
+    /// The action type helps Blackman route requests to the most cost-effective
+    /// model tier while maintaining quality for each task type.
+    fn detect_action_type(&self, tools: &[ToolDefinition], system: Option<&str>) -> &'static str {
+        // Check for planning keywords in system prompt (highest tier)
+        if let Some(sys) = system {
+            let sys_lower = sys.to_lowercase();
+            if sys_lower.contains("plan")
+                || sys_lower.contains("architect")
+                || sys_lower.contains("design")
+                || sys_lower.contains("strategy")
+            {
+                return "agent_planning";
+            }
+        }
+
+        // No tools = simple chat
+        if tools.is_empty() {
+            return "chat";
+        }
+
+        // Analyze tools to determine the primary action
+        // Priority: code_edit > bash > file_search > file_read > tool_use
+        let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+
+        // Code modification tools get highest priority (core tier)
+        if tool_names
+            .iter()
+            .any(|n| *n == "file_write" || *n == "file_edit")
+        {
+            return "agent_code_edit";
+        }
+
+        // Shell commands (core tier)
+        if tool_names.contains(&"shell") {
+            return "agent_bash_command";
+        }
+
+        // Search operations (mini tier)
+        if tool_names.iter().any(|n| *n == "glob" || *n == "grep") {
+            return "agent_file_search";
+        }
+
+        // File reading (mini tier)
+        if tool_names.contains(&"file_read") {
+            return "agent_file_read";
+        }
+
+        // Generic tool use (core tier)
+        "agent_tool_use"
+    }
+
+    /// Detect the upstream provider from the model name.
+    /// Blackman API requires a provider field to route to the correct backend.
+    fn detect_provider(&self, model: &str) -> &'static str {
+        let model_lower = model.to_lowercase();
+
+        if model_lower.starts_with("gpt-")
+            || model_lower.starts_with("o1")
+            || model_lower.starts_with("o3")
+        {
+            "OpenAI"
+        } else if model_lower.starts_with("claude") {
+            "Anthropic"
+        } else if model_lower.starts_with("gemini") {
+            "Gemini"
+        } else if model_lower.starts_with("mistral") || model_lower.starts_with("mixtral") {
+            "Mistral"
+        } else if model_lower.starts_with("llama") || model_lower.contains("groq") {
+            "Groq"
+        } else if model_lower.starts_with("deepseek") {
+            // DeepSeek is typically accessed via OpenAI-compatible API
+            "OpenAI"
+        } else {
+            // Default to Anthropic for unknown models
+            "Anthropic"
+        }
     }
 }
 
@@ -256,7 +379,14 @@ impl LlmProvider for BlackmanProvider {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
         let blackman_messages = self.convert_messages(&request.messages, request.system.as_deref());
 
+        // Detect action type for Blackman routing optimization
+        let action_type = self.detect_action_type(&request.tools, request.system.as_deref());
+
+        // Detect the upstream provider for routing
+        let provider = self.detect_provider(&request.model);
+
         let mut body = serde_json::json!({
+            "provider": provider,
             "model": request.model,
             "messages": blackman_messages,
             "max_tokens": request.max_tokens,
@@ -288,9 +418,10 @@ impl LlmProvider for BlackmanProvider {
 
         let response = self
             .client
-            .post(&self.base_url)
+            .post(self.api_url())
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
+            .header("X-Blackman-Action", action_type)
             .json(&body)
             .send()
             .await
@@ -311,25 +442,24 @@ impl LlmProvider for BlackmanProvider {
             .map_err(|e| TedError::Api(ApiError::InvalidResponse(e.to_string())))?;
 
         // Convert to our format
-        let choice = blackman_response
-            .choices
-            .first()
-            .ok_or_else(|| TedError::Api(ApiError::InvalidResponse("No choices in response".to_string())))?;
+        let choice = blackman_response.choices.first().ok_or_else(|| {
+            TedError::Api(ApiError::InvalidResponse(
+                "No choices in response".to_string(),
+            ))
+        })?;
 
         let mut content_blocks = Vec::new();
 
         if let Some(text) = &choice.message.content {
             if !text.is_empty() {
-                content_blocks.push(ContentBlockResponse::Text {
-                    text: text.clone(),
-                });
+                content_blocks.push(ContentBlockResponse::Text { text: text.clone() });
             }
         }
 
         if let Some(tool_calls) = &choice.message.tool_calls {
             for tc in tool_calls {
-                let input: serde_json::Value = serde_json::from_str(&tc.function.arguments)
-                    .unwrap_or(serde_json::json!({}));
+                let input: serde_json::Value =
+                    serde_json::from_str(&tc.function.arguments).unwrap_or(serde_json::json!({}));
 
                 content_blocks.push(ContentBlockResponse::ToolUse {
                     id: tc.id.clone(),
@@ -340,7 +470,9 @@ impl LlmProvider for BlackmanProvider {
         }
 
         Ok(CompletionResponse {
-            id: blackman_response.id.unwrap_or_else(|| format!("blackman-{}", uuid::Uuid::new_v4())),
+            id: blackman_response
+                .id
+                .unwrap_or_else(|| format!("blackman-{}", uuid::Uuid::new_v4())),
             model: request.model.clone(),
             content: content_blocks,
             stop_reason: Some(StopReason::EndTurn),
@@ -359,7 +491,14 @@ impl LlmProvider for BlackmanProvider {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let blackman_messages = self.convert_messages(&request.messages, request.system.as_deref());
 
+        // Detect action type for Blackman routing optimization
+        let action_type = self.detect_action_type(&request.tools, request.system.as_deref());
+
+        // Detect the upstream provider for routing
+        let provider = self.detect_provider(&request.model);
+
         let mut body = serde_json::json!({
+            "provider": provider,
             "model": request.model,
             "messages": blackman_messages,
             "max_tokens": request.max_tokens,
@@ -391,9 +530,10 @@ impl LlmProvider for BlackmanProvider {
 
         let response = self
             .client
-            .post(&self.base_url)
+            .post(self.api_url())
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
+            .header("X-Blackman-Action", action_type)
             .json(&body)
             .send()
             .await
@@ -425,8 +565,7 @@ impl LlmProvider for BlackmanProvider {
                     let line = buffer[..line_end].trim().to_string();
                     buffer = buffer[line_end + 1..].to_string();
 
-                    if line.starts_with("data: ") {
-                        let data = &line[6..];
+                    if let Some(data) = line.strip_prefix("data: ") {
                         if data == "[DONE]" {
                             yield StreamEvent::MessageDelta {
                                 stop_reason: Some(StopReason::EndTurn),
@@ -578,6 +717,7 @@ struct BlackmanResponseFunction {
 struct BlackmanUsage {
     prompt_tokens: usize,
     completion_tokens: usize,
+    #[allow(dead_code)]
     total_tokens: usize,
 }
 
@@ -613,16 +753,193 @@ struct BlackmanStreamFunction {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::provider::ToolInputSchema;
+
+    fn make_tool(name: &str) -> ToolDefinition {
+        ToolDefinition {
+            name: name.to_string(),
+            description: format!("Test tool: {}", name),
+            input_schema: ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: serde_json::json!({}),
+                required: vec![],
+            },
+        }
+    }
 
     #[test]
     fn test_provider_creation() {
         let provider = BlackmanProvider::new("test-key");
         assert_eq!(provider.name(), "blackman");
+        assert_eq!(
+            provider.api_url(),
+            "https://app.useblackman.ai/v1/completions"
+        );
     }
 
     #[test]
     fn test_custom_base_url() {
-        let provider = BlackmanProvider::with_base_url("test-key", "https://custom.api.com/v1/chat/completions");
-        assert_eq!(provider.base_url, "https://custom.api.com/v1/chat/completions");
+        // Test with full URL (including path)
+        let provider =
+            BlackmanProvider::with_base_url("test-key", "https://custom.api.com/v1/completions");
+        assert_eq!(provider.base_url, "https://custom.api.com/v1/completions");
+        assert_eq!(provider.api_url(), "https://custom.api.com/v1/completions");
+
+        // Test with just domain - should append /v1/completions
+        let provider = BlackmanProvider::with_base_url("test-key", "https://custom.api.com");
+        assert_eq!(provider.base_url, "https://custom.api.com");
+        assert_eq!(provider.api_url(), "https://custom.api.com/v1/completions");
+
+        // Test with trailing slash - should normalize
+        let provider = BlackmanProvider::with_base_url("test-key", "https://custom.api.com/");
+        assert_eq!(provider.base_url, "https://custom.api.com");
+        assert_eq!(provider.api_url(), "https://custom.api.com/v1/completions");
+    }
+
+    #[test]
+    fn test_action_type_chat() {
+        let provider = BlackmanProvider::new("test-key");
+        let action = provider.detect_action_type(&[], None);
+        assert_eq!(action, "chat");
+    }
+
+    #[test]
+    fn test_action_type_file_search() {
+        let provider = BlackmanProvider::new("test-key");
+
+        // glob tool
+        let tools = vec![make_tool("glob")];
+        assert_eq!(
+            provider.detect_action_type(&tools, None),
+            "agent_file_search"
+        );
+
+        // grep tool
+        let tools = vec![make_tool("grep")];
+        assert_eq!(
+            provider.detect_action_type(&tools, None),
+            "agent_file_search"
+        );
+    }
+
+    #[test]
+    fn test_action_type_file_read() {
+        let provider = BlackmanProvider::new("test-key");
+        let tools = vec![make_tool("file_read")];
+        assert_eq!(provider.detect_action_type(&tools, None), "agent_file_read");
+    }
+
+    #[test]
+    fn test_action_type_code_edit() {
+        let provider = BlackmanProvider::new("test-key");
+
+        // file_write tool
+        let tools = vec![make_tool("file_write")];
+        assert_eq!(provider.detect_action_type(&tools, None), "agent_code_edit");
+
+        // file_edit tool
+        let tools = vec![make_tool("file_edit")];
+        assert_eq!(provider.detect_action_type(&tools, None), "agent_code_edit");
+    }
+
+    #[test]
+    fn test_action_type_bash() {
+        let provider = BlackmanProvider::new("test-key");
+        let tools = vec![make_tool("shell")];
+        assert_eq!(
+            provider.detect_action_type(&tools, None),
+            "agent_bash_command"
+        );
+    }
+
+    #[test]
+    fn test_action_type_planning() {
+        let provider = BlackmanProvider::new("test-key");
+        let tools = vec![make_tool("file_read")];
+
+        // Planning keywords in system prompt
+        assert_eq!(
+            provider.detect_action_type(
+                &tools,
+                Some("You are a software architect. Plan the implementation.")
+            ),
+            "agent_planning"
+        );
+        assert_eq!(
+            provider.detect_action_type(&tools, Some("Design the system architecture.")),
+            "agent_planning"
+        );
+        assert_eq!(
+            provider.detect_action_type(&tools, Some("Create a strategy for the migration.")),
+            "agent_planning"
+        );
+    }
+
+    #[test]
+    fn test_action_type_priority() {
+        let provider = BlackmanProvider::new("test-key");
+
+        // When multiple tools present, code_edit takes priority
+        let tools = vec![
+            make_tool("file_read"),
+            make_tool("glob"),
+            make_tool("file_write"),
+        ];
+        assert_eq!(provider.detect_action_type(&tools, None), "agent_code_edit");
+
+        // shell has higher priority than file_search
+        let tools = vec![make_tool("glob"), make_tool("shell")];
+        assert_eq!(
+            provider.detect_action_type(&tools, None),
+            "agent_bash_command"
+        );
+
+        // But planning in system prompt overrides tool-based detection
+        let tools = vec![make_tool("file_write")];
+        assert_eq!(
+            provider.detect_action_type(&tools, Some("Plan the architecture")),
+            "agent_planning"
+        );
+    }
+
+    #[test]
+    fn test_action_type_tool_use_fallback() {
+        let provider = BlackmanProvider::new("test-key");
+        // Unknown tool falls back to tool_use
+        let tools = vec![make_tool("some_custom_tool")];
+        assert_eq!(provider.detect_action_type(&tools, None), "agent_tool_use");
+    }
+
+    #[test]
+    fn test_detect_provider() {
+        let provider = BlackmanProvider::new("test-key");
+
+        // OpenAI models
+        assert_eq!(provider.detect_provider("gpt-4o"), "OpenAI");
+        assert_eq!(provider.detect_provider("gpt-4o-mini"), "OpenAI");
+        assert_eq!(provider.detect_provider("o1-preview"), "OpenAI");
+
+        // Anthropic models
+        assert_eq!(
+            provider.detect_provider("claude-sonnet-4-20250514"),
+            "Anthropic"
+        );
+        assert_eq!(provider.detect_provider("claude-3-7-sonnet"), "Anthropic");
+
+        // Gemini models
+        assert_eq!(provider.detect_provider("gemini-pro"), "Gemini");
+
+        // Mistral models
+        assert_eq!(provider.detect_provider("mistral-large"), "Mistral");
+        assert_eq!(provider.detect_provider("mixtral-8x7b"), "Mistral");
+
+        // Groq models
+        assert_eq!(provider.detect_provider("llama-3-70b"), "Groq");
+
+        // DeepSeek (via OpenAI-compatible API)
+        assert_eq!(provider.detect_provider("deepseek-chat"), "OpenAI");
+
+        // Unknown defaults to Anthropic
+        assert_eq!(provider.detect_provider("unknown-model"), "Anthropic");
     }
 }

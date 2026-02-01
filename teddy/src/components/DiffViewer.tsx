@@ -16,6 +16,7 @@ export interface PendingChange {
   groupId?: string; // Optional group ID for atomic changes
   groupDescription?: string; // Description of the group
   relatedFiles?: string[]; // List of related file paths
+  error?: string; // Error message if the edit couldn't be applied (e.g., old_text not found)
 }
 
 interface DiffViewerProps {
@@ -141,6 +142,10 @@ export function DiffViewer({
   };
 
   const getChangeTypeClass = (change: PendingChange): string => {
+    // If there's an error, use error styling
+    if (change.error) {
+      return 'change-error';
+    }
     switch (change.type) {
       case 'create':
         return 'change-create';
@@ -330,7 +335,7 @@ export function DiffViewer({
               <div className="diff-editor-header">
                 <div className="diff-editor-title">
                   <span className={`change-badge ${getChangeTypeClass(selectedChange)}`}>
-                    {getChangeTypeLabel(selectedChange)}
+                    {selectedChange.error ? 'Error' : getChangeTypeLabel(selectedChange)}
                   </span>
                   <span className="diff-editor-path">{selectedChange.path}</span>
                   {selectedChange.relatedFiles && selectedChange.relatedFiles.length > 0 && (
@@ -344,20 +349,28 @@ export function DiffViewer({
                   )}
                 </div>
                 <div className="diff-editor-actions">
-                  <button
-                    className="btn-primary btn-small"
-                    onClick={() => onAccept(selectedChange.id)}
-                  >
-                    Accept Change
-                  </button>
+                  {!selectedChange.error && (
+                    <button
+                      className="btn-primary btn-small"
+                      onClick={() => onAccept(selectedChange.id)}
+                    >
+                      Accept Change
+                    </button>
+                  )}
                   <button
                     className="btn-danger btn-small"
                     onClick={() => onReject(selectedChange.id)}
                   >
-                    Reject Change
+                    {selectedChange.error ? 'Dismiss' : 'Reject Change'}
                   </button>
                 </div>
               </div>
+              {selectedChange.error && (
+                <div className="diff-error-banner">
+                  <span className="diff-error-icon">⚠️</span>
+                  <span className="diff-error-message">{selectedChange.error}</span>
+                </div>
+              )}
               {showRelatedFiles && selectedChange.relatedFiles && (
                 <div className="related-files-panel">
                   <div className="related-files-header">Related Files:</div>

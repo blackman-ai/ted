@@ -1,7 +1,7 @@
 # Teddy + Ted Integration Status
 
 **Date**: 2026-01-13
-**Status**: 95% Complete - Full Agent Loop Implemented
+**Status**: MVP feature-complete in code; remaining polish gaps listed below
 
 ---
 
@@ -55,47 +55,31 @@ Ollama outputs tool calls as raw JSON text in the response rather than structure
 
 ---
 
-## 📋 Next Steps
+## 📋 Recommended QA Checks
 
-### Immediate (5 minutes)
-1. Test Teddy with the new Ted build
-2. Verify JSONL events flow to the UI
-3. Check console for parsed events
-
-### Then (30 minutes)
-1. Wire up TedParser events to UI state
-2. Display streaming messages in chat
-3. Handle file change events
-
-### Finally (1 hour)
-1. Wire up file tree refresh on file changes
-2. Auto-reload editor on file changes
-3. Test the full loop: prompt → Ted → file changes → UI updates
+1. Run embedded mode end-to-end (prompt → file events → review/apply)
+2. Verify review mode queues changes and DiffViewer applies them correctly
+3. Confirm file watcher refreshes file tree and preview reloads
+4. Exercise deploy (Vercel/Netlify) and share (Cloudflare tunnel) flows
 
 ---
 
 ## 🎯 What's Left for Full MVP
 
-### Core Functionality
-- [ ] Wire TedParser events to UI state
-- [ ] Display streaming messages in chat panel
-- [ ] Handle file change notifications
-- [ ] Auto-refresh file tree
-- [ ] Display Ted status in UI
+### Core Gaps
+- [ ] Memory panel API wiring (recent memories + semantic search)
+- [ ] Auto-reload or notify on external edits to the open file
+- [ ] LSP file path completions in `ted lsp`
+- [ ] Improve Ollama tool-call parsing for embedded mode (see Known Limitations)
 
 ### Nice-to-Have
-- [ ] Anthropic API key configuration in UI
-- [ ] Provider selection in UI
-- [ ] Docker runtime detection
-- [ ] Preview auto-start
-- [ ] Context selection
-- [ ] Diff view
+- [ ] Enable toolbar buttons for Docker/Postgres/Deploy (currently in Settings/Preview)
 
 ---
 
 ## 📊 Progress Summary
 
-**Overall MVP**: 95% complete
+**Overall MVP**: 98% complete
 
 | Component | Status | %  |
 |-----------|--------|-----|
@@ -103,7 +87,7 @@ Ollama outputs tool calls as raw JSON text in the response rather than structure
 | Teddy UI scaffolding | ✅ Done | 100% |
 | Integration layer | ✅ Done | 100% |
 | Electron config | ✅ Fixed | 100% |
-| End-to-end flow | ⏳ Testing needed | 80% |
+| End-to-end flow | ✅ Implemented (QA ongoing) | 90% |
 
 ---
 

@@ -16,6 +16,7 @@ import { loadTedSettings, saveTedSettings, detectHardware } from './settings/ted
 import { deployProject, verifyToken, getDeploymentStatus } from './deploy/vercel';
 import { deployNetlifyProject, verifyNetlifyToken, getNetlifyDeploymentStatus } from './deploy/netlify';
 import { detectScaffold, generateScaffoldPrompt } from './scaffolds';
+import { writeSystemPromptFile, cleanupSystemPromptFile, TeddyPromptOptions, SessionState } from './ted/system-prompts';
 
 // Lazy-loaded module references to avoid electron app access at module load time
 let cloudfareTunnel: typeof import('./deploy/cloudflare-tunnel') | null = null;
@@ -86,6 +87,13 @@ interface HistoryMessage {
 }
 let conversationHistory: HistoryMessage[] = [];
 let historyFilePath: string | null = null;
+let systemPromptFilePath: string | null = null; // Teddy's opinionated system prompt
+
+// Session state tracking - Teddy tracks this and passes it to Ted explicitly
+// This replaces the old inference-based enforcement logic in Ted
+let filesCreatedThisSession: string[] = [];
+let filesEditedThisSession: string[] = [];
+let conversationTurns: number = 0;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -104,7 +112,7 @@ function createWindow() {
 
   // Load the app
   if (process.env.NODE_ENV === 'development') {
-    mainWindow.loadURL('http://localhost:5173');
+    mainWindow.loadURL('http://localhost:5174');  // Must match electron.vite.config.ts port
     mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
@@ -231,6 +239,11 @@ ipcMain.handle('project:set', async (_, projectPath: string) => {
     conversationHistory = [];
   }
 
+  // Clear session state when switching projects
+  filesCreatedThisSession = [];
+  filesEditedThisSession = [];
+  conversationTurns = 0;
+
   // Scan and cache project context
   const context = await scanProjectContext(projectPath);
   await storage.saveProjectContext(projectPath, context);
@@ -336,8 +349,11 @@ ipcMain.handle('session:create', async () => {
   // Generate new session ID
   currentSessionId = crypto.randomUUID();
 
-  // Clear conversation history for new session
+  // Clear conversation history and session state for new session
   conversationHistory = [];
+  filesCreatedThisSession = [];
+  filesEditedThisSession = [];
+  conversationTurns = 0;
 
   // Store session info
   await storage.createSession(currentSessionId, currentProjectRoot);
@@ -362,6 +378,11 @@ ipcMain.handle('session:switch', async (_, sessionId: string) => {
   // Load conversation history for this session
   const history = await storage.loadSessionHistory(sessionId);
   conversationHistory = history || [];
+
+  // Clear session state when switching sessions (we don't track file operations per-session yet)
+  filesCreatedThisSession = [];
+  filesEditedThisSession = [];
+  conversationTurns = 0;
 
   log('[SESSION] Switched to session:', sessionId, 'history length:', conversationHistory.length);
   return {
@@ -424,22 +445,27 @@ ipcMain.handle('ted:run', async (_, prompt: string, options?: {
 
   cleanupTed();
 
-  // Clear history if starting a new conversation
+  // Clear history and session state if starting a new conversation
   if (options?.newConversation) {
-    log('[TED:RUN] Clearing history for new conversation');
+    log('[TED:RUN] Clearing history and session state for new conversation');
     conversationHistory = [];
+    filesCreatedThisSession = [];
+    filesEditedThisSession = [];
+    conversationTurns = 0;
   }
 
   // If this is a new conversation (no history), inject project context into the prompt
   let finalPrompt = prompt;
   let projectHasFiles = false;
+  let filesInContext: string[] = [];
   const context = await storage.loadProjectContext(currentProjectRoot);
   if (context && context.fileTree.length > 0) {
     projectHasFiles = true;
     if (conversationHistory.length === 0) {
-      const contextPrefix = buildContextPrefix(context);
-      finalPrompt = contextPrefix + prompt;
-      log('[TED:RUN] Injected project context into prompt');
+      const { prefix, filesIncluded } = buildContextPrefix(context, currentProjectRoot);
+      finalPrompt = prefix + prompt;
+      filesInContext = filesIncluded;
+      log('[TED:RUN] Injected project context into prompt, files included:', filesIncluded.length);
     }
   } else if (conversationHistory.length === 0) {
     // EMPTY PROJECT: Inject comprehensive app-building guidance for Teddy
@@ -506,6 +532,68 @@ User request: `;
     log('[TED:RUN] No history to write');
   }
 
+  // Generate Teddy's opinionated system prompt
+  // This injects Teddy-specific guidance (tech stack preferences, multi-file coordination, etc.)
+  // without modifying Ted's core - Ted remains agnostic, Teddy provides the opinions
+
+  // Load settings to get user preferences
+  const tedSettings = await loadTedSettings();
+  const userExperienceLevel = tedSettings.experienceLevel || 'beginner';
+  const hardwareTier = (tedSettings.hardware?.tier?.toLowerCase() || 'medium') as TeddyPromptOptions['hardwareTier'];
+
+  // Determine model capability based on model name
+  // Small models (1.5b-3b) need more explicit guidance
+  // Medium models (7b-14b) can handle standard guidance
+  // Large models (32b+, cloud APIs) can handle complex guidance
+  const modelName = (options?.model || '').toLowerCase();
+  let modelCapability: 'small' | 'medium' | 'large' = 'medium';
+  if (modelName.includes('1.5b') || modelName.includes('3b') || modelName.includes('phi')) {
+    modelCapability = 'small';
+  } else if (modelName.includes('70b') || modelName.includes('claude') || modelName.includes('gpt-4')) {
+    modelCapability = 'large';
+  }
+  log('[TED:RUN] Model capability detected:', modelCapability, 'for model:', modelName || 'default');
+  log('[TED:RUN] Experience level:', userExperienceLevel, 'Hardware tier:', hardwareTier);
+
+  const promptOptions: TeddyPromptOptions = {
+    hardwareTier,
+    projectHasFiles,
+    modelCapability,
+    experienceLevel: userExperienceLevel,
+  };
+
+  // Build session state to pass explicit facts to Ted
+  // This replaces the inference-based enforcement logic that was removed from Ted
+  const promptLower = prompt.toLowerCase();
+  const userReportingBug = filesCreatedThisSession.length > 0 && (
+    promptLower.includes('bug') ||
+    promptLower.includes('broken') ||
+    promptLower.includes('not working') ||
+    promptLower.includes('doesn\'t work') ||
+    promptLower.includes('error') ||
+    promptLower.includes('fix') ||
+    promptLower.includes('wrong') ||
+    promptLower.includes('issue')
+  );
+
+  // Get list of project files for session context
+  const projectFiles = context?.fileTree || [];
+
+  const sessionState: SessionState = {
+    projectFiles,
+    filesCreatedThisSession,
+    filesEditedThisSession,
+    userReportingBug,
+    conversationTurns,
+  };
+
+  // Increment turn counter for next time
+  conversationTurns++;
+
+  systemPromptFilePath = writeSystemPromptFile(promptOptions, sessionState);
+  log('[TED:RUN] Generated Teddy system prompt file:', systemPromptFilePath);
+  log('[TED:RUN] Session state:', JSON.stringify(sessionState, null, 2));
+
   tedRunner = new TedRunner({
     workingDirectory: currentProjectRoot,
     trust: options?.trust ?? false,
@@ -516,6 +604,13 @@ User request: `;
     reviewMode: reviewModeEnabled,  // Pass review mode to Ted - it will emit events but skip file execution
     sessionId: currentSessionId ?? undefined,  // Pass session ID to resume
     projectHasFiles,  // Tell Ted if project has files (for enforcement logic)
+    systemPromptFile: systemPromptFilePath,  // Teddy's opinionated defaults
+    filesInContext,  // Files already in context - Ted won't re-read them
+    // Pass API keys from settings to Ted (via environment variables)
+    anthropicApiKey: tedSettings.anthropicApiKey || undefined,
+    blackmanApiKey: tedSettings.blackmanApiKey || undefined,
+    blackmanBaseUrl: tedSettings.blackmanBaseUrl || undefined,
+    openrouterApiKey: tedSettings.openrouterApiKey || undefined,
   });
 
   // Forward events to renderer
@@ -545,9 +640,16 @@ User request: `;
 
   // Apply file operations - either auto-apply or send to renderer for review
   tedRunner.on('file_create', async (event) => {
+    // Track file creation for session state (used in next turn's system prompt)
+    const filePath = event.data.path;
+    if (!filesCreatedThisSession.includes(filePath)) {
+      filesCreatedThisSession.push(filePath);
+      log('[SESSION] Tracking file created:', filePath);
+    }
+
     if (reviewModeEnabled) {
       // In review mode, just forward the event - don't apply
-      log('[FILE_CREATE] Review mode - forwarding to renderer:', event.data.path);
+      log('[FILE_CREATE] Review mode - forwarding to renderer:', filePath);
       // The event is already forwarded via 'event' listener above
     } else {
       // Auto-apply when review mode is off
@@ -555,7 +657,7 @@ User request: `;
         await fileApplier?.applyCreate(event);
         mainWindow?.webContents.send('file:changed', {
           type: 'create',
-          path: event.data.path,
+          path: filePath,
         });
       } catch (err) {
         console.error('Failed to apply file create:', err);
@@ -564,18 +666,34 @@ User request: `;
   });
 
   tedRunner.on('file_edit', async (event) => {
+    // Track file edit for session state (used in next turn's system prompt)
+    const filePath = event.data.path;
+    if (!filesEditedThisSession.includes(filePath) && !filesCreatedThisSession.includes(filePath)) {
+      filesEditedThisSession.push(filePath);
+      log('[SESSION] Tracking file edited:', filePath);
+    }
+
     if (reviewModeEnabled) {
       // In review mode, just forward the event - don't apply
-      log('[FILE_EDIT] Review mode - forwarding to renderer:', event.data.path);
+      log('[FILE_EDIT] Review mode - forwarding to renderer:', filePath);
     } else {
       try {
         await fileApplier?.applyEdit(event);
         mainWindow?.webContents.send('file:changed', {
           type: 'edit',
-          path: event.data.path,
+          path: filePath,
         });
       } catch (err) {
-        console.error('Failed to apply file edit:', err);
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        console.error('Failed to apply file edit:', errorMsg);
+        // Notify the user that the edit failed
+        mainWindow?.webContents.send('ted:edit-failed', {
+          path: filePath,
+          error: errorMsg,
+          operation: event.data.operation,
+          // Include what the model tried to replace (truncated for display)
+          oldText: event.data.old_text?.substring(0, 200),
+        });
       }
     }
   });
@@ -738,6 +856,12 @@ function cleanupTed() {
     fs.unlink(historyFilePath).catch(() => {});
     historyFilePath = null;
   }
+
+  // Clean up temp system prompt file
+  if (systemPromptFilePath) {
+    cleanupSystemPromptFile(systemPromptFilePath);
+    systemPromptFilePath = null;
+  }
 }
 
 /**
@@ -761,7 +885,11 @@ ipcMain.handle('review:get', async () => {
  */
 ipcMain.handle('ted:clearHistory', async () => {
   conversationHistory = [];
-  log('[HISTORY] Cleared conversation history');
+  // Also clear session state so we start completely fresh
+  filesCreatedThisSession = [];
+  filesEditedThisSession = [];
+  conversationTurns = 0;
+  log('[HISTORY] Cleared conversation history and session state');
 
   // Also clear from disk
   if (currentProjectRoot) {
@@ -1487,36 +1615,92 @@ async function scanProjectContext(projectRoot: string): Promise<ProjectContext> 
   return context;
 }
 
+interface ContextPrefixResult {
+  prefix: string;
+  filesIncluded: string[];
+}
+
 /**
  * Build a context prefix to inject into the first prompt of a conversation.
- * This gives Ted awareness of the project structure without explicit exploration.
+ * For small projects, includes actual file contents so the model doesn't need to explore.
+ * This is critical for smaller models that struggle with multi-step tool use.
  */
-function buildContextPrefix(context: ProjectContext): string {
+function buildContextPrefix(context: ProjectContext, projectRoot: string): ContextPrefixResult {
   const parts: string[] = [];
+  const filesIncluded: string[] = [];
+
+  // Source file extensions we care about
+  const sourceExtensions = ['.html', '.htm', '.js', '.ts', '.css', '.json', '.jsx', '.tsx', '.vue', '.svelte'];
+
+  // Filter to source files only
+  const sourceFiles = context.fileTree.filter(file => {
+    const ext = path.extname(file).toLowerCase();
+    return sourceExtensions.includes(ext);
+  });
+
+  // For small projects (< 15 source files), include actual file contents
+  // This eliminates the need for the model to explore with tool calls
+  const isSmallProject = sourceFiles.length > 0 && sourceFiles.length <= 15;
 
   parts.push('[PROJECT CONTEXT]');
-  parts.push('This project has the following files:');
-  parts.push('');
 
-  // Show file tree (limit to first 50 files to avoid overwhelming)
-  const filesToShow = context.fileTree.slice(0, 50);
-  for (const file of filesToShow) {
-    parts.push(`  ${file}`);
-  }
-  if (context.fileTree.length > 50) {
-    parts.push(`  ... and ${context.fileTree.length - 50} more files`);
-  }
-  parts.push('');
+  if (isSmallProject) {
+    parts.push('This is a small project. Here are all the source files with their complete contents:');
+    parts.push('');
 
-  // Include README summary if available
-  if (context.readme) {
+    // Read and include each source file
+    for (const file of sourceFiles) {
+      try {
+        const fullPath = path.join(projectRoot, file);
+        const content = require('fs').readFileSync(fullPath, 'utf-8');
+
+        // Skip very large files (> 50KB)
+        if (content.length > 50000) {
+          parts.push(`=== ${file} ===`);
+          parts.push(`[File too large: ${Math.round(content.length / 1024)}KB - use file_read tool]`);
+          parts.push('');
+          continue;
+        }
+
+        parts.push(`=== ${file} ===`);
+        parts.push(content);
+        parts.push('');
+        filesIncluded.push(file);
+      } catch (err) {
+        // Skip files that can't be read
+        log(`[CONTEXT] Could not read ${file}: ${err}`);
+      }
+    }
+
+    parts.push('---');
+    parts.push('');
+    parts.push('IMPORTANT: You have ALL the source files above. Do NOT use file_read - you already have the contents.');
+    parts.push('To fix issues, use file_edit with the EXACT text from the files shown above.');
+    parts.push('');
+  } else {
+    // Large project - just show file list
+    parts.push('This project has the following files:');
+    parts.push('');
+
+    const filesToShow = context.fileTree.slice(0, 50);
+    for (const file of filesToShow) {
+      parts.push(`  ${file}`);
+    }
+    if (context.fileTree.length > 50) {
+      parts.push(`  ... and ${context.fileTree.length - 50} more files`);
+    }
+    parts.push('');
+  }
+
+  // Include README summary if available (only for large projects, small ones have the file)
+  if (!isSmallProject && context.readme) {
     parts.push('README:');
     parts.push(context.readme);
     parts.push('');
   }
 
-  // Include package.json info if available
-  if (context.packageJson) {
+  // Include package.json info if available (only for large projects)
+  if (!isSmallProject && context.packageJson) {
     const pkg = context.packageJson;
     parts.push('package.json info:');
     if (pkg.name) parts.push(`  Name: ${pkg.name}`);
@@ -1533,5 +1717,5 @@ function buildContextPrefix(context: ProjectContext): string {
   parts.push('[USER REQUEST]');
   parts.push('');
 
-  return parts.join('\n');
+  return { prefix: parts.join('\n'), filesIncluded };
 }

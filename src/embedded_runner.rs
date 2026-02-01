@@ -13,17 +13,19 @@ use tokio::sync::mpsc;
 use crate::caps::{CapLoader, CapResolver};
 use crate::cli::ChatArgs;
 use crate::config::Settings;
-use crate::context::{recall, summarizer};
-use crate::embeddings::EmbeddingGenerator;
 use crate::context::memory::MemoryStore;
+use crate::context::{recall, summarizer};
 use crate::embedded::{HistoryMessageData, JsonLEmitter, PlanStep};
+use crate::embeddings::EmbeddingGenerator;
 use crate::error::{Result, TedError};
 use crate::llm::message::{ContentBlock, Message, MessageContent};
 use crate::llm::provider::{
     CompletionRequest, ContentBlockDelta, ContentBlockResponse, LlmProvider, StreamEvent,
     ToolChoice,
 };
-use crate::llm::providers::{AnthropicProvider, BlackmanProvider, OllamaProvider, OpenRouterProvider};
+use crate::llm::providers::{
+    AnthropicProvider, BlackmanProvider, OllamaProvider, OpenRouterProvider,
+};
 use crate::tools::{ShellOutputEvent, ToolContext, ToolExecutor};
 
 /// Simple message struct for history serialization
@@ -47,16 +49,14 @@ fn extract_history_messages(messages: &[Message]) -> Vec<HistoryMessageData> {
 
             let text = match &msg.content {
                 MessageContent::Text(text) => text.clone(),
-                MessageContent::Blocks(blocks) => {
-                    blocks
-                        .iter()
-                        .filter_map(|b| match b {
-                            ContentBlock::Text { text } => Some(text.clone()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("")
-                }
+                MessageContent::Blocks(blocks) => blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(""),
             };
 
             // Skip empty messages
@@ -93,10 +93,13 @@ fn extract_json_tool_calls(text: &str) -> Vec<(String, serde_json::Value)> {
     for cap in json_block_re.captures_iter(text) {
         if let Some(json_str) = cap.get(1) {
             let json_text = json_str.as_str().trim();
-            eprintln!("[TOOL PARSE] Found JSON block ({} chars): {}", json_text.len(), &json_text[..json_text.len().min(200)]);
+            eprintln!(
+                "[TOOL PARSE] Found JSON block ({} chars): {}",
+                json_text.len(),
+                &json_text[..json_text.len().min(200)]
+            );
 
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_text)
-            {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_text) {
                 eprintln!("[TOOL PARSE] Successfully parsed JSON");
 
                 // Check if it's an array of tool calls
@@ -196,8 +199,13 @@ fn extract_json_objects_by_braces(text: &str) -> Vec<(String, serde_json::Value)
                 let json_str: String = chars[start..i].iter().collect();
 
                 // Check if it looks like a tool call before parsing (performance optimization)
-                if json_str.contains("\"name\"") && (json_str.contains("\"arguments\"") || json_str.contains("\"input\"")) {
-                    eprintln!("[TOOL PARSE] Found potential tool JSON ({} chars)", json_str.len());
+                if json_str.contains("\"name\"")
+                    && (json_str.contains("\"arguments\"") || json_str.contains("\"input\""))
+                {
+                    eprintln!(
+                        "[TOOL PARSE] Found potential tool JSON ({} chars)",
+                        json_str.len()
+                    );
 
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json_str) {
                         if let Some(tool) = parse_tool_from_json(&parsed) {
@@ -223,12 +231,10 @@ fn parse_tool_from_json(value: &serde_json::Value) -> Option<(String, serde_json
     let name = obj.get("name")?.as_str()?;
 
     // Try "arguments" first, then "input" as fallback (different LLM output formats)
-    let arguments = obj.get("arguments")
-        .or_else(|| obj.get("input"))
-        .cloned()?;
+    let arguments = obj.get("arguments").or_else(|| obj.get("input")).cloned()?;
 
     // Map tool names: normalize various formats to our internal tool names
-    // Our tools are: file_read, file_edit, file_write, file_delete, glob, grep, shell, plan_update
+    // Our tools are: file_read, file_edit, file_write, file_delete, glob, grep, shell
     // The tool registry also has aliases (read_file -> file_read, edit_file -> file_edit, etc.)
     // but we normalize here for consistency in event emission
     let mapped_name = match name {
@@ -236,8 +242,6 @@ fn parse_tool_from_json(value: &serde_json::Value) -> Option<(String, serde_json
         "file_edit" | "edit_file" => "file_edit",
         "file_create" | "create_file" | "file_write" | "write_file" => "file_write",
         "file_delete" | "delete_file" => "file_delete",
-        // Plan tool aliases - models sometimes use different names
-        "propose_plan" | "create_plan" | "update_plan" | "plan" => "plan_update",
         _ => name,
     };
 
@@ -247,14 +251,14 @@ fn parse_tool_from_json(value: &serde_json::Value) -> Option<(String, serde_json
         "file_edit" => map_file_edit_arguments(&arguments),
         "file_write" => map_file_write_arguments(&arguments),
         "shell" => map_shell_arguments(&arguments),
-        "plan_update" => map_plan_arguments(&arguments),
         _ => arguments,
     };
 
     // Special case: file_edit with empty old_string should become file_write
     // Models sometimes use edit with empty old to mean "write/create file"
     let (final_name, final_args) = if mapped_name == "file_edit" {
-        let old_string = mapped_arguments.get("old_string")
+        let old_string = mapped_arguments
+            .get("old_string")
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
@@ -267,7 +271,10 @@ fn parse_tool_from_json(value: &serde_json::Value) -> Option<(String, serde_json
             if let Some(new_content) = mapped_arguments.get("new_string") {
                 write_args.insert("content".to_string(), new_content.clone());
             }
-            ("file_write".to_string(), serde_json::Value::Object(write_args))
+            (
+                "file_write".to_string(),
+                serde_json::Value::Object(write_args),
+            )
         } else {
             (mapped_name.to_string(), mapped_arguments)
         }
@@ -292,14 +299,12 @@ fn map_file_edit_arguments(args: &serde_json::Value) -> serde_json::Value {
     for (key, value) in obj {
         let mapped_key = match key.as_str() {
             // Map various names for "what to find/replace"
-            "old_text" | "oldText" | "old_content" | "oldContent"
-            | "find" | "search" | "original" | "old" | "before"
-            | "pattern" | "target" | "match" => "old_string",
+            "old_text" | "oldText" | "old_content" | "oldContent" | "find" | "search"
+            | "original" | "old" | "before" | "pattern" | "target" | "match" => "old_string",
 
             // Map various names for "what to replace with"
-            "new_text" | "newText" | "new_content" | "newContent"
-            | "replace" | "replacement" | "modified" | "new" | "after"
-            | "content" | "updated" | "with" => "new_string",
+            "new_text" | "newText" | "new_content" | "newContent" | "replace" | "replacement"
+            | "modified" | "new" | "after" | "content" | "updated" | "with" => "new_string",
 
             // Map path variations
             "file" | "file_path" | "filepath" | "filename" | "file_name" => "path",
@@ -314,20 +319,21 @@ fn map_file_edit_arguments(args: &serde_json::Value) -> serde_json::Value {
 
         // Handle array values - join them into a single string with newlines
         // Models like Ollama often send old/new as arrays of lines
-        let mapped_value = if (mapped_key == "old_string" || mapped_key == "new_string") && value.is_array() {
-            if let Some(arr) = value.as_array() {
-                let joined = arr
-                    .iter()
-                    .filter_map(|v| v.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                serde_json::Value::String(joined)
+        let mapped_value =
+            if (mapped_key == "old_string" || mapped_key == "new_string") && value.is_array() {
+                if let Some(arr) = value.as_array() {
+                    let joined = arr
+                        .iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    serde_json::Value::String(joined)
+                } else {
+                    value.clone()
+                }
             } else {
                 value.clone()
-            }
-        } else {
-            value.clone()
-        };
+            };
 
         mapped.insert(mapped_key.to_string(), mapped_value);
     }
@@ -393,30 +399,6 @@ fn map_shell_arguments(args: &serde_json::Value) -> serde_json::Value {
     serde_json::Value::Object(mapped)
 }
 
-/// Map plan_update argument names from various LLM output formats
-fn map_plan_arguments(args: &serde_json::Value) -> serde_json::Value {
-    let Some(obj) = args.as_object() else {
-        return args.clone();
-    };
-
-    let mut mapped = serde_json::Map::new();
-
-    for (key, value) in obj {
-        let mapped_key = match key.as_str() {
-            // Map various names for action
-            "type" | "operation" | "mode" => "action",
-            // Map various names for content
-            "body" | "text" | "description" | "markdown" | "plan_content" => "content",
-            // Map various names for title
-            "name" | "plan_title" | "plan_name" => "title",
-            _ => key.as_str(),
-        };
-        mapped.insert(mapped_key.to_string(), value.clone());
-    }
-
-    serde_json::Value::Object(mapped)
-}
-
 pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()> {
     // Get prompt (required in embedded mode)
     let prompt = args
@@ -455,10 +437,11 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
             Box::new(provider)
         }
         "blackman" => {
-            let api_key = std::env::var("BLACKMAN_API_KEY")
-                .or_else(|_| std::env::var("BLACKMAN_AI_API_KEY"))
-                .map_err(|_| TedError::Config("No Blackman AI API key found. Set BLACKMAN_API_KEY environment variable.".to_string()))?;
-            Box::new(BlackmanProvider::new(api_key))
+            let api_key = settings
+                .get_blackman_api_key()
+                .ok_or_else(|| TedError::Config("No Blackman AI API key found. Set BLACKMAN_API_KEY environment variable or configure in settings.".to_string()))?;
+            let base_url = settings.get_blackman_base_url();
+            Box::new(BlackmanProvider::with_base_url(api_key, base_url))
         }
         _ => {
             let api_key = settings
@@ -477,7 +460,32 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
 
     let loader = CapLoader::new();
     let resolver = CapResolver::new(loader.clone());
-    let merged_cap = resolver.resolve_and_merge(&cap_names)?;
+    let mut merged_cap = resolver.resolve_and_merge(&cap_names)?;
+
+    // If a system prompt file was provided (by frontend like Teddy), append its content
+    // This allows frontends to inject opinionated defaults without modifying Ted's core
+    if let Some(ref prompt_file) = args.system_prompt_file {
+        match std::fs::read_to_string(prompt_file) {
+            Ok(extra_prompt) => {
+                if !extra_prompt.trim().is_empty() {
+                    eprintln!(
+                        "[PROMPT] Appending custom system prompt from {:?}",
+                        prompt_file
+                    );
+                    if !merged_cap.system_prompt.is_empty() {
+                        merged_cap.system_prompt.push_str("\n\n");
+                    }
+                    merged_cap.system_prompt.push_str(&extra_prompt);
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "[PROMPT] Warning: Could not read system prompt file {:?}: {}",
+                    prompt_file, e
+                );
+            }
+        }
+    }
 
     // Determine model
     let model = args
@@ -509,14 +517,17 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
         session_id,
         args.trust,
     )
-    .with_shell_output_sender(shell_tx);
+    .with_shell_output_sender(shell_tx)
+    .with_files_in_context(args.files_in_context.clone());
     let mut tool_executor = ToolExecutor::new(tool_context, args.trust);
 
-    // Initialize conversation memory (if Ollama is available)
-    let memory_store = if provider_name == "ollama" || std::env::var("TEDDY_ENABLE_MEMORY").is_ok() {
+    // Initialize conversation memory (only if explicitly enabled)
+    // Memory is disabled by default because the summarizer can produce garbage summaries
+    // that pollute future conversations. Set TED_ENABLE_MEMORY=1 to enable.
+    let memory_store = if std::env::var("TED_ENABLE_MEMORY").is_ok() {
         let memory_path = dirs::home_dir()
             .ok_or_else(|| TedError::Config("Could not determine home directory".to_string()))?
-            .join(".teddy")
+            .join(".ted")
             .join("memory.db");
 
         // Ensure directory exists
@@ -528,7 +539,10 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
         match MemoryStore::open(&memory_path, embedding_generator.clone()) {
             Ok(store) => Some((store, embedding_generator)),
             Err(e) => {
-                eprintln!("[MEMORY] Failed to open memory store: {}. Memory disabled.", e);
+                eprintln!(
+                    "[MEMORY] Failed to open memory store: {}. Memory disabled.",
+                    e
+                );
                 None
             }
         }
@@ -573,13 +587,31 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
                                 "[HISTORY DEBUG] Loaded {} messages from history",
                                 history.len()
                             );
+                            // Deduplicate consecutive messages with same role and content
+                            let mut last_role = String::new();
+                            let mut last_content = String::new();
+                            let mut deduped_count = 0;
                             for h in history {
+                                // Skip if same role and content as previous (duplicate)
+                                if h.role == last_role && h.content == last_content {
+                                    deduped_count += 1;
+                                    continue;
+                                }
+                                last_role = h.role.clone();
+                                last_content = h.content.clone();
+
                                 let msg = match h.role.as_str() {
                                     "user" => Message::user(h.content),
                                     "assistant" => Message::assistant(h.content),
                                     _ => continue,
                                 };
                                 messages.push(msg);
+                            }
+                            if deduped_count > 0 {
+                                eprintln!(
+                                    "[HISTORY DEBUG] Removed {} duplicate messages",
+                                    deduped_count
+                                );
                             }
                         }
                         Err(e) => {
@@ -599,14 +631,10 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
         }
     }
 
-    // Track if we loaded history (this affects enforcement behavior)
-    let has_history = !messages.is_empty();
-
     // Add user message
     messages.push(Message::user(prompt.clone()));
 
     // Memory recall: Search for relevant past conversations and inject into system prompt
-    let mut merged_cap = merged_cap; // Make mutable
     if let Some((ref memory_store, _)) = memory_store {
         match recall::recall_relevant_context(&prompt, memory_store, 3).await {
             Ok(Some(context)) => {
@@ -632,20 +660,8 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
     let mut previous_tool_calls: HashSet<String> = HashSet::new();
     let mut consecutive_repeats = 0;
 
-    // Track if this is the first turn (model hasn't responded yet in this conversation)
-    // If we loaded history, this is NOT the first turn - user already had a conversation
-    let mut is_first_turn = !has_history;
-
     // Track if any tools were actually executed (for completion message)
     let mut tools_executed = 0;
-
-    // Track if the model has explored the codebase (used read-only tools like glob/read_file)
-    // If exploration happened, we expect the model to make edits if the user request implies existing content
-    let mut has_explored = false;
-
-    // Track if the model has made any edits (used write tools like file_edit/file_write)
-    // Once edits are made, we should allow the model to respond with a summary without forcing more edits
-    let mut has_made_edits = false;
 
     // Main agent loop
     let max_turns = 25;
@@ -768,10 +784,12 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
 
                         // Apply the same mapping as for text-extracted tools
                         // This handles different parameter names from different models
-                        if let Some((mapped_name, mapped_input)) = parse_tool_from_json(&serde_json::json!({
-                            "name": name,
-                            "arguments": input
-                        })) {
+                        if let Some((mapped_name, mapped_input)) =
+                            parse_tool_from_json(&serde_json::json!({
+                                "name": name,
+                                "arguments": input
+                            }))
+                        {
                             tool_uses.push((id, mapped_name, mapped_input));
                         } else {
                             // Fallback if parsing fails
@@ -802,30 +820,32 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
             }
         }
 
-        // For Ollama: try to parse JSON tool calls from the text (models often output them as markdown)
-        // This handles both:
-        // 1. No native tool calls but JSON in text (older models)
-        // 2. Some native tool calls but model also put additional tools in text (mixed mode)
-        if is_ollama && !buffered_text.is_empty() {
-            // Check if the text contains what looks like tool call JSON
-            let text_has_tool_json = buffered_text.contains("\"name\"") &&
-                (buffered_text.contains("\"arguments\"") || buffered_text.contains("file_edit") || buffered_text.contains("file_write"));
+        // If we buffered text thinking it was a tool call but got no tool uses,
+        // try to parse JSON tool calls from the text (Ollama often outputs them as markdown)
+        if is_ollama && might_be_tool_call && tool_uses.is_empty() && !buffered_text.is_empty() {
+            eprintln!(
+                "[TOOL PARSE] Attempting to extract tools from buffered text ({} chars)",
+                buffered_text.len()
+            );
+            eprintln!(
+                "[TOOL PARSE] Buffered text preview: {}",
+                &buffered_text[..buffered_text.len().min(500)]
+            );
 
-            if text_has_tool_json {
-                eprintln!("[TOOL PARSE] Attempting to extract tools from text ({} chars)", buffered_text.len());
-
-                // Try to extract JSON tool calls from markdown code blocks
-                let extracted_tools = extract_json_tool_calls(&buffered_text);
-                if !extracted_tools.is_empty() {
-                    eprintln!("[TOOL PARSE] Extracted {} additional tool calls from text", extracted_tools.len());
-                    for (name, input) in extracted_tools {
-                        let id = uuid::Uuid::new_v4().to_string();
-                        tool_uses.push((id, name, input));
-                    }
+            // Try to extract JSON tool calls from markdown code blocks
+            let extracted_tools = extract_json_tool_calls(&buffered_text);
+            if !extracted_tools.is_empty() {
+                eprintln!(
+                    "[TOOL PARSE] Extracted {} tool calls from text",
+                    extracted_tools.len()
+                );
+                for (name, input) in extracted_tools {
+                    let id = uuid::Uuid::new_v4().to_string();
+                    tool_uses.push((id, name, input));
                 }
-            } else if tool_uses.is_empty() && might_be_tool_call {
-                // No tools found in native calls or text, emit the buffered text as a message
-                eprintln!("[TOOL PARSE] No tools found, emitting buffered text as message");
+            } else {
+                eprintln!("[TOOL PARSE] No tools extracted, emitting as message");
+                // No tool calls found, emit the text as a message
                 emitter.emit_message("assistant", buffered_text.clone(), Some(false))?;
             }
         }
@@ -833,7 +853,11 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
         // Debug: Log if we have empty response
         if tool_uses.is_empty() && current_text.trim().is_empty() {
             eprintln!("[DEBUG] Empty response from model - no tools and no text");
-            eprintln!("[DEBUG] might_be_tool_call={}, buffered_text.len()={}", might_be_tool_call, buffered_text.len());
+            eprintln!(
+                "[DEBUG] might_be_tool_call={}, buffered_text.len()={}",
+                might_be_tool_call,
+                buffered_text.len()
+            );
         }
 
         // Add text content if any
@@ -844,353 +868,6 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
         } else {
             !current_text.is_empty()
         };
-
-        // ENFORCEMENT: On first turn with Ollama, enforce appropriate behavior based on tools used
-        // Read-only tools (glob, grep, read_file, list_directory) are allowed for exploration
-        // Write tools (file_create, file_edit, file_delete, shell) require asking questions first
-        // EXCEPTION: If the project has existing files (tracked by Teddy), the model should explore first
-        //
-        // The `project_has_files` flag is set by Teddy based on the project's actual file tree.
-        // This replaces brittle keyword matching with real project state tracking.
-        let implies_existing = args.project_has_files;
-
-        eprintln!("[ENFORCEMENT DEBUG] is_first_turn={}, is_ollama={}, tool_uses.len()={}, has_history={}, implies_existing={}, has_explored={}, has_made_edits={}",
-            is_first_turn, is_ollama, tool_uses.len(), has_history, implies_existing, has_explored, has_made_edits);
-
-        // First turn enforcement for Ollama models
-        if is_first_turn && is_ollama {
-            if !tool_uses.is_empty() {
-                // Model used tools - check if they're appropriate
-                // Categorize tools: read-only exploration vs write operations
-                // tool_uses is Vec<(id, name, input)>
-                let read_only_tools = ["glob", "grep", "read_file", "list_directory", "search"];
-                let has_write_tools = tool_uses.iter().any(|(_, name, _)| {
-                    let name_lower = name.to_lowercase();
-                    !read_only_tools.iter().any(|ro| name_lower.contains(ro))
-                });
-                let only_read_tools = !has_write_tools;
-
-                // If only using read-only tools, that's good! Model is exploring the codebase.
-                if only_read_tools {
-                    eprintln!("[ENFORCEMENT] First turn: Model is exploring codebase with read-only tools. Allowing.");
-                    has_explored = true;
-                } else if implies_existing {
-                    // User request implies existing content, but model tried to write without exploring first!
-                    // Model MUST explore first to understand the existing codebase before making changes.
-                    eprintln!("[ENFORCEMENT] First turn: User wants to modify existing content, but model skipped exploration. Rejecting.");
-
-                    // Tell the model to explore first
-                    let clarification_message = "STOP! You tried to modify files without first understanding the existing codebase.\n\n\
-                        The user wants to modify EXISTING content. Before making changes, you MUST:\n\
-                        1. Use glob(\"*\") to see what files exist in the current directory\n\
-                        2. Use read_file to examine the relevant files (look for index.html, main.py, etc.)\n\
-                        3. THEN make targeted changes that fit the existing codebase\n\n\
-                        Do NOT guess file paths or content. Start by exploring with glob(\"*\").";
-
-                    messages.push(Message::user(clarification_message.to_string()));
-
-                    is_first_turn = false;
-                    continue; // Skip - get model's next response
-                } else {
-                    // Project is empty (implies_existing=false) - model is FREE to create files!
-                    // This is the correct behavior for "build me a tic-tac-toe game" type requests.
-                    eprintln!("[ENFORCEMENT] First turn: Empty project, model is creating files. Allowing.");
-                    has_made_edits = true;
-                }
-            } else if implies_existing {
-                // Model used NO tools but the request implies existing content
-                // The model should be exploring, not giving generic advice!
-                eprintln!("[ENFORCEMENT] First turn: User request implies existing content but model gave no tools. Forcing exploration.");
-
-                let clarification_message = "STOP! The user is asking about EXISTING content in this project, but you didn't explore the codebase.\n\n\
-                    You MUST use tools to understand what exists before responding:\n\
-                    1. Use glob(\"*\") to see what files exist in the current directory\n\
-                    2. Use read_file to examine the relevant files\n\
-                    3. THEN provide a response based on the ACTUAL content\n\n\
-                    Do NOT give generic advice. Start by exploring with glob(\"*\").";
-
-                messages.push(Message::user(clarification_message.to_string()));
-
-                is_first_turn = false;
-                continue; // Skip - get model's next response
-            } else {
-                // Empty project (implies_existing=false) and model used NO tools
-                // Check if model is giving instructions instead of building
-                let text_lower = current_text.to_lowercase();
-                let is_giving_instructions = text_lower.contains("you can")
-                    || text_lower.contains("you need")
-                    || text_lower.contains("you should")
-                    || text_lower.contains("step 1")
-                    || text_lower.contains("first,")
-                    || text_lower.contains("to create")
-                    || text_lower.contains("to build")
-                    || text_lower.contains("here's how")
-                    || text_lower.contains("```html")
-                    || text_lower.contains("```javascript")
-                    || text_lower.contains("```css");
-
-                if is_giving_instructions {
-                    eprintln!("[ENFORCEMENT] First turn: Empty project but model gave instructions instead of building. Forcing file creation.");
-
-                    let build_message = "STOP! Do NOT give instructions or show code blocks. The user wants YOU to build the application.\n\n\
-                        This is an EMPTY project. You must CREATE the files yourself using file_write.\n\n\
-                        For example, to create an HTML file:\n\
-                        Call file_write with path=\"index.html\" and content=\"<!DOCTYPE html>...\"\n\n\
-                        START BUILDING NOW - use file_write to create the files!";
-
-                    messages.push(Message::user(build_message.to_string()));
-
-                    is_first_turn = false;
-                    continue;
-                }
-                // Otherwise, model might be asking legitimate clarifying questions - allow it
-            }
-        }
-
-        // ENFORCEMENT: After first turn, if user confirms they want something built,
-        // model MUST use tools - not just give instructions
-        if !is_first_turn && is_ollama && tool_uses.is_empty() {
-            let user_text = prompt.to_lowercase();
-            let assistant_text = current_text.to_lowercase();
-
-            // Check if user is confirming they want something built
-            // This includes:
-            // 1. Explicit confirmation keywords
-            // 2. Answering clarifying questions (implies "proceed with my preferences")
-            // 3. Requests that imply modifying existing content
-            let user_wants_build = user_text.contains("build")
-                || user_text.contains("create")
-                || user_text.contains("make")
-                || user_text.contains("yes")
-                || user_text.contains("go ahead")
-                || user_text.contains("let's do")
-                || user_text.contains("start")
-                || user_text.contains("please")
-                || user_text.contains("do it")
-                || user_text.contains("proceed")
-                || user_text.contains("sounds good")
-                || user_text.contains("that works")
-                || user_text.contains("perfect")
-                || user_text.contains("great")
-                || user_text.contains("ok")
-                || user_text.contains("sure")
-                // User is answering questions about preferences (implies they want to proceed)
-                || user_text.contains("minimal")
-                || user_text.contains("simple")
-                || user_text.contains("modern")
-                || user_text.contains("clean")
-                || user_text.contains("no registration")
-                || user_text.contains("no preference")
-                || user_text.contains("whatever")
-                || user_text.contains("anything")
-                || user_text.contains("up to you")
-                || user_text.contains("you decide")
-                || user_text.contains("your choice")
-                // User request implies modifying existing content
-                || implies_existing;
-
-            // Check if model is giving instructions instead of building
-            // Model should be using tools, not explaining steps or just outputting plans
-            // Convert to lowercase for case-insensitive matching
-            let assistant_lower = assistant_text.to_lowercase();
-            let giving_instructions = assistant_lower.contains("you need to")
-                || assistant_lower.contains("you can")
-                || assistant_lower.contains("you'll need")
-                || assistant_lower.contains("first, install")
-                || assistant_lower.contains("install ruby")
-                || assistant_lower.contains("install jekyll")
-                || assistant_lower.contains("install hugo")
-                || assistant_lower.contains("download")
-                || assistant_lower.contains("follow the")
-                || assistant_lower.contains("step 1")
-                || assistant_lower.contains("step 2")
-                || assistant_lower.contains("step 3")
-                || assistant_lower.contains("### step")
-                || assistant_lower.contains("here's how")
-                || assistant_lower.contains("here are the steps")
-                || assistant_lower.contains("let's proceed")
-                || assistant_lower.contains("how we can proceed")
-                // Catch when model outputs a plan but doesn't actually build
-                || assistant_lower.contains("here's a plan")
-                || assistant_lower.contains("#### tasks")
-                || assistant_lower.contains("### plan")
-                || assistant_lower.contains("- [ ]") // Task list without execution
-                // Catch when model asks for confirmation instead of just building
-                || assistant_lower.contains("should i create")
-                || assistant_lower.contains("should i start")
-                || assistant_lower.contains("would you like me to")
-                || assistant_lower.contains("do you want me to")
-                || assistant_lower.contains("shall i")
-                || assistant_lower.contains("ready to start")
-                || assistant_lower.contains("let me know when")
-                // Catch when model gives tutorial-style instructions
-                || assistant_lower.contains("open your")
-                || assistant_lower.contains("update the")
-                || assistant_lower.contains("verify the changes")
-                || assistant_lower.contains("test in browser")
-                || assistant_lower.contains("open in a web browser")
-                || assistant_lower.contains("i'll guide you")
-                || assistant_lower.contains("let's update")
-                || assistant_lower.contains("certainly!")
-                || assistant_lower.contains("feel free to proceed")
-                || assistant_lower.contains("feel free to")
-                || assistant_lower.contains("if you need")
-                || assistant_lower.contains("if you encounter")
-                // Catch when model shows code blocks instead of executing tools
-                || assistant_lower.contains("```html")
-                || assistant_lower.contains("```json")
-                || assistant_lower.contains("```css")
-                || assistant_lower.contains("```javascript")
-                || assistant_lower.contains("```js")
-                // Catch when model asks clarifying questions instead of working on existing files
-                || (implies_existing && assistant_lower.contains("clarifying questions"))
-                || (implies_existing && assistant_lower.contains("what style"))
-                || (implies_existing && assistant_lower.contains("what features"))
-                || (implies_existing && assistant_lower.contains("who is the intended"));
-
-            eprintln!("[ENFORCEMENT DEBUG] Build enforcement: user_wants_build={}, giving_instructions={}, tool_uses.is_empty()={}",
-                user_wants_build, giving_instructions, tool_uses.is_empty());
-            eprintln!("[ENFORCEMENT DEBUG] User text: {}", user_text);
-            eprintln!(
-                "[ENFORCEMENT DEBUG] Assistant text (first 500): {}",
-                &assistant_text[..assistant_text.len().min(500)]
-            );
-            eprintln!("[ENFORCEMENT DEBUG] implies_existing={}, has_made_edits={}, has_explored={}",
-                implies_existing, has_made_edits, has_explored);
-
-            // Only enforce if model hasn't already made edits - allow summary responses after edits
-            if user_wants_build && giving_instructions && !has_made_edits {
-                // Check if the model is planning a complex backend app - these need multiple steps
-                // and we should guide them to build it properly rather than simplify
-                let is_complex_app = assistant_lower.contains("express")
-                    || assistant_lower.contains("mongodb")
-                    || assistant_lower.contains("database")
-                    || assistant_lower.contains("npm install")
-                    || assistant_lower.contains("node.js")
-                    || assistant_lower.contains("fastapi")
-                    || assistant_lower.contains("django")
-                    || assistant_lower.contains("flask")
-                    || assistant_lower.contains("authentication")
-                    || assistant_lower.contains("api endpoint")
-                    || assistant_lower.contains("server");
-
-                eprintln!("[ENFORCEMENT] User wants to build but model is giving instructions. is_complex_app={}", is_complex_app);
-
-                let build_message = if implies_existing {
-                    "STOP! The user wants to MODIFY EXISTING CODE. Do NOT ask clarifying questions.\n\n\
-                    You MUST:\n\
-                    1. Use glob to see what files exist in the project\n\
-                    2. Use read_file to examine the relevant files (look for HTML, JS, CSS files)\n\
-                    3. Use file_edit to make the specific changes the user requested\n\n\
-                    The project already exists - explore it and make the changes NOW."
-                } else if is_complex_app {
-                    // For complex apps, guide them to build properly with all needed files
-                    "STOP explaining - START BUILDING!\n\n\
-                    I see you're planning a backend app. That's the right approach! Now execute it:\n\n\
-                    1. Use file_write to create package.json with all dependencies\n\
-                    2. Use file_write to create server.js (or app.js) with the Express/backend code\n\
-                    3. Use file_write to create any frontend files (index.html, styles.css, etc.)\n\
-                    4. Use shell to run 'npm install' after creating package.json\n\n\
-                    Create ALL the files you mentioned. Don't simplify - build the full app!\n\
-                    START with file_write for package.json NOW."
-                } else {
-                    "STOP! The user has already given you the information you need.\n\n\
-                    Do NOT ask for more confirmation. Do NOT explain steps.\n\n\
-                    You MUST start building NOW using your tools:\n\
-                    1. Use file_write to create index.html with complete HTML\n\
-                    2. Use file_write to create styles.css with full styling\n\
-                    3. Use file_write to create app.js with all functionality\n\n\
-                    START CREATING FILES NOW with file_write."
-                };
-
-                messages.push(Message::user(build_message.to_string()));
-                continue; // Force model to try again with tools
-            }
-
-            // ENFORCEMENT: Model explored (used read-only tools) but now responds with no tools
-            // If the user request implies existing content and model hasn't made edits yet, force edits
-            // BUT if model has already made edits, allow it to respond with a summary
-            eprintln!("[ENFORCEMENT DEBUG] Post-exploration check: has_explored={}, implies_existing={}, has_made_edits={}",
-                has_explored, implies_existing, has_made_edits);
-            if has_explored && implies_existing && !has_made_edits {
-                eprintln!("[ENFORCEMENT] Model explored but now responds with no edits. Forcing file_edit.");
-
-                let edit_message = "STOP! You already explored the codebase and found the files. Now you MUST make the changes.\n\n\
-                    Do NOT explain what you found. Do NOT describe what you would do.\n\
-                    Use file_edit NOW to make the specific changes the user requested.\n\n\
-                    The user wants you to MODIFY the existing files, not describe them.";
-
-                messages.push(Message::user(edit_message.to_string()));
-                continue; // Force model to try again with tools
-            }
-        }
-
-        // ENFORCEMENT: Model is using tools but ONLY read-only tools even after exploring
-        // If the request implies existing content and model keeps exploring without editing, force edits
-        if !is_first_turn && is_ollama && implies_existing && !has_made_edits && !tool_uses.is_empty() {
-            // Check if current turn uses ONLY read-only tools (no write tools)
-            let read_only_tools = ["glob", "grep", "read_file", "file_read", "list_directory", "search"];
-            let write_tools = ["file_write", "file_edit", "file_delete", "create_file", "edit_file", "delete_file", "shell"];
-            let has_write_tool = tool_uses.iter().any(|(_, name, _)| {
-                let name_lower = name.to_lowercase();
-                write_tools.iter().any(|wt| name_lower.contains(wt))
-            });
-            let only_read_tools = tool_uses.iter().all(|(_, name, _)| {
-                let name_lower = name.to_lowercase();
-                read_only_tools.iter().any(|ro| name_lower.contains(ro))
-            });
-
-            // If model is giving instructions while only using read tools (not making changes)
-            let current_lower = current_text.to_lowercase();
-            let is_giving_instructions = current_lower.contains("you might consider")
-                || current_lower.contains("here's how")
-                || current_lower.contains("you can approach")
-                || current_lower.contains("you could")
-                || current_lower.contains("i recommend")
-                || current_lower.contains("i suggest")
-                || current_lower.contains("steps to")
-                || current_lower.contains("1. open")
-                || current_lower.contains("1. replace")
-                || current_lower.contains("step 1")
-                || current_lower.contains("step 2")
-                || current_lower.contains("step 3")
-                || current_lower.contains("### step")
-                || current_lower.contains("i'll guide")
-                || current_lower.contains("open your")
-                || current_lower.contains("update your")
-                || current_lower.contains("update the")
-                || current_lower.contains("verify")
-                || current_lower.contains("test in browser")
-                || current_lower.contains("open in a web browser")
-                || current_lower.contains("let's update")
-                || current_lower.contains("certainly!")
-                || current_lower.contains("to verify")
-                || current_lower.contains("feel free to proceed")
-                || current_lower.contains("feel free to")
-                || current_lower.contains("if you need")
-                || current_lower.contains("if you encounter")
-                || current_lower.contains("### next step")
-                || current_lower.contains("```html")  // Showing code blocks instead of editing
-                || current_lower.contains("```json"); // Showing JSON instead of executing
-
-            eprintln!("[ENFORCEMENT DEBUG] Post-tool check: only_read_tools={}, has_write_tool={}, is_giving_instructions={}",
-                only_read_tools, has_write_tool, is_giving_instructions);
-
-            if only_read_tools && !has_write_tool && is_giving_instructions {
-                eprintln!("[ENFORCEMENT] Model is giving instructions while still exploring. Forcing immediate edits.");
-
-                let edit_message = "STOP! Do NOT give instructions. The user wants you to make changes, not describe how they could do it themselves.\n\n\
-                    You've already read the files. Now use file_edit to make the changes yourself.\n\n\
-                    For example, to change the header text, call:\n\
-                    file_edit with path=\"index.html\", old_string=\"<header>Tic Tac Toe</header>\", new_string=\"<header>Let's Play a Game</header>\"\n\n\
-                    Do it NOW - call file_edit with the specific changes. Do NOT show me JSON or code blocks - USE THE TOOL.";
-
-                messages.push(Message::user(edit_message.to_string()));
-                continue;
-            }
-        }
-
-        is_first_turn = false;
 
         if should_include_text {
             assistant_blocks.push(ContentBlock::Text {
@@ -1236,7 +913,9 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
             consecutive_repeats += 1;
             if consecutive_repeats >= 3 {
                 // Model is stuck in a loop - emit history before breaking
-                if let Err(e) = emitter.emit_conversation_history(extract_history_messages(&messages)) {
+                if let Err(e) =
+                    emitter.emit_conversation_history(extract_history_messages(&messages))
+                {
                     eprintln!("[HISTORY] Failed to emit loop history: {}", e);
                 }
 
@@ -1265,159 +944,199 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
             None,
         )?;
 
-        // Track if this turn includes exploration (read-only tools)
-        let read_only_tools = ["glob", "grep", "read_file", "list_directory", "search"];
-        let turn_has_exploration = tool_uses.iter().any(|(_, name, _)| {
-            let name_lower = name.to_lowercase();
-            read_only_tools.iter().any(|ro| name_lower.contains(ro))
-        });
-
         // Log which tools are being executed
         for (_, name, _) in &tool_uses {
             eprintln!("[TOOL EXEC] Executing tool: {}", name);
         }
 
-        if turn_has_exploration {
-            eprintln!("[TOOL EXEC] This turn includes exploration tools, setting has_explored=true");
-            has_explored = true;
-        }
-
-        // Track if this turn includes write operations
-        let write_tools = ["file_write", "file_edit", "file_delete", "create_file", "edit_file", "delete_file"];
-        let turn_has_writes = tool_uses.iter().any(|(_, name, _)| {
-            let name_lower = name.to_lowercase();
-            write_tools.iter().any(|wt| name_lower.contains(wt))
-        });
-        if turn_has_writes {
-            has_made_edits = true;
-        }
-
-        // Emit tool preview events AFTER enforcement check passed
-        // (We deferred emission during streaming to avoid showing rejected tools)
+        // Emit tool preview events for file operations
         for (_id, name, input) in &tool_uses {
-            match name.as_str() {
-                "file_write" => {
-                    if let (Some(path), Some(content)) = (
-                        input.get("path").and_then(|v| v.as_str()),
-                        input.get("content").and_then(|v| v.as_str()),
-                    ) {
-                        emitter.emit_file_create(path.to_string(), content.to_string(), None)?;
-                        if !files_changed.contains(&path.to_string()) {
-                            files_changed.push(path.to_string());
-                        }
+            let name_lower = name.to_lowercase();
+            // Handle file write tools (including aliases: write, write_file, file_write)
+            let is_file_write = name_lower == "file_write"
+                || name_lower == "write"
+                || name_lower == "write_file"
+                || name_lower == "create_file";
+            let is_file_edit =
+                name_lower == "file_edit" || name_lower == "edit" || name_lower == "edit_file";
+
+            // Helper to get parameter with fallback names
+            fn get_param<'a>(input: &'a serde_json::Value, names: &[&str]) -> Option<&'a str> {
+                for name in names {
+                    if let Some(val) = input.get(*name).and_then(|v| v.as_str()) {
+                        return Some(val);
                     }
                 }
-                "file_edit" => {
-                    if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
-                        let old_text = input.get("old_string").and_then(|v| v.as_str());
-                        let new_text = input.get("new_string").and_then(|v| v.as_str());
-                        emitter.emit_file_edit(
-                            path.to_string(),
-                            "replace".to_string(),
-                            old_text.map(|s| s.to_string()),
-                            new_text.map(|s| s.to_string()),
-                            None,
-                            None,
-                        )?;
-                        if !files_changed.contains(&path.to_string()) {
-                            files_changed.push(path.to_string());
-                        }
+                None
+            }
+
+            if is_file_write {
+                let path = get_param(input, &["path", "file", "file_path", "filepath"]);
+                let content = get_param(input, &["content", "text", "body", "data"]);
+                if let (Some(path), Some(content)) = (path, content) {
+                    emitter.emit_file_create(path.to_string(), content.to_string(), None)?;
+                    if !files_changed.contains(&path.to_string()) {
+                        files_changed.push(path.to_string());
                     }
                 }
-                "shell" => {
-                    if let Some(command) = input.get("command").and_then(|v| v.as_str()) {
-                        emitter.emit_command(command.to_string(), None, None)?;
+            } else if is_file_edit {
+                let path = get_param(input, &["path", "file", "file_path", "filepath"]);
+                if let Some(path) = path {
+                    let old_text = get_param(
+                        input,
+                        &[
+                            "old_string",
+                            "old",
+                            "old_text",
+                            "search",
+                            "find",
+                            "original",
+                            "from",
+                        ],
+                    );
+                    let new_text = get_param(
+                        input,
+                        &[
+                            "new_string",
+                            "new",
+                            "new_text",
+                            "replace",
+                            "replacement",
+                            "to",
+                        ],
+                    );
+                    emitter.emit_file_edit(
+                        path.to_string(),
+                        "replace".to_string(),
+                        old_text.map(|s| s.to_string()),
+                        new_text.map(|s| s.to_string()),
+                        None,
+                        None,
+                    )?;
+                    if !files_changed.contains(&path.to_string()) {
+                        files_changed.push(path.to_string());
                     }
                 }
-                "propose_file_changes" => {
-                    // Extract operations from the changeset
-                    if let Some(operations) = input.get("operations").and_then(|v| v.as_array()) {
-                        for op in operations {
-                            if let Some(op_type) = op.get("type").and_then(|v| v.as_str()) {
-                                if let Some(path) = op.get("path").and_then(|v| v.as_str()) {
-                                    match op_type {
-                                        "edit" => {
-                                            let old_text = op.get("old_string").and_then(|v| v.as_str());
-                                            let new_text = op.get("new_string").and_then(|v| v.as_str());
-                                            emitter.emit_file_edit(
+            } else if name_lower == "shell" {
+                if let Some(command) = input.get("command").and_then(|v| v.as_str()) {
+                    emitter.emit_command(command.to_string(), None, None)?;
+                }
+            } else if name_lower == "propose_file_changes" {
+                // Extract operations from the changeset
+                if let Some(operations) = input.get("operations").and_then(|v| v.as_array()) {
+                    for op in operations {
+                        if let Some(op_type) = op.get("type").and_then(|v| v.as_str()) {
+                            // Flexible path lookup for changeset operations
+                            let path = get_param(op, &["path", "file", "file_path", "filepath"]);
+                            if let Some(path) = path {
+                                match op_type {
+                                    "edit" => {
+                                        let old_text = get_param(
+                                            op,
+                                            &[
+                                                "old_string",
+                                                "old",
+                                                "old_text",
+                                                "search",
+                                                "find",
+                                                "original",
+                                                "from",
+                                            ],
+                                        );
+                                        let new_text = get_param(
+                                            op,
+                                            &[
+                                                "new_string",
+                                                "new",
+                                                "new_text",
+                                                "replace",
+                                                "replacement",
+                                                "to",
+                                            ],
+                                        );
+                                        emitter.emit_file_edit(
+                                            path.to_string(),
+                                            "replace".to_string(),
+                                            old_text.map(|s| s.to_string()),
+                                            new_text.map(|s| s.to_string()),
+                                            None,
+                                            None,
+                                        )?;
+                                        if !files_changed.contains(&path.to_string()) {
+                                            files_changed.push(path.to_string());
+                                        }
+                                    }
+                                    "write" => {
+                                        let content =
+                                            get_param(op, &["content", "text", "body", "data"]);
+                                        if let Some(content) = content {
+                                            emitter.emit_file_create(
                                                 path.to_string(),
-                                                "replace".to_string(),
-                                                old_text.map(|s| s.to_string()),
-                                                new_text.map(|s| s.to_string()),
-                                                None,
+                                                content.to_string(),
                                                 None,
                                             )?;
                                             if !files_changed.contains(&path.to_string()) {
                                                 files_changed.push(path.to_string());
                                             }
                                         }
-                                        "write" => {
-                                            if let Some(content) = op.get("content").and_then(|v| v.as_str()) {
-                                                emitter.emit_file_create(path.to_string(), content.to_string(), None)?;
-                                                if !files_changed.contains(&path.to_string()) {
-                                                    files_changed.push(path.to_string());
-                                                }
-                                            }
-                                        }
-                                        "delete" => {
-                                            // Emit file deletion event (we'll need to add this to emitter if not exists)
-                                            if !files_changed.contains(&path.to_string()) {
-                                                files_changed.push(path.to_string());
-                                            }
-                                        }
-                                        "read" => {
-                                            // Read operations don't change files
-                                        }
-                                        _ => {}
                                     }
+                                    "delete" => {
+                                        // Emit file deletion event (we'll need to add this to emitter if not exists)
+                                        if !files_changed.contains(&path.to_string()) {
+                                            files_changed.push(path.to_string());
+                                        }
+                                    }
+                                    "read" => {
+                                        // Read operations don't change files
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
                     }
                 }
-                "plan_update" => {
-                    if let Some(content) = input.get("content").and_then(|v| v.as_str()) {
-                        let plan_steps: Vec<PlanStep> = content
-                            .lines()
-                            .enumerate()
-                            .filter_map(|(i, line)| {
-                                let trimmed = line.trim();
-                                if trimmed.starts_with("- [ ]") || trimmed.starts_with("- [x]") {
-                                    let desc = trimmed
-                                        .trim_start_matches("- [ ]")
-                                        .trim_start_matches("- [x]")
-                                        .trim();
-                                    if !desc.is_empty() {
-                                        Some(PlanStep {
-                                            id: (i + 1).to_string(),
-                                            description: desc.to_string(),
-                                            estimated_files: None,
-                                        })
-                                    } else {
-                                        None
-                                    }
+            } else if name_lower == "plan_update" {
+                if let Some(content) = input.get("content").and_then(|v| v.as_str()) {
+                    let plan_steps: Vec<PlanStep> = content
+                        .lines()
+                        .enumerate()
+                        .filter_map(|(i, line)| {
+                            let trimmed = line.trim();
+                            if trimmed.starts_with("- [ ]") || trimmed.starts_with("- [x]") {
+                                let desc = trimmed
+                                    .trim_start_matches("- [ ]")
+                                    .trim_start_matches("- [x]")
+                                    .trim();
+                                if !desc.is_empty() {
+                                    Some(PlanStep {
+                                        id: (i + 1).to_string(),
+                                        description: desc.to_string(),
+                                        estimated_files: None,
+                                    })
                                 } else {
                                     None
                                 }
-                            })
-                            .collect();
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
 
-                        if !plan_steps.is_empty() {
-                            let title = input
-                                .get("title")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("Plan");
-                            emitter.emit_status(
-                                "planning",
-                                format!("Created plan: {}", title),
-                                None,
-                            )?;
-                            emitter.emit_plan(plan_steps)?;
-                        }
+                    if !plan_steps.is_empty() {
+                        let title = input
+                            .get("title")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Plan");
+                        emitter.emit_status(
+                            "planning",
+                            format!("Created plan: {}", title),
+                            None,
+                        )?;
+                        emitter.emit_plan(plan_steps)?;
                     }
                 }
-                _ => {}
             }
+            // Other tool types don't need special event emission
         }
 
         // Debug: Log tool calls being executed
@@ -1432,7 +1151,14 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
         let mut tool_result_blocks: Vec<ContentBlock> = Vec::new();
 
         // File modification tools that should be skipped in review mode
-        let file_mod_tools = ["file_write", "file_edit", "file_delete", "create_file", "edit_file", "delete_file"];
+        let file_mod_tools = [
+            "file_write",
+            "file_edit",
+            "file_delete",
+            "create_file",
+            "edit_file",
+            "delete_file",
+        ];
 
         // Track if we made file mods in review mode - we'll exit after this turn
         let mut has_review_file_mods = false;
@@ -1442,9 +1168,12 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
             let is_file_mod = file_mod_tools.iter().any(|t| name_lower.contains(t));
 
             // In review mode, skip file modifications but return success
-            // The events have already been emitted, so Teddy can show them for review
+            // The events have already been emitted, so the frontend can show them for review
             if review_mode && is_file_mod {
-                eprintln!("[REVIEW MODE] Skipping execution of file tool: {} (events already emitted)", name);
+                eprintln!(
+                    "[REVIEW MODE] Skipping execution of file tool: {} (events already emitted)",
+                    name
+                );
                 tools_executed += 1;
                 has_review_file_mods = true;
 
@@ -1473,7 +1202,9 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
                 continue;
             }
 
-            let result = tool_executor.execute_tool_use(&id, &name, input).await?;
+            let result = tool_executor
+                .execute_tool_use(&id, &name, input.clone())
+                .await?;
 
             tools_executed += 1;
 
@@ -1493,56 +1224,6 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
             });
         }
 
-        // Detect if model is stuck searching an empty directory
-        // If project has no files (implies_existing=false) and all tool results show empty/no matches,
-        // inject a message telling the model to start creating instead of searching
-        if is_ollama && !implies_existing && !has_made_edits {
-            let all_results_empty = tool_result_blocks.iter().all(|block| {
-                if let ContentBlock::ToolResult { content, .. } = block {
-                    if let crate::llm::message::ToolResultContent::Text(text) = content {
-                        // Check for empty results from glob/grep/read
-                        text.contains("Found 0 matches") ||
-                        text.contains("No files found") ||
-                        text.contains("searched 0 files") ||
-                        text.contains("not found") ||
-                        text.contains("does not exist") ||
-                        text.is_empty()
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            });
-
-            if all_results_empty && !tool_result_blocks.is_empty() {
-                eprintln!("[ENFORCEMENT] Empty project and all search results empty. Telling model to start creating.");
-
-                // Add the tool results first
-                messages.push(Message {
-                    id: uuid::Uuid::new_v4(),
-                    role: crate::llm::message::Role::User,
-                    content: MessageContent::Blocks(tool_result_blocks),
-                    timestamp: chrono::Utc::now(),
-                    tool_use_id: None,
-                    token_count: None,
-                });
-
-                // Then add strong guidance to start creating files
-                let create_message = "STOP SEARCHING! The directory is completely empty.\n\n\
-                    You MUST start CREATING files now using file_write. For a web app:\n\n\
-                    1. Call file_write with path=\"index.html\" and complete HTML content\n\
-                    2. Call file_write with path=\"styles.css\" and complete CSS\n\
-                    3. Call file_write with path=\"app.js\" and complete JavaScript\n\n\
-                    Do NOT search again. Do NOT ask questions. START BUILDING NOW with file_write!";
-
-                messages.push(Message::user(create_message.to_string()));
-
-                // Skip the normal message push below
-                continue;
-            }
-        }
-
         // Add tool results as user message
         messages.push(Message {
             id: uuid::Uuid::new_v4(),
@@ -1554,7 +1235,7 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
         });
 
         // Emit conversation history after each turn for multi-turn persistence
-        // This ensures that even if Ted is killed mid-conversation, Teddy has the latest history
+        // This ensures that even if Ted is killed mid-conversation, the frontend has the latest history
         if let Err(e) = emitter.emit_conversation_history(extract_history_messages(&messages)) {
             eprintln!("[HISTORY] Failed to emit turn history: {}", e);
         }
@@ -1562,7 +1243,9 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
         // In review mode, if we made file modifications, EXIT the loop
         // The user needs to review and accept/reject before we continue
         if has_review_file_mods {
-            eprintln!("[REVIEW MODE] File modifications pending review. Exiting loop to wait for user.");
+            eprintln!(
+                "[REVIEW MODE] File modifications pending review. Exiting loop to wait for user."
+            );
             break;
         }
 
@@ -1586,7 +1269,11 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
     // Emit final conversation history for multi-turn persistence
     emitter.emit_conversation_history(extract_history_messages(&messages))?;
 
-    emitter.emit_completion(is_task_complete, completion_message.clone(), files_changed.clone())?;
+    emitter.emit_completion(
+        is_task_complete,
+        completion_message.clone(),
+        files_changed.clone(),
+    )?;
 
     // Store conversation in memory (if enabled)
     if let Some((ref memory_store, ref embedding_generator)) = memory_store {
@@ -1597,7 +1284,11 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
             Ok(s) => s,
             Err(e) => {
                 eprintln!("[MEMORY] Failed to generate summary: {}", e);
-                format!("{} - {}", prompt.chars().take(100).collect::<String>(), completion_message)
+                format!(
+                    "{} - {}",
+                    prompt.chars().take(100).collect::<String>(),
+                    completion_message
+                )
             }
         };
 
@@ -1606,7 +1297,8 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
         let tags = summarizer::extract_tags(&messages);
 
         // Format full content
-        let content = messages.iter()
+        let content = messages
+            .iter()
             .map(|m| {
                 let role = match m.role {
                     crate::llm::message::Role::User => "User",
@@ -1616,10 +1308,13 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
                 match &m.content {
                     MessageContent::Text(t) => format!("{}: {}", role, t),
                     MessageContent::Blocks(blocks) => {
-                        let text_parts: Vec<String> = blocks.iter()
+                        let text_parts: Vec<String> = blocks
+                            .iter()
                             .filter_map(|b| match b {
                                 ContentBlock::Text { text } => Some(text.clone()),
-                                ContentBlock::ToolUse { name, .. } => Some(format!("[tool: {}]", name)),
+                                ContentBlock::ToolUse { name, .. } => {
+                                    Some(format!("[tool: {}]", name))
+                                }
                                 _ => None,
                             })
                             .collect();
@@ -1639,10 +1334,15 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
             content,
             embedding_generator,
             memory_store,
-        ).await {
+        )
+        .await
+        {
             eprintln!("[MEMORY] Failed to store conversation: {}", e);
         } else {
-            eprintln!("[MEMORY] Conversation stored successfully. Summary: {}", summary);
+            eprintln!(
+                "[MEMORY] Conversation stored successfully. Summary: {}",
+                summary
+            );
         }
     }
 
