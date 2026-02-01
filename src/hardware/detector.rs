@@ -234,7 +234,7 @@ impl SystemProfile {
                 }
             }
             // Default to false if we can't determine
-            return false;
+            false
         }
 
         #[cfg(target_os = "macos")]

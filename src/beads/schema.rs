@@ -89,10 +89,11 @@ impl From<&str> for BeadId {
 }
 
 /// Status of a bead
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BeadStatus {
     /// Task is defined but not yet actionable
+    #[default]
     Pending,
     /// All dependencies are satisfied, ready to work on
     Ready,
@@ -118,26 +119,15 @@ impl BeadStatus {
     }
 }
 
-impl Default for BeadStatus {
-    fn default() -> Self {
-        Self::Pending
-    }
-}
-
 /// Priority level for a bead
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BeadPriority {
     Low,
+    #[default]
     Medium,
     High,
     Critical,
-}
-
-impl Default for BeadPriority {
-    fn default() -> Self {
-        Self::Medium
-    }
 }
 
 /// A bead represents a unit of work to track
