@@ -2232,8 +2232,7 @@ fn run_caps_command(args: ted::cli::CapsArgs) -> Result<()> {
                 println!("Extends: {}", cap.extends.join(", "));
             }
 
-            if cap.model.is_some() {
-                let model = cap.model.as_ref().unwrap();
+            if let Some(model) = &cap.model {
                 if let Some(preferred) = &model.preferred_model {
                     println!("Preferred model: {}", preferred);
                 }
