@@ -287,6 +287,8 @@ impl McpServer {
 mod tests {
     use super::*;
 
+    // ===== McpServer Creation Tests =====
+
     #[tokio::test]
     async fn test_mcp_server_creation() {
         use std::env;
@@ -303,6 +305,24 @@ mod tests {
         assert!(!*initialized);
     }
 
+    #[tokio::test]
+    async fn test_mcp_server_initial_tools_empty() {
+        use std::env;
+        let context = crate::tools::ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+        let executor = ToolExecutor::new(context, false);
+        let server = McpServer::new(executor);
+
+        let tools = server.tools.read().await;
+        assert!(tools.is_empty());
+    }
+
+    // ===== Response Helper Tests =====
+
     #[test]
     fn test_success_response() {
         let response = McpServer::success_response(
@@ -313,6 +333,28 @@ mod tests {
         assert_eq!(response.jsonrpc, "2.0");
         assert_eq!(response.id, Some(Value::Number(1.into())));
         assert!(response.error.is_none());
+        assert!(response.result.is_some());
+    }
+
+    #[test]
+    fn test_success_response_with_null_id() {
+        let response = McpServer::success_response(None, Value::String("test".to_string()));
+
+        assert_eq!(response.jsonrpc, "2.0");
+        assert!(response.id.is_none());
+        assert!(response.result.is_some());
+    }
+
+    #[test]
+    fn test_success_response_with_object_result() {
+        let result = serde_json::json!({
+            "tools": [
+                {"name": "test", "description": "A test tool"}
+            ]
+        });
+        let response = McpServer::success_response(Some(Value::Number(1.into())), result.clone());
+
+        assert_eq!(response.result, Some(result));
     }
 
     #[test]
@@ -326,5 +368,414 @@ mod tests {
         assert!(response.result.is_none());
         assert!(response.error.is_some());
         assert_eq!(response.error.unwrap().code, -32601);
+    }
+
+    #[test]
+    fn test_error_response_with_null_id() {
+        let response = McpServer::error_response(None, JsonRpcError::invalid_params());
+
+        assert_eq!(response.jsonrpc, "2.0");
+        assert!(response.id.is_none());
+        assert!(response.error.is_some());
+    }
+
+    #[test]
+    fn test_error_response_parse_error() {
+        let response =
+            McpServer::error_response(Some(Value::Number(1.into())), JsonRpcError::parse_error());
+
+        let error = response.error.unwrap();
+        assert_eq!(error.code, -32700);
+        assert_eq!(error.message, "Parse error");
+    }
+
+    #[test]
+    fn test_error_response_invalid_request() {
+        let response = McpServer::error_response(
+            Some(Value::Number(1.into())),
+            JsonRpcError::invalid_request(),
+        );
+
+        let error = response.error.unwrap();
+        assert_eq!(error.code, -32600);
+    }
+
+    #[test]
+    fn test_error_response_internal_error() {
+        let response = McpServer::error_response(
+            Some(Value::Number(1.into())),
+            JsonRpcError::internal_error(),
+        );
+
+        let error = response.error.unwrap();
+        assert_eq!(error.code, -32603);
+    }
+
+    #[test]
+    fn test_error_response_custom_error() {
+        let custom_error = JsonRpcError {
+            code: -32000,
+            message: "Tool not found: unknown_tool".to_string(),
+            data: Some(serde_json::json!({"tool": "unknown_tool"})),
+        };
+        let response = McpServer::error_response(Some(Value::Number(1.into())), custom_error);
+
+        let error = response.error.unwrap();
+        assert_eq!(error.code, -32000);
+        assert!(error.message.contains("Tool not found"));
+        assert!(error.data.is_some());
+    }
+
+    // ===== TedToolAdapter Tests =====
+
+    // Note: We can't easily test TedToolAdapter directly since it requires
+    // creating concrete Tool implementations. However, we can test through
+    // the server's register_tool method using test utilities.
+
+    // ===== Handle Request Tests =====
+
+    #[tokio::test]
+    async fn test_handle_request_method_not_found() {
+        use std::env;
+        let context = crate::tools::ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+        let executor = ToolExecutor::new(context, false);
+        let server = McpServer::new(executor);
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(1.into())),
+            method: "unknown/method".to_string(),
+            params: None,
+        };
+
+        let response = server.handle_request(request).await;
+
+        assert!(response.error.is_some());
+        assert_eq!(response.error.unwrap().code, -32601);
+    }
+
+    #[tokio::test]
+    async fn test_handle_initialized_sets_flag() {
+        use std::env;
+        let context = crate::tools::ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+        let executor = ToolExecutor::new(context, false);
+        let server = McpServer::new(executor);
+
+        // Initially not initialized
+        assert!(!*server.initialized.read().await);
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(1.into())),
+            method: "initialized".to_string(),
+            params: None,
+        };
+
+        let _ = server.handle_request(request).await;
+
+        // Now should be initialized
+        assert!(*server.initialized.read().await);
+    }
+
+    #[tokio::test]
+    async fn test_handle_tools_list_empty() {
+        use std::env;
+        let context = crate::tools::ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+        let executor = ToolExecutor::new(context, false);
+        let server = McpServer::new(executor);
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(1.into())),
+            method: "tools/list".to_string(),
+            params: None,
+        };
+
+        let response = server.handle_request(request).await;
+
+        assert!(response.error.is_none());
+        assert!(response.result.is_some());
+        let result = response.result.unwrap();
+        assert!(result["tools"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_handle_initialize_valid_params() {
+        use std::env;
+        let context = crate::tools::ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+        let executor = ToolExecutor::new(context, false);
+        let server = McpServer::new(executor);
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(1.into())),
+            method: "initialize".to_string(),
+            params: Some(serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "TestClient",
+                    "version": "1.0"
+                }
+            })),
+        };
+
+        let response = server.handle_request(request).await;
+
+        assert!(response.error.is_none());
+        assert!(response.result.is_some());
+        let result = response.result.unwrap();
+        assert_eq!(result["serverInfo"]["name"], "ted");
+    }
+
+    #[tokio::test]
+    async fn test_handle_initialize_missing_params() {
+        use std::env;
+        let context = crate::tools::ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+        let executor = ToolExecutor::new(context, false);
+        let server = McpServer::new(executor);
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(1.into())),
+            method: "initialize".to_string(),
+            params: None,
+        };
+
+        let response = server.handle_request(request).await;
+
+        assert!(response.error.is_some());
+        assert_eq!(response.error.unwrap().code, -32602); // Invalid params
+    }
+
+    #[tokio::test]
+    async fn test_handle_initialize_invalid_params() {
+        use std::env;
+        let context = crate::tools::ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+        let executor = ToolExecutor::new(context, false);
+        let server = McpServer::new(executor);
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(1.into())),
+            method: "initialize".to_string(),
+            params: Some(serde_json::json!({
+                "invalid": "params"
+            })),
+        };
+
+        let response = server.handle_request(request).await;
+
+        assert!(response.error.is_some());
+        assert_eq!(response.error.unwrap().code, -32602);
+    }
+
+    #[tokio::test]
+    async fn test_handle_tools_call_missing_params() {
+        use std::env;
+        let context = crate::tools::ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+        let executor = ToolExecutor::new(context, false);
+        let server = McpServer::new(executor);
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(1.into())),
+            method: "tools/call".to_string(),
+            params: None,
+        };
+
+        let response = server.handle_request(request).await;
+
+        assert!(response.error.is_some());
+        assert_eq!(response.error.unwrap().code, -32602);
+    }
+
+    #[tokio::test]
+    async fn test_handle_tools_call_invalid_params() {
+        use std::env;
+        let context = crate::tools::ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+        let executor = ToolExecutor::new(context, false);
+        let server = McpServer::new(executor);
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(1.into())),
+            method: "tools/call".to_string(),
+            params: Some(serde_json::json!({
+                "not_name": "test"
+            })),
+        };
+
+        let response = server.handle_request(request).await;
+
+        assert!(response.error.is_some());
+        assert_eq!(response.error.unwrap().code, -32602);
+    }
+
+    #[tokio::test]
+    async fn test_handle_tools_call_tool_not_found() {
+        use std::env;
+        let context = crate::tools::ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+        let executor = ToolExecutor::new(context, false);
+        let server = McpServer::new(executor);
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(1.into())),
+            method: "tools/call".to_string(),
+            params: Some(serde_json::json!({
+                "name": "nonexistent_tool"
+            })),
+        };
+
+        let response = server.handle_request(request).await;
+
+        assert!(response.error.is_some());
+        assert_eq!(response.error.unwrap().code, -32000);
+    }
+
+    // ===== Response Format Tests =====
+
+    #[test]
+    fn test_response_always_has_jsonrpc_version() {
+        let success = McpServer::success_response(None, Value::Null);
+        assert_eq!(success.jsonrpc, "2.0");
+
+        let error = McpServer::error_response(None, JsonRpcError::internal_error());
+        assert_eq!(error.jsonrpc, "2.0");
+    }
+
+    #[test]
+    fn test_success_response_has_result_no_error() {
+        let response =
+            McpServer::success_response(Some(Value::Number(1.into())), serde_json::json!({}));
+
+        assert!(response.result.is_some());
+        assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn test_error_response_has_error_no_result() {
+        let response = McpServer::error_response(
+            Some(Value::Number(1.into())),
+            JsonRpcError::method_not_found(),
+        );
+
+        assert!(response.result.is_none());
+        assert!(response.error.is_some());
+    }
+
+    // ===== String ID Tests =====
+
+    #[test]
+    fn test_success_response_with_string_id() {
+        let response =
+            McpServer::success_response(Some(Value::String("req-123".to_string())), Value::Null);
+
+        assert_eq!(response.id, Some(Value::String("req-123".to_string())));
+    }
+
+    #[test]
+    fn test_error_response_with_string_id() {
+        let response = McpServer::error_response(
+            Some(Value::String("req-456".to_string())),
+            JsonRpcError::internal_error(),
+        );
+
+        assert_eq!(response.id, Some(Value::String("req-456".to_string())));
+    }
+
+    // ===== Integration-style Tests =====
+
+    #[tokio::test]
+    async fn test_multiple_requests_sequence() {
+        use std::env;
+        let context = crate::tools::ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+        let executor = ToolExecutor::new(context, false);
+        let server = McpServer::new(executor);
+
+        // First: initialize
+        let init_request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(1.into())),
+            method: "initialize".to_string(),
+            params: Some(serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "Test", "version": "1.0"}
+            })),
+        };
+        let init_response = server.handle_request(init_request).await;
+        assert!(init_response.error.is_none());
+
+        // Second: initialized notification
+        let initialized_request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(2.into())),
+            method: "initialized".to_string(),
+            params: None,
+        };
+        let _ = server.handle_request(initialized_request).await;
+        assert!(*server.initialized.read().await);
+
+        // Third: list tools
+        let list_request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(3.into())),
+            method: "tools/list".to_string(),
+            params: None,
+        };
+        let list_response = server.handle_request(list_request).await;
+        assert!(list_response.error.is_none());
     }
 }

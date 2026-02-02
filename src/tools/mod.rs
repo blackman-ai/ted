@@ -858,4 +858,461 @@ mod tests {
         assert!(tool.is_some());
         assert_eq!(tool.unwrap().name(), "shell");
     }
+
+    // ===== ChangeSetMode Tests =====
+
+    #[test]
+    fn test_change_set_mode_atomic() {
+        let mode = ChangeSetMode::Atomic;
+        assert_eq!(mode, ChangeSetMode::Atomic);
+    }
+
+    #[test]
+    fn test_change_set_mode_incremental() {
+        let mode = ChangeSetMode::Incremental;
+        assert_eq!(mode, ChangeSetMode::Incremental);
+    }
+
+    #[test]
+    fn test_change_set_mode_not_equal() {
+        assert_ne!(ChangeSetMode::Atomic, ChangeSetMode::Incremental);
+    }
+
+    #[test]
+    fn test_change_set_mode_serialization() {
+        let atomic = ChangeSetMode::Atomic;
+        let json = serde_json::to_string(&atomic).unwrap();
+        assert_eq!(json, "\"atomic\"");
+
+        let incremental = ChangeSetMode::Incremental;
+        let json = serde_json::to_string(&incremental).unwrap();
+        assert_eq!(json, "\"incremental\"");
+    }
+
+    #[test]
+    fn test_change_set_mode_deserialization() {
+        let atomic: ChangeSetMode = serde_json::from_str("\"atomic\"").unwrap();
+        assert_eq!(atomic, ChangeSetMode::Atomic);
+
+        let incremental: ChangeSetMode = serde_json::from_str("\"incremental\"").unwrap();
+        assert_eq!(incremental, ChangeSetMode::Incremental);
+    }
+
+    #[test]
+    fn test_change_set_mode_debug() {
+        let mode = ChangeSetMode::Atomic;
+        let debug = format!("{:?}", mode);
+        assert!(debug.contains("Atomic"));
+    }
+
+    #[test]
+    fn test_change_set_mode_clone() {
+        let mode = ChangeSetMode::Incremental;
+        let cloned = mode;
+        assert_eq!(mode, cloned);
+    }
+
+    #[test]
+    fn test_change_set_mode_copy() {
+        let mode = ChangeSetMode::Atomic;
+        let copied = mode;
+        assert_eq!(mode, copied);
+    }
+
+    // ===== FileOperation Tests =====
+
+    #[test]
+    fn test_file_operation_read() {
+        let op = FileOperation::Read {
+            path: "/tmp/test.txt".to_string(),
+        };
+        if let FileOperation::Read { path } = &op {
+            assert_eq!(path, "/tmp/test.txt");
+        } else {
+            panic!("Expected Read variant");
+        }
+    }
+
+    #[test]
+    fn test_file_operation_edit() {
+        let op = FileOperation::Edit {
+            path: "/tmp/test.txt".to_string(),
+            old_string: "old".to_string(),
+            new_string: "new".to_string(),
+        };
+        if let FileOperation::Edit {
+            path,
+            old_string,
+            new_string,
+        } = &op
+        {
+            assert_eq!(path, "/tmp/test.txt");
+            assert_eq!(old_string, "old");
+            assert_eq!(new_string, "new");
+        } else {
+            panic!("Expected Edit variant");
+        }
+    }
+
+    #[test]
+    fn test_file_operation_write() {
+        let op = FileOperation::Write {
+            path: "/tmp/test.txt".to_string(),
+            content: "Hello, World!".to_string(),
+        };
+        if let FileOperation::Write { path, content } = &op {
+            assert_eq!(path, "/tmp/test.txt");
+            assert_eq!(content, "Hello, World!");
+        } else {
+            panic!("Expected Write variant");
+        }
+    }
+
+    #[test]
+    fn test_file_operation_delete() {
+        let op = FileOperation::Delete {
+            path: "/tmp/test.txt".to_string(),
+        };
+        if let FileOperation::Delete { path } = &op {
+            assert_eq!(path, "/tmp/test.txt");
+        } else {
+            panic!("Expected Delete variant");
+        }
+    }
+
+    #[test]
+    fn test_file_operation_serialization_read() {
+        let op = FileOperation::Read {
+            path: "/tmp/test.txt".to_string(),
+        };
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(json.contains("\"type\":\"read\""));
+        assert!(json.contains("/tmp/test.txt"));
+    }
+
+    #[test]
+    fn test_file_operation_serialization_edit() {
+        let op = FileOperation::Edit {
+            path: "/tmp/test.txt".to_string(),
+            old_string: "old".to_string(),
+            new_string: "new".to_string(),
+        };
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(json.contains("\"type\":\"edit\""));
+    }
+
+    #[test]
+    fn test_file_operation_serialization_write() {
+        let op = FileOperation::Write {
+            path: "/tmp/test.txt".to_string(),
+            content: "content".to_string(),
+        };
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(json.contains("\"type\":\"write\""));
+    }
+
+    #[test]
+    fn test_file_operation_serialization_delete() {
+        let op = FileOperation::Delete {
+            path: "/tmp/test.txt".to_string(),
+        };
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(json.contains("\"type\":\"delete\""));
+    }
+
+    #[test]
+    fn test_file_operation_deserialization() {
+        let json = r#"{"type":"read","path":"/tmp/test.txt"}"#;
+        let op: FileOperation = serde_json::from_str(json).unwrap();
+        if let FileOperation::Read { path } = op {
+            assert_eq!(path, "/tmp/test.txt");
+        } else {
+            panic!("Expected Read variant");
+        }
+    }
+
+    #[test]
+    fn test_file_operation_debug() {
+        let op = FileOperation::Read {
+            path: "/tmp/test.txt".to_string(),
+        };
+        let debug = format!("{:?}", op);
+        assert!(debug.contains("Read"));
+    }
+
+    #[test]
+    fn test_file_operation_clone() {
+        let op = FileOperation::Write {
+            path: "/tmp/test.txt".to_string(),
+            content: "content".to_string(),
+        };
+        let cloned = op.clone();
+        if let (
+            FileOperation::Write {
+                path: p1,
+                content: c1,
+            },
+            FileOperation::Write {
+                path: p2,
+                content: c2,
+            },
+        ) = (&op, &cloned)
+        {
+            assert_eq!(p1, p2);
+            assert_eq!(c1, c2);
+        }
+    }
+
+    // ===== FileChangeSet Tests =====
+
+    #[test]
+    fn test_file_change_set_creation() {
+        let change_set = FileChangeSet {
+            id: "cs-001".to_string(),
+            files: vec![
+                FileOperation::Read {
+                    path: "/tmp/a.txt".to_string(),
+                },
+                FileOperation::Write {
+                    path: "/tmp/b.txt".to_string(),
+                    content: "new file".to_string(),
+                },
+            ],
+            description: "Test change set".to_string(),
+            related_files: vec!["/tmp/c.txt".to_string()],
+            mode: ChangeSetMode::Atomic,
+        };
+
+        assert_eq!(change_set.id, "cs-001");
+        assert_eq!(change_set.files.len(), 2);
+        assert_eq!(change_set.description, "Test change set");
+        assert_eq!(change_set.related_files.len(), 1);
+        assert_eq!(change_set.mode, ChangeSetMode::Atomic);
+    }
+
+    #[test]
+    fn test_file_change_set_serialization() {
+        let change_set = FileChangeSet {
+            id: "cs-002".to_string(),
+            files: vec![FileOperation::Delete {
+                path: "/tmp/old.txt".to_string(),
+            }],
+            description: "Delete old file".to_string(),
+            related_files: vec![],
+            mode: ChangeSetMode::Incremental,
+        };
+
+        let json = serde_json::to_string(&change_set).unwrap();
+        assert!(json.contains("cs-002"));
+        assert!(json.contains("delete"));
+        assert!(json.contains("incremental"));
+    }
+
+    #[test]
+    fn test_file_change_set_deserialization() {
+        let json = r#"{
+            "id": "cs-003",
+            "files": [{"type": "read", "path": "/tmp/test.txt"}],
+            "description": "Read test",
+            "related_files": [],
+            "mode": "atomic"
+        }"#;
+
+        let change_set: FileChangeSet = serde_json::from_str(json).unwrap();
+        assert_eq!(change_set.id, "cs-003");
+        assert_eq!(change_set.files.len(), 1);
+        assert_eq!(change_set.mode, ChangeSetMode::Atomic);
+    }
+
+    #[test]
+    fn test_file_change_set_debug() {
+        let change_set = FileChangeSet {
+            id: "cs-004".to_string(),
+            files: vec![],
+            description: "Empty".to_string(),
+            related_files: vec![],
+            mode: ChangeSetMode::Atomic,
+        };
+        let debug = format!("{:?}", change_set);
+        assert!(debug.contains("FileChangeSet"));
+    }
+
+    #[test]
+    fn test_file_change_set_clone() {
+        let change_set = FileChangeSet {
+            id: "cs-005".to_string(),
+            files: vec![FileOperation::Read {
+                path: "/tmp/a.txt".to_string(),
+            }],
+            description: "Clone test".to_string(),
+            related_files: vec!["/tmp/b.txt".to_string()],
+            mode: ChangeSetMode::Incremental,
+        };
+
+        let cloned = change_set.clone();
+        assert_eq!(cloned.id, change_set.id);
+        assert_eq!(cloned.files.len(), change_set.files.len());
+        assert_eq!(cloned.description, change_set.description);
+        assert_eq!(cloned.mode, change_set.mode);
+    }
+
+    // ===== normalize_context_path Tests =====
+
+    #[test]
+    fn test_normalize_context_path_no_change() {
+        assert_eq!(normalize_context_path("src/main.rs"), "src/main.rs");
+    }
+
+    #[test]
+    fn test_normalize_context_path_dot_slash() {
+        assert_eq!(normalize_context_path("./src/main.rs"), "src/main.rs");
+    }
+
+    #[test]
+    fn test_normalize_context_path_multiple_dot_slash() {
+        assert_eq!(normalize_context_path("././src/main.rs"), "src/main.rs");
+    }
+
+    #[test]
+    fn test_normalize_context_path_backslash() {
+        assert_eq!(normalize_context_path("src\\main.rs"), "src/main.rs");
+    }
+
+    #[test]
+    fn test_normalize_context_path_combined() {
+        assert_eq!(normalize_context_path(".\\src\\main.rs"), "src/main.rs");
+    }
+
+    // ===== is_file_in_context Tests =====
+
+    #[test]
+    fn test_is_file_in_context_exact_match() {
+        let context = ToolContext::new(PathBuf::from("/tmp"), None, uuid::Uuid::new_v4(), false)
+            .with_files_in_context(vec!["src/main.rs".to_string()]);
+
+        assert!(context.is_file_in_context("src/main.rs"));
+    }
+
+    #[test]
+    fn test_is_file_in_context_with_dot_slash() {
+        let context = ToolContext::new(PathBuf::from("/tmp"), None, uuid::Uuid::new_v4(), false)
+            .with_files_in_context(vec!["src/main.rs".to_string()]);
+
+        assert!(context.is_file_in_context("./src/main.rs"));
+    }
+
+    #[test]
+    fn test_is_file_in_context_not_found() {
+        let context = ToolContext::new(PathBuf::from("/tmp"), None, uuid::Uuid::new_v4(), false)
+            .with_files_in_context(vec!["src/main.rs".to_string()]);
+
+        assert!(!context.is_file_in_context("src/lib.rs"));
+    }
+
+    #[test]
+    fn test_is_file_in_context_partial_match() {
+        let context = ToolContext::new(PathBuf::from("/tmp"), None, uuid::Uuid::new_v4(), false)
+            .with_files_in_context(vec!["project/src/main.rs".to_string()]);
+
+        // Should match by suffix
+        assert!(context.is_file_in_context("src/main.rs"));
+    }
+
+    #[test]
+    fn test_is_file_in_context_empty() {
+        let context = ToolContext::new(PathBuf::from("/tmp"), None, uuid::Uuid::new_v4(), false);
+
+        assert!(!context.is_file_in_context("any/file.rs"));
+    }
+
+    // ===== ShellOutputEvent Tests =====
+
+    #[test]
+    fn test_shell_output_event_creation() {
+        let event = ShellOutputEvent {
+            stream: "stdout".to_string(),
+            text: "Hello".to_string(),
+            done: false,
+            exit_code: None,
+        };
+
+        assert_eq!(event.stream, "stdout");
+        assert_eq!(event.text, "Hello");
+        assert!(!event.done);
+        assert!(event.exit_code.is_none());
+    }
+
+    #[test]
+    fn test_shell_output_event_done() {
+        let event = ShellOutputEvent {
+            stream: "stderr".to_string(),
+            text: "".to_string(),
+            done: true,
+            exit_code: Some(0),
+        };
+
+        assert!(event.done);
+        assert_eq!(event.exit_code, Some(0));
+    }
+
+    #[test]
+    fn test_shell_output_event_debug() {
+        let event = ShellOutputEvent {
+            stream: "stdout".to_string(),
+            text: "test".to_string(),
+            done: false,
+            exit_code: None,
+        };
+        let debug = format!("{:?}", event);
+        assert!(debug.contains("ShellOutputEvent"));
+    }
+
+    #[test]
+    fn test_shell_output_event_clone() {
+        let event = ShellOutputEvent {
+            stream: "stdout".to_string(),
+            text: "test".to_string(),
+            done: true,
+            exit_code: Some(1),
+        };
+        let cloned = event.clone();
+
+        assert_eq!(cloned.stream, event.stream);
+        assert_eq!(cloned.text, event.text);
+        assert_eq!(cloned.done, event.done);
+        assert_eq!(cloned.exit_code, event.exit_code);
+    }
+
+    // ===== ToolContext with_shell_output_sender Tests =====
+
+    #[test]
+    fn test_tool_context_with_shell_output_sender() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let context = ToolContext::new(PathBuf::from("/tmp"), None, uuid::Uuid::new_v4(), false)
+            .with_shell_output_sender(tx);
+
+        // Just verify it was set
+        assert!(context.shell_output_sender.is_some());
+    }
+
+    #[test]
+    fn test_tool_context_emit_shell_output_no_sender() {
+        let context = ToolContext::new(PathBuf::from("/tmp"), None, uuid::Uuid::new_v4(), false);
+
+        // Should not panic even without sender
+        context.emit_shell_output("stdout", "test".to_string(), false, None);
+    }
+
+    #[test]
+    fn test_tool_context_emit_shell_output_with_sender() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let context = ToolContext::new(PathBuf::from("/tmp"), None, uuid::Uuid::new_v4(), false)
+            .with_shell_output_sender(tx);
+
+        context.emit_shell_output("stdout", "Hello".to_string(), false, None);
+
+        let event = rx.try_recv().unwrap();
+        assert_eq!(event.stream, "stdout");
+        assert_eq!(event.text, "Hello");
+    }
 }

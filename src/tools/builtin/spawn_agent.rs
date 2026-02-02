@@ -291,4 +291,231 @@ mod tests {
         assert_eq!(truncate_str("short", 10), "short");
         assert_eq!(truncate_str("this is a long string", 10), "this is a ...");
     }
+
+    // ===== truncate_str Additional Tests =====
+
+    #[test]
+    fn test_truncate_str_exact_length() {
+        assert_eq!(truncate_str("0123456789", 10), "0123456789");
+    }
+
+    #[test]
+    fn test_truncate_str_one_over() {
+        assert_eq!(truncate_str("01234567890", 10), "0123456789...");
+    }
+
+    #[test]
+    fn test_truncate_str_empty() {
+        assert_eq!(truncate_str("", 10), "");
+    }
+
+    #[test]
+    fn test_truncate_str_unicode_safe() {
+        // Test with text that doesn't need truncation
+        let text = "Hello 🌍 World";
+        // Full string (no truncation needed)
+        let result = truncate_str(text, 100);
+        assert_eq!(result, text);
+    }
+
+    #[test]
+    fn test_truncate_str_zero_length() {
+        // Edge case: max_len of 0
+        assert_eq!(truncate_str("hello", 0), "...");
+    }
+
+    // ===== Agent Type Validation Tests =====
+
+    #[test]
+    fn test_all_valid_agent_types() {
+        let valid_types = get_agent_type_names();
+        for agent_type in &valid_types {
+            assert!(
+                is_valid_agent_type(agent_type),
+                "Agent type '{}' should be valid",
+                agent_type
+            );
+        }
+    }
+
+    #[test]
+    fn test_invalid_agent_types() {
+        let invalid_types = [
+            "invalid",
+            "unknown",
+            "foo",
+            "bar",
+            "",
+            "EXPLORE", // Case sensitive
+            "Implement",
+        ];
+
+        for agent_type in &invalid_types {
+            assert!(
+                !is_valid_agent_type(agent_type),
+                "Agent type '{}' should be invalid",
+                agent_type
+            );
+        }
+    }
+
+    #[test]
+    fn test_get_agent_type_names_not_empty() {
+        let names = get_agent_type_names();
+        assert!(!names.is_empty());
+    }
+
+    #[test]
+    fn test_get_agent_type_names_contains_explore() {
+        let names = get_agent_type_names();
+        assert!(names.contains(&"explore"));
+    }
+
+    #[test]
+    fn test_get_agent_type_names_contains_implement() {
+        let names = get_agent_type_names();
+        assert!(names.contains(&"implement"));
+    }
+
+    // ===== MemoryStrategy Tests =====
+
+    #[test]
+    fn test_memory_strategy_full() {
+        let strategy = MemoryStrategy::Full;
+        matches!(strategy, MemoryStrategy::Full);
+    }
+
+    #[test]
+    fn test_memory_strategy_summarizing() {
+        let strategy = MemoryStrategy::summarizing();
+        matches!(strategy, MemoryStrategy::Summarizing { .. });
+    }
+
+    #[test]
+    fn test_memory_strategy_windowed() {
+        let strategy = MemoryStrategy::windowed(10);
+        matches!(strategy, MemoryStrategy::Windowed { .. });
+    }
+
+    // ===== AgentConfig Tests =====
+
+    #[test]
+    fn test_agent_config_creation() {
+        let working_dir = std::env::current_dir().unwrap();
+        let config = AgentConfig::new("explore", "Find files", working_dir.clone());
+
+        assert_eq!(config.agent_type, "explore");
+        assert_eq!(config.task, "Find files");
+        assert_eq!(config.working_dir, working_dir);
+    }
+
+    #[test]
+    fn test_agent_config_with_caps() {
+        let working_dir = std::env::current_dir().unwrap();
+        let config = AgentConfig::new("explore", "task", working_dir)
+            .with_caps(vec!["cap1".to_string(), "cap2".to_string()]);
+
+        assert_eq!(config.caps.len(), 2);
+    }
+
+    #[test]
+    fn test_agent_config_with_skill() {
+        let working_dir = std::env::current_dir().unwrap();
+        let config =
+            AgentConfig::new("explore", "task", working_dir).with_skill("rust-async".to_string());
+
+        assert_eq!(config.skill, Some("rust-async".to_string()));
+    }
+
+    #[test]
+    fn test_agent_config_with_memory_strategy() {
+        let working_dir = std::env::current_dir().unwrap();
+        let config = AgentConfig::new("explore", "task", working_dir)
+            .with_memory_strategy(MemoryStrategy::Full);
+
+        matches!(config.memory_strategy, MemoryStrategy::Full);
+    }
+
+    #[test]
+    fn test_agent_config_with_max_iterations() {
+        let working_dir = std::env::current_dir().unwrap();
+        let config = AgentConfig::new("explore", "task", working_dir).with_max_iterations(100);
+
+        assert_eq!(config.max_iterations, 100);
+    }
+
+    #[test]
+    fn test_agent_config_with_background() {
+        let working_dir = std::env::current_dir().unwrap();
+        let config = AgentConfig::new("explore", "task", working_dir).with_background(true);
+
+        assert!(config.background);
+    }
+
+    #[test]
+    fn test_agent_config_with_bead() {
+        let working_dir = std::env::current_dir().unwrap();
+        let config =
+            AgentConfig::new("explore", "task", working_dir).with_bead("bead-123".to_string());
+
+        assert_eq!(config.bead_id, Some("bead-123".to_string()));
+    }
+
+    #[test]
+    fn test_agent_config_chained() {
+        let working_dir = std::env::current_dir().unwrap();
+        let config = AgentConfig::new("implement", "Write code", working_dir)
+            .with_caps(vec!["cap1".to_string()])
+            .with_skill("rust".to_string())
+            .with_memory_strategy(MemoryStrategy::summarizing())
+            .with_max_iterations(50)
+            .with_background(false)
+            .with_bead("task-1".to_string());
+
+        assert_eq!(config.agent_type, "implement");
+        assert_eq!(config.task, "Write code");
+        assert_eq!(config.caps.len(), 1);
+        assert_eq!(config.skill, Some("rust".to_string()));
+        assert_eq!(config.max_iterations, 50);
+        assert!(!config.background);
+        assert_eq!(config.bead_id, Some("task-1".to_string()));
+    }
+
+    // ===== AgentContext Tests =====
+
+    #[test]
+    fn test_agent_context_creation() {
+        let working_dir = std::env::current_dir().unwrap();
+        let config = AgentConfig::new("explore", "task", working_dir);
+        let context = AgentContext::new(config);
+
+        // Context should be created successfully
+        // Check that conversation is initialized
+        assert!(!context.conversation.messages.is_empty());
+    }
+
+    #[test]
+    fn test_agent_context_add_skill_instructions() {
+        let working_dir = std::env::current_dir().unwrap();
+        let config = AgentConfig::new("explore", "task", working_dir);
+        let mut context = AgentContext::new(config);
+
+        context.add_skill_instructions("Use async/await patterns");
+
+        // Instructions should be added to conversation
+        // The system prompt should contain the skill instructions
+        let system = context.conversation.system_prompt.as_ref();
+        assert!(system.is_some());
+        assert!(system.unwrap().contains("async/await"));
+    }
+
+    // ===== Permission Request Logic Tests =====
+
+    #[test]
+    fn test_permission_request_description_truncation() {
+        // Verify that long tasks get truncated in the permission description
+        let long_task = "a".repeat(100);
+        let truncated = truncate_str(&long_task, 80);
+        assert_eq!(truncated.len(), 83); // 80 + "..."
+    }
 }

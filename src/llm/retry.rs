@@ -313,4 +313,185 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(counter.load(Ordering::SeqCst), 4); // Initial + 3 retries
     }
+
+    // ==================== Edge Case Tests ====================
+
+    #[test]
+    fn test_retry_config_clone() {
+        let config = RetryConfig::default();
+        let cloned = config.clone();
+        assert_eq!(cloned.max_retries, config.max_retries);
+        assert_eq!(cloned.base_delay_ms, config.base_delay_ms);
+        assert_eq!(cloned.max_delay_ms, config.max_delay_ms);
+    }
+
+    #[test]
+    fn test_retry_config_debug() {
+        let config = RetryConfig::default();
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("RetryConfig"));
+        assert!(debug.contains("5")); // max_retries
+    }
+
+    #[test]
+    fn test_calculate_delay_with_jitter() {
+        let config = RetryConfig {
+            max_retries: 5,
+            base_delay_ms: 1000,
+            max_delay_ms: 16000,
+            jitter: 0.5, // 50% jitter
+        };
+
+        // With jitter, delay should be within range
+        let delay = config.calculate_delay(0);
+        let millis = delay.as_millis() as i64;
+        // 1000 ± 500
+        assert!((500..=1500).contains(&millis));
+    }
+
+    #[test]
+    fn test_calculate_delay_zero_jitter() {
+        let config = RetryConfig {
+            max_retries: 5,
+            base_delay_ms: 100,
+            max_delay_ms: 1000,
+            jitter: 0.0,
+        };
+
+        // With no jitter, delay should be exact
+        assert_eq!(config.calculate_delay(0).as_millis(), 100);
+        assert_eq!(config.calculate_delay(1).as_millis(), 200);
+        assert_eq!(config.calculate_delay(2).as_millis(), 400);
+    }
+
+    #[test]
+    fn test_calculate_delay_zero_base() {
+        let config = RetryConfig {
+            max_retries: 5,
+            base_delay_ms: 0,
+            max_delay_ms: 1000,
+            jitter: 0.0,
+        };
+
+        // Zero base delay
+        assert_eq!(config.calculate_delay(0).as_millis(), 0);
+        assert_eq!(config.calculate_delay(5).as_millis(), 0);
+    }
+
+    #[test]
+    fn test_calculate_delay_cap_with_large_attempt() {
+        let config = RetryConfig {
+            max_retries: 100,
+            base_delay_ms: 1000,
+            max_delay_ms: 5000,
+            jitter: 0.0,
+        };
+
+        // Even with large attempt number, should be capped
+        let delay = config.calculate_delay(50);
+        assert_eq!(delay.as_millis(), 5000);
+    }
+
+    #[test]
+    fn test_is_retryable_server_error_boundary_500() {
+        // 500 is retryable
+        assert!(is_retryable(&TedError::Api(ApiError::ServerError {
+            status: 500,
+            message: "Internal Server Error".to_string(),
+        })));
+    }
+
+    #[test]
+    fn test_is_retryable_server_error_boundary_599() {
+        // 599 is retryable
+        assert!(is_retryable(&TedError::Api(ApiError::ServerError {
+            status: 599,
+            message: "Network error".to_string(),
+        })));
+    }
+
+    #[test]
+    fn test_is_retryable_client_error_499() {
+        // 499 is not retryable (client error range)
+        assert!(!is_retryable(&TedError::Api(ApiError::ServerError {
+            status: 499,
+            message: "Client error".to_string(),
+        })));
+    }
+
+    #[test]
+    fn test_is_retryable_error_600() {
+        // 600 is not retryable (out of 5xx range)
+        assert!(!is_retryable(&TedError::Api(ApiError::ServerError {
+            status: 600,
+            message: "Unknown".to_string(),
+        })));
+    }
+
+    #[test]
+    fn test_is_retryable_config_error() {
+        // Non-API errors are not retryable
+        assert!(!is_retryable(&TedError::Config("config error".to_string())));
+    }
+
+    #[test]
+    fn test_is_retryable_tool_execution_error() {
+        // Tool execution errors are not retryable
+        assert!(!is_retryable(&TedError::ToolExecution(
+            "tool failed".to_string()
+        )));
+    }
+
+    #[tokio::test]
+    async fn test_with_retry_zero_max_retries() {
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+
+        let result = with_retry(
+            || async {
+                counter_clone.fetch_add(1, Ordering::SeqCst);
+                Err::<i32, _>(TedError::Api(ApiError::Network("timeout".to_string())))
+            },
+            Some(RetryConfig {
+                max_retries: 0,
+                base_delay_ms: 10,
+                max_delay_ms: 100,
+                jitter: 0.0,
+            }),
+            "test_operation",
+        )
+        .await;
+
+        assert!(result.is_err());
+        // With 0 retries, only 1 attempt is made
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_with_retry_rate_limited() {
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+
+        let result = with_retry(
+            || async {
+                let count = counter_clone.fetch_add(1, Ordering::SeqCst);
+                if count < 1 {
+                    Err(TedError::Api(ApiError::RateLimited(60)))
+                } else {
+                    Ok(42)
+                }
+            },
+            Some(RetryConfig {
+                max_retries: 3,
+                base_delay_ms: 10,
+                max_delay_ms: 100,
+                jitter: 0.0,
+            }),
+            "test_rate_limit",
+        )
+        .await;
+
+        assert!(result.is_ok());
+        assert_eq!(counter.load(Ordering::SeqCst), 2); // Failed once, then succeeded
+    }
 }

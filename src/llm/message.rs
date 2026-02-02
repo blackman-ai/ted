@@ -684,4 +684,335 @@ mod tests {
         assert_eq!(source.source_type, "base64");
         assert_eq!(source.media_type, "image/png");
     }
+
+    // ===== Token Estimation Tests =====
+
+    #[test]
+    fn test_message_estimate_tokens_simple() {
+        let msg = Message::user("Hello world");
+        let tokens = msg.estimate_tokens();
+        // "Hello world" is 11 chars + 20 overhead = 31, /4 = 7
+        assert!(tokens > 0);
+        assert!(tokens < 100); // Sanity check
+    }
+
+    #[test]
+    fn test_message_estimate_tokens_long() {
+        let long_text = "a".repeat(1000);
+        let msg = Message::user(&long_text);
+        let tokens = msg.estimate_tokens();
+        // 1000 chars + 20 overhead = 1020, /4 = 255
+        assert!(tokens > 200);
+        assert!(tokens < 300);
+    }
+
+    #[test]
+    fn test_message_estimate_tokens_with_tool_use() {
+        let msg = Message::assistant_blocks(vec![
+            ContentBlock::Text {
+                text: "Let me help".to_string(),
+            },
+            ContentBlock::ToolUse {
+                id: "tool1".to_string(),
+                name: "file_read".to_string(),
+                input: serde_json::json!({"path": "/very/long/path/to/some/file.txt"}),
+            },
+        ]);
+        let tokens = msg.estimate_tokens();
+        assert!(tokens > 0);
+    }
+
+    #[test]
+    fn test_message_estimate_tokens_tool_result() {
+        let msg = Message::tool_result("tool1", "File contents here", false);
+        let tokens = msg.estimate_tokens();
+        assert!(tokens > 0);
+    }
+
+    // ===== Conversation Token Tests =====
+
+    #[test]
+    fn test_conversation_estimate_tokens_empty() {
+        let conv = Conversation::new();
+        assert_eq!(conv.estimate_tokens(), 0);
+    }
+
+    #[test]
+    fn test_conversation_estimate_tokens_with_system() {
+        let conv = Conversation::with_system("You are a helpful assistant");
+        let tokens = conv.estimate_tokens();
+        // ~27 chars / 4 = ~6 tokens for system prompt
+        assert!(tokens > 0);
+    }
+
+    #[test]
+    fn test_conversation_estimate_tokens_with_messages() {
+        let mut conv = Conversation::new();
+        conv.push(Message::user("Hello"));
+        conv.push(Message::assistant("Hi there, how can I help?"));
+        let tokens = conv.estimate_tokens();
+        assert!(tokens > 0);
+    }
+
+    // ===== Conversation Truncation Tests =====
+
+    #[test]
+    fn test_conversation_truncate_to_fit_no_truncation_needed() {
+        let mut conv = Conversation::with_system("System");
+        conv.push(Message::user("Hello"));
+        conv.push(Message::assistant("Hi"));
+
+        let (messages, was_truncated) = conv.truncate_to_fit(100000);
+        assert!(!was_truncated);
+        assert_eq!(messages.len(), 2);
+    }
+
+    #[test]
+    fn test_conversation_truncate_to_fit_truncation_needed() {
+        let mut conv = Conversation::with_system("System prompt");
+        for i in 0..100 {
+            conv.push(Message::user(format!("Message {} with some content", i)));
+            conv.push(Message::assistant(format!(
+                "Response {} with more content",
+                i
+            )));
+        }
+
+        // Very low limit should truncate
+        let (messages, was_truncated) = conv.truncate_to_fit(1000);
+        assert!(was_truncated);
+        assert!(messages.len() < 200);
+    }
+
+    #[test]
+    fn test_conversation_truncate_to_fit_zero_available() {
+        let mut conv = Conversation::with_system("System");
+        conv.push(Message::user("Hello"));
+
+        // Very small limit (less than system + buffer)
+        let (messages, was_truncated) = conv.truncate_to_fit(10);
+        assert!(was_truncated);
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn test_conversation_trim_to_fit_no_trimming() {
+        let mut conv = Conversation::new();
+        conv.push(Message::user("Hello"));
+        conv.push(Message::assistant("Hi"));
+
+        let removed = conv.trim_to_fit(100000);
+        assert_eq!(removed, 0);
+        assert_eq!(conv.len(), 2);
+    }
+
+    #[test]
+    fn test_conversation_trim_to_fit_trimming_needed() {
+        let mut conv = Conversation::new();
+        for i in 0..50 {
+            conv.push(Message::user(format!("Message {} with content", i)));
+            conv.push(Message::assistant(format!("Response {} with content", i)));
+        }
+
+        let initial_len = conv.len();
+        let removed = conv.trim_to_fit(1000);
+
+        assert!(removed > 0);
+        assert!(conv.len() < initial_len);
+        assert_eq!(conv.len() + removed, initial_len);
+    }
+
+    #[test]
+    fn test_conversation_trim_to_fit_zero_budget() {
+        let mut conv = Conversation::new();
+        conv.push(Message::user("Hello"));
+        conv.push(Message::assistant("Hi"));
+
+        let removed = conv.trim_to_fit(0);
+        assert_eq!(removed, 2);
+        assert!(conv.is_empty());
+    }
+
+    #[test]
+    fn test_conversation_needs_trimming_false() {
+        let conv = Conversation::new();
+        assert!(!conv.needs_trimming(100000));
+    }
+
+    #[test]
+    fn test_conversation_needs_trimming_true() {
+        let mut conv = Conversation::new();
+        for i in 0..1000 {
+            conv.push(Message::user(format!(
+                "Long message {} with lots of content to increase token count",
+                i
+            )));
+        }
+
+        // With very low limit, should need trimming
+        assert!(conv.needs_trimming(100));
+    }
+
+    // ===== ToolResultContent Tests =====
+
+    #[test]
+    fn test_tool_result_content_text_estimate() {
+        let content = ToolResultContent::Text("Hello world".to_string());
+        let len = match content {
+            ToolResultContent::Text(text) => text.len(),
+            _ => 0,
+        };
+        assert_eq!(len, 11);
+    }
+
+    #[test]
+    fn test_tool_result_content_blocks() {
+        let content = ToolResultContent::Blocks(vec![
+            ToolResultBlock::Text {
+                text: "First block".to_string(),
+            },
+            ToolResultBlock::Text {
+                text: "Second block".to_string(),
+            },
+        ]);
+
+        if let ToolResultContent::Blocks(blocks) = &content {
+            assert_eq!(blocks.len(), 2);
+        }
+    }
+
+    #[test]
+    fn test_tool_result_block_image() {
+        let block = ToolResultBlock::Image {
+            source: ImageSource {
+                source_type: "base64".to_string(),
+                media_type: "image/jpeg".to_string(),
+                data: "SGVsbG8=".to_string(),
+            },
+        };
+
+        if let ToolResultBlock::Image { source } = block {
+            assert_eq!(source.media_type, "image/jpeg");
+        }
+    }
+
+    // ===== Serialization Tests =====
+
+    #[test]
+    fn test_message_serialization() {
+        let msg = Message::user("Test message");
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: Message = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(msg.role, parsed.role);
+        assert_eq!(msg.text(), parsed.text());
+    }
+
+    #[test]
+    fn test_message_with_blocks_serialization() {
+        let msg = Message::assistant_blocks(vec![
+            ContentBlock::Text {
+                text: "Hello".to_string(),
+            },
+            ContentBlock::ToolUse {
+                id: "t1".to_string(),
+                name: "test".to_string(),
+                input: serde_json::json!({}),
+            },
+        ]);
+
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: Message = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(msg.role, parsed.role);
+    }
+
+    #[test]
+    fn test_role_serialization() {
+        let roles = [Role::User, Role::Assistant, Role::System];
+        for role in roles {
+            let json = serde_json::to_string(&role).unwrap();
+            let parsed: Role = serde_json::from_str(&json).unwrap();
+            assert_eq!(role, parsed);
+        }
+    }
+
+    // ===== Edge Cases =====
+
+    #[test]
+    fn test_message_text_empty_blocks() {
+        let msg = Message::assistant_blocks(vec![]);
+        assert!(msg.text().is_none());
+    }
+
+    #[test]
+    fn test_message_text_only_tool_use() {
+        let msg = Message::assistant_blocks(vec![ContentBlock::ToolUse {
+            id: "t1".to_string(),
+            name: "test".to_string(),
+            input: serde_json::json!({}),
+        }]);
+        assert!(msg.text().is_none());
+    }
+
+    #[test]
+    fn test_conversation_default() {
+        let conv = Conversation::default();
+        assert!(conv.is_empty());
+        assert!(conv.system_prompt.is_none());
+    }
+
+    #[test]
+    fn test_conversation_iterator() {
+        let mut conv = Conversation::new();
+        conv.push(Message::user("1"));
+        conv.push(Message::assistant("2"));
+        conv.push(Message::user("3"));
+
+        let count = conv.messages.len();
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn test_message_unique_ids() {
+        let msg1 = Message::user("Hello");
+        let msg2 = Message::user("Hello");
+        assert_ne!(msg1.id, msg2.id);
+    }
+
+    #[test]
+    fn test_message_timestamp() {
+        let before = Utc::now();
+        let msg = Message::user("Hello");
+        let after = Utc::now();
+
+        assert!(msg.timestamp >= before);
+        assert!(msg.timestamp <= after);
+    }
+
+    #[test]
+    fn test_content_block_tool_result_with_error() {
+        let block = ContentBlock::ToolResult {
+            tool_use_id: "t1".to_string(),
+            content: ToolResultContent::Text("Error occurred".to_string()),
+            is_error: Some(true),
+        };
+
+        if let ContentBlock::ToolResult { is_error, .. } = block {
+            assert_eq!(is_error, Some(true));
+        }
+    }
+
+    #[test]
+    fn test_content_block_tool_result_no_error() {
+        let block = ContentBlock::ToolResult {
+            tool_use_id: "t1".to_string(),
+            content: ToolResultContent::Text("Success".to_string()),
+            is_error: None,
+        };
+
+        if let ContentBlock::ToolResult { is_error, .. } = block {
+            assert!(is_error.is_none());
+        }
+    }
 }

@@ -486,4 +486,305 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert!(results[0].summary.contains("authentication"));
     }
+
+    // ===== Additional ConversationMemory Tests =====
+
+    #[test]
+    fn test_conversation_memory_clone() {
+        let memory = create_test_memory();
+        let cloned = memory.clone();
+
+        assert_eq!(cloned.id, memory.id);
+        assert_eq!(cloned.summary, memory.summary);
+        assert_eq!(cloned.files_changed, memory.files_changed);
+        assert_eq!(cloned.tags, memory.tags);
+        assert_eq!(cloned.content, memory.content);
+        assert_eq!(cloned.embedding, memory.embedding);
+    }
+
+    #[test]
+    fn test_conversation_memory_debug() {
+        let memory = create_test_memory();
+        let debug = format!("{:?}", memory);
+
+        assert!(debug.contains("ConversationMemory"));
+        assert!(debug.contains("authentication"));
+    }
+
+    #[test]
+    fn test_conversation_memory_serialize() {
+        let memory = create_test_memory();
+        let json = serde_json::to_string(&memory).unwrap();
+
+        assert!(json.contains("summary"));
+        assert!(json.contains("files_changed"));
+        assert!(json.contains("tags"));
+        assert!(json.contains("embedding"));
+    }
+
+    #[test]
+    fn test_conversation_memory_deserialize() {
+        let memory = create_test_memory();
+        let json = serde_json::to_string(&memory).unwrap();
+        let deserialized: ConversationMemory = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.id, memory.id);
+        assert_eq!(deserialized.summary, memory.summary);
+        assert_eq!(deserialized.files_changed, memory.files_changed);
+    }
+
+    #[test]
+    fn test_conversation_memory_empty_fields() {
+        let memory = ConversationMemory {
+            id: Uuid::new_v4(),
+            timestamp: Utc::now(),
+            summary: String::new(),
+            files_changed: vec![],
+            tags: vec![],
+            content: String::new(),
+            embedding: vec![],
+        };
+
+        assert!(memory.summary.is_empty());
+        assert!(memory.files_changed.is_empty());
+        assert!(memory.tags.is_empty());
+        assert!(memory.embedding.is_empty());
+    }
+
+    #[test]
+    fn test_conversation_memory_many_files_and_tags() {
+        let memory = ConversationMemory {
+            id: Uuid::new_v4(),
+            timestamp: Utc::now(),
+            summary: "Large refactoring".to_string(),
+            files_changed: (0..100).map(|i| format!("src/file{}.rs", i)).collect(),
+            tags: (0..50).map(|i| format!("tag{}", i)).collect(),
+            content: "Extensive work".to_string(),
+            embedding: (0..768).map(|i| i as f32 / 768.0).collect(),
+        };
+
+        assert_eq!(memory.files_changed.len(), 100);
+        assert_eq!(memory.tags.len(), 50);
+        assert_eq!(memory.embedding.len(), 768);
+    }
+
+    // ===== Additional MemoryStore Tests =====
+
+    #[tokio::test]
+    async fn test_clear_all() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let generator = EmbeddingGenerator::new();
+        let store = MemoryStore::open(temp_file.path(), generator).unwrap();
+
+        // Store multiple memories
+        for _ in 0..5 {
+            store.store(&create_test_memory()).await.unwrap();
+        }
+
+        assert_eq!(store.count().unwrap(), 5);
+
+        // Clear all
+        let cleared = store.clear_all().unwrap();
+        assert_eq!(cleared, 5);
+        assert_eq!(store.count().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_nonexistent() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let generator = EmbeddingGenerator::new();
+        let store = MemoryStore::open(temp_file.path(), generator).unwrap();
+
+        let random_id = Uuid::new_v4();
+        let result = store.get(random_id).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_delete_nonexistent() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let generator = EmbeddingGenerator::new();
+        let store = MemoryStore::open(temp_file.path(), generator).unwrap();
+
+        let random_id = Uuid::new_v4();
+        // Deleting nonexistent should succeed without error
+        let result = store.delete(random_id);
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_update_existing_memory() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let generator = EmbeddingGenerator::new();
+        let store = MemoryStore::open(temp_file.path(), generator).unwrap();
+
+        let memory = create_test_memory();
+        let id = memory.id;
+
+        // Store original
+        store.store(&memory).await.unwrap();
+
+        // Update with same ID
+        let mut updated = memory.clone();
+        updated.summary = "Updated summary".to_string();
+        store.store(&updated).await.unwrap();
+
+        // Count should still be 1 (update, not insert)
+        assert_eq!(store.count().unwrap(), 1);
+
+        // Retrieved should have updated summary
+        let retrieved = store.get(id).unwrap().unwrap();
+        assert_eq!(retrieved.summary, "Updated summary");
+    }
+
+    #[tokio::test]
+    async fn test_keyword_search_empty_result() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let generator = EmbeddingGenerator::new();
+        let store = MemoryStore::open(temp_file.path(), generator).unwrap();
+
+        let memory = create_test_memory();
+        store.store(&memory).await.unwrap();
+
+        // Search for keyword not in any memory
+        let results = store.search_keywords("zzz_not_found_zzz", 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_keyword_search_in_content() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let generator = EmbeddingGenerator::new();
+        let store = MemoryStore::open(temp_file.path(), generator).unwrap();
+
+        let mut memory = create_test_memory();
+        memory.summary = "Simple summary".to_string();
+        memory.content = "This conversation discusses UNIQUE_KEYWORD in detail".to_string();
+        store.store(&memory).await.unwrap();
+
+        // Search for keyword in content (not in summary)
+        let results = store.search_keywords("UNIQUE_KEYWORD", 10).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_recent_empty_store() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let generator = EmbeddingGenerator::new();
+        let store = MemoryStore::open(temp_file.path(), generator).unwrap();
+
+        let recent = store.get_recent(5).unwrap();
+        assert!(recent.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_recent_more_than_available() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let generator = EmbeddingGenerator::new();
+        let store = MemoryStore::open(temp_file.path(), generator).unwrap();
+
+        // Store 2 memories
+        store.store(&create_test_memory()).await.unwrap();
+        store.store(&create_test_memory()).await.unwrap();
+
+        // Request more than available
+        let recent = store.get_recent(10).unwrap();
+        assert_eq!(recent.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_keyword_search_limit() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let generator = EmbeddingGenerator::new();
+        let store = MemoryStore::open(temp_file.path(), generator).unwrap();
+
+        // Store 5 memories with same keyword
+        for i in 0..5 {
+            let mut memory = create_test_memory();
+            memory.summary = format!("Authentication feature {}", i);
+            store.store(&memory).await.unwrap();
+        }
+
+        // Search with limit of 2
+        let results = store.search_keywords("Authentication", 2).unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    // ===== Timestamp Handling Tests =====
+
+    #[test]
+    fn test_timestamp_roundtrip() {
+        let original = Utc::now();
+        let rfc3339 = original.to_rfc3339();
+        let parsed = DateTime::parse_from_rfc3339(&rfc3339)
+            .unwrap()
+            .with_timezone(&Utc);
+
+        // Should preserve at least second precision
+        assert_eq!(original.timestamp(), parsed.timestamp());
+    }
+
+    // ===== Files and Tags Serialization Tests =====
+
+    #[test]
+    fn test_files_changed_serialization() {
+        let files = vec!["a.rs".to_string(), "b.rs".to_string()];
+        let json = serde_json::to_string(&files).unwrap();
+        let parsed: Vec<String> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, files);
+    }
+
+    #[test]
+    fn test_tags_serialization() {
+        let tags = vec!["tag1".to_string(), "tag2".to_string()];
+        let json = serde_json::to_string(&tags).unwrap();
+        let parsed: Vec<String> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, tags);
+    }
+
+    #[test]
+    fn test_embedding_serialization() {
+        let embedding: Vec<f32> = vec![0.1, 0.2, 0.3, 0.4, 0.5];
+        let json = serde_json::to_string(&embedding).unwrap();
+        let parsed: Vec<f32> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, embedding);
+    }
+
+    // ===== Unicode and Special Characters Tests =====
+
+    #[tokio::test]
+    async fn test_unicode_content() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let generator = EmbeddingGenerator::new();
+        let store = MemoryStore::open(temp_file.path(), generator).unwrap();
+
+        let mut memory = create_test_memory();
+        memory.summary = "日本語テスト 🚀 émojis".to_string();
+        memory.content = "Content with unicode: 你好世界".to_string();
+
+        let id = memory.id;
+        store.store(&memory).await.unwrap();
+
+        let retrieved = store.get(id).unwrap().unwrap();
+        assert_eq!(retrieved.summary, "日本語テスト 🚀 émojis");
+        assert!(retrieved.content.contains("你好世界"));
+    }
+
+    #[tokio::test]
+    async fn test_special_sql_characters() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let generator = EmbeddingGenerator::new();
+        let store = MemoryStore::open(temp_file.path(), generator).unwrap();
+
+        let mut memory = create_test_memory();
+        memory.summary = "Test with 'quotes' and \"double quotes\"".to_string();
+        memory.content = "Content with % and _ and other SQL chars".to_string();
+
+        let id = memory.id;
+        store.store(&memory).await.unwrap();
+
+        let retrieved = store.get(id).unwrap().unwrap();
+        assert!(retrieved.summary.contains("'quotes'"));
+        assert!(retrieved.content.contains("%"));
+    }
 }

@@ -232,4 +232,113 @@ mod tests {
         assert_eq!(cb.failure_count(), 5);
         assert_eq!(cb.state(), CircuitState::Open);
     }
+
+    // ==================== Edge Case Tests ====================
+
+    #[test]
+    fn test_circuit_breaker_single_failure_threshold() {
+        // Circuit with threshold of 1
+        let cb = CircuitBreaker::new(1, 5);
+        assert_eq!(cb.state(), CircuitState::Closed);
+
+        cb.record_failure();
+        assert_eq!(cb.state(), CircuitState::Open);
+    }
+
+    #[test]
+    fn test_circuit_breaker_success_in_closed_state() {
+        let cb = CircuitBreaker::new(3, 5);
+        cb.record_failure();
+        assert_eq!(cb.failure_count(), 1);
+
+        // Success resets even partial failures
+        cb.record_success();
+        assert_eq!(cb.failure_count(), 0);
+        assert_eq!(cb.state(), CircuitState::Closed);
+    }
+
+    #[test]
+    fn test_circuit_breaker_success_when_closed() {
+        let cb = CircuitBreaker::new(3, 5);
+        // Success in closed state with no failures
+        cb.record_success();
+        assert_eq!(cb.failure_count(), 0);
+        assert_eq!(cb.state(), CircuitState::Closed);
+    }
+
+    #[test]
+    fn test_circuit_breaker_multiple_resets() {
+        let cb = CircuitBreaker::new(3, 5);
+
+        // Open circuit
+        cb.record_failure();
+        cb.record_failure();
+        cb.record_failure();
+        assert_eq!(cb.state(), CircuitState::Open);
+
+        // Reset multiple times
+        cb.reset();
+        cb.reset();
+        assert_eq!(cb.state(), CircuitState::Closed);
+        assert_eq!(cb.failure_count(), 0);
+    }
+
+    #[test]
+    fn test_circuit_breaker_continuous_failures() {
+        let cb = CircuitBreaker::new(3, 5);
+
+        // More failures than threshold
+        for _ in 0..10 {
+            cb.record_failure();
+        }
+
+        assert_eq!(cb.failure_count(), 10);
+        assert_eq!(cb.state(), CircuitState::Open);
+    }
+
+    #[test]
+    fn test_circuit_breaker_zero_cooldown() {
+        let cb = CircuitBreaker::new(2, 0);
+
+        cb.record_failure();
+        cb.record_failure();
+        // With 0 cooldown, immediately goes to HalfOpen
+        assert_eq!(cb.state(), CircuitState::HalfOpen);
+    }
+
+    #[test]
+    fn test_circuit_state_debug() {
+        assert_eq!(format!("{:?}", CircuitState::Closed), "Closed");
+        assert_eq!(format!("{:?}", CircuitState::Open), "Open");
+        assert_eq!(format!("{:?}", CircuitState::HalfOpen), "HalfOpen");
+    }
+
+    #[test]
+    fn test_circuit_state_clone() {
+        let state = CircuitState::Open;
+        let cloned = state;
+        assert_eq!(state, cloned);
+    }
+
+    #[test]
+    fn test_circuit_state_equality() {
+        assert_eq!(CircuitState::Closed, CircuitState::Closed);
+        assert_ne!(CircuitState::Closed, CircuitState::Open);
+        assert_ne!(CircuitState::Open, CircuitState::HalfOpen);
+    }
+
+    #[test]
+    fn test_circuit_breaker_large_max_failures() {
+        let cb = CircuitBreaker::new(1000, 5);
+
+        for i in 1..=999 {
+            cb.record_failure();
+            assert_eq!(cb.failure_count(), i);
+            assert_eq!(cb.state(), CircuitState::Closed);
+        }
+
+        cb.record_failure();
+        assert_eq!(cb.failure_count(), 1000);
+        assert_eq!(cb.state(), CircuitState::Open);
+    }
 }

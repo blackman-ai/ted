@@ -460,3 +460,244 @@ fn get_word_at_end(s: &str) -> &str {
     }
     &s[start..]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Tests for get_word_at_end
+    #[test]
+    fn test_get_word_at_end_simple() {
+        assert_eq!(get_word_at_end("hello world"), "world");
+    }
+
+    #[test]
+    fn test_get_word_at_end_with_dot() {
+        assert_eq!(get_word_at_end("foo.bar"), "bar");
+    }
+
+    #[test]
+    fn test_get_word_at_end_empty() {
+        assert_eq!(get_word_at_end(""), "");
+    }
+
+    #[test]
+    fn test_get_word_at_end_only_word() {
+        assert_eq!(get_word_at_end("hello"), "hello");
+    }
+
+    #[test]
+    fn test_get_word_at_end_with_underscore() {
+        assert_eq!(get_word_at_end("foo_bar"), "foo_bar");
+    }
+
+    #[test]
+    fn test_get_word_at_end_with_dollar() {
+        assert_eq!(get_word_at_end("$variable"), "$variable");
+    }
+
+    #[test]
+    fn test_get_word_at_end_ends_with_space() {
+        assert_eq!(get_word_at_end("hello "), "");
+    }
+
+    // Tests for extract_js_identifiers
+    #[test]
+    fn test_extract_js_identifiers_simple() {
+        let content = "const foo = bar;";
+        let idents = extract_js_identifiers(content);
+        assert!(idents.contains(&"const".to_string()));
+        assert!(idents.contains(&"foo".to_string()));
+        assert!(idents.contains(&"bar".to_string()));
+    }
+
+    #[test]
+    fn test_extract_js_identifiers_with_numbers() {
+        let content = "let count123 = 42;";
+        let idents = extract_js_identifiers(content);
+        assert!(idents.contains(&"let".to_string()));
+        assert!(idents.contains(&"count123".to_string()));
+        // 42 should not be included (starts with digit)
+        assert!(!idents.contains(&"42".to_string()));
+    }
+
+    #[test]
+    fn test_extract_js_identifiers_with_dollar() {
+        let content = "const $elem = document.getElementById";
+        let idents = extract_js_identifiers(content);
+        assert!(idents.contains(&"$elem".to_string()));
+    }
+
+    #[test]
+    fn test_extract_js_identifiers_no_duplicates() {
+        let content = "foo foo foo bar";
+        let idents = extract_js_identifiers(content);
+        let foo_count = idents.iter().filter(|&x| x == "foo").count();
+        assert_eq!(foo_count, 1);
+    }
+
+    // Tests for extract_rust_identifiers
+    #[test]
+    fn test_extract_rust_identifiers_simple() {
+        let content = "let mut foo = bar;";
+        let idents = extract_rust_identifiers(content);
+        assert!(idents.contains(&"let".to_string()));
+        assert!(idents.contains(&"mut".to_string()));
+        assert!(idents.contains(&"foo".to_string()));
+        assert!(idents.contains(&"bar".to_string()));
+    }
+
+    #[test]
+    fn test_extract_rust_identifiers_with_underscore() {
+        let content = "fn my_function(arg_name: i32)";
+        let idents = extract_rust_identifiers(content);
+        assert!(idents.contains(&"my_function".to_string()));
+        assert!(idents.contains(&"arg_name".to_string()));
+        assert!(idents.contains(&"i32".to_string()));
+    }
+
+    // Tests for extract_python_identifiers
+    #[test]
+    fn test_extract_python_identifiers_simple() {
+        let content = "def my_func(arg):\n    return arg";
+        let idents = extract_python_identifiers(content);
+        assert!(idents.contains(&"def".to_string()));
+        assert!(idents.contains(&"my_func".to_string()));
+        assert!(idents.contains(&"arg".to_string()));
+        assert!(idents.contains(&"return".to_string()));
+    }
+
+    // Tests for snippets
+    #[test]
+    fn test_js_snippets_not_empty() {
+        let snippets = js_snippets();
+        assert!(!snippets.is_empty());
+    }
+
+    #[test]
+    fn test_js_snippets_contains_function() {
+        let snippets = js_snippets();
+        assert!(snippets.iter().any(|s| s.label == "function"));
+    }
+
+    #[test]
+    fn test_js_snippets_contains_async_function() {
+        let snippets = js_snippets();
+        assert!(snippets.iter().any(|s| s.label == "async function"));
+    }
+
+    #[test]
+    fn test_js_snippets_have_insert_text() {
+        let snippets = js_snippets();
+        for snippet in &snippets {
+            assert!(snippet.insert_text.is_some());
+        }
+    }
+
+    #[test]
+    fn test_js_snippets_have_snippet_kind() {
+        let snippets = js_snippets();
+        for snippet in &snippets {
+            assert_eq!(snippet.kind, Some(CompletionItemKind::SNIPPET));
+        }
+    }
+
+    #[test]
+    fn test_rust_snippets_not_empty() {
+        let snippets = rust_snippets();
+        assert!(!snippets.is_empty());
+    }
+
+    #[test]
+    fn test_rust_snippets_contains_fn() {
+        let snippets = rust_snippets();
+        assert!(snippets.iter().any(|s| s.label == "fn"));
+    }
+
+    #[test]
+    fn test_rust_snippets_contains_struct() {
+        let snippets = rust_snippets();
+        assert!(snippets.iter().any(|s| s.label == "struct"));
+    }
+
+    #[test]
+    fn test_rust_snippets_contains_impl() {
+        let snippets = rust_snippets();
+        assert!(snippets.iter().any(|s| s.label == "impl"));
+    }
+
+    #[test]
+    fn test_rust_snippets_contains_match() {
+        let snippets = rust_snippets();
+        assert!(snippets.iter().any(|s| s.label == "match"));
+    }
+
+    #[test]
+    fn test_python_snippets_not_empty() {
+        let snippets = python_snippets();
+        assert!(!snippets.is_empty());
+    }
+
+    #[test]
+    fn test_python_snippets_contains_def() {
+        let snippets = python_snippets();
+        assert!(snippets.iter().any(|s| s.label == "def"));
+    }
+
+    #[test]
+    fn test_python_snippets_contains_class() {
+        let snippets = python_snippets();
+        assert!(snippets.iter().any(|s| s.label == "class"));
+    }
+
+    #[test]
+    fn test_python_snippets_contains_for() {
+        let snippets = python_snippets();
+        assert!(snippets.iter().any(|s| s.label == "for"));
+    }
+
+    #[test]
+    fn test_python_snippets_have_insert_text() {
+        let snippets = python_snippets();
+        for snippet in &snippets {
+            assert!(snippet.insert_text.is_some());
+        }
+    }
+
+    // Tests for generic_completions
+    #[test]
+    fn test_generic_completions_filters_by_prefix() {
+        let result = generic_completions("hel", "hello world help helper").unwrap();
+        assert!(result.iter().any(|c| c.label == "hello"));
+        assert!(result.iter().any(|c| c.label == "help"));
+        assert!(result.iter().any(|c| c.label == "helper"));
+        assert!(!result.iter().any(|c| c.label == "world"));
+    }
+
+    #[test]
+    fn test_generic_completions_short_prefix_returns_empty() {
+        let result = generic_completions("h", "hello world").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_generic_completions_empty_prefix_returns_empty() {
+        let result = generic_completions("", "hello world").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_generic_completions_no_duplicates() {
+        let result = generic_completions("foo", "foobar foobar foobaz").unwrap();
+        let foobar_count = result.iter().filter(|c| c.label == "foobar").count();
+        assert_eq!(foobar_count, 1);
+    }
+
+    #[test]
+    fn test_generic_completions_text_kind() {
+        let result = generic_completions("hel", "hello help").unwrap();
+        for item in &result {
+            assert_eq!(item.kind, Some(CompletionItemKind::TEXT));
+        }
+    }
+}

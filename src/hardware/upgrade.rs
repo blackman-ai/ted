@@ -190,20 +190,87 @@ impl SystemProfile {
 mod tests {
     use super::*;
 
+    // Helper to create test profiles
+    fn make_profile(tier: HardwareTier, ram: usize, has_ssd: bool, is_sbc: bool) -> SystemProfile {
+        SystemProfile {
+            ram_gb: ram,
+            vram_gb: None,
+            cpu_cores: 4,
+            cpu_year: Some(2020),
+            cpu_brand: "Test CPU".to_string(),
+            has_ssd,
+            architecture: super::super::detector::CpuArchitecture::X86_64,
+            is_sbc,
+            tier,
+        }
+    }
+
+    // ==================== Upgrade struct tests ====================
+
+    #[test]
+    fn test_upgrade_struct_clone() {
+        let upgrade = Upgrade {
+            component: "RAM".to_string(),
+            current: "8GB".to_string(),
+            recommended: "16GB".to_string(),
+            estimated_cost: "$50".to_string(),
+            performance_gain: "2x faster".to_string(),
+            priority: 1,
+        };
+        let cloned = upgrade.clone();
+        assert_eq!(cloned.component, "RAM");
+        assert_eq!(cloned.priority, 1);
+    }
+
+    #[test]
+    fn test_upgrade_struct_serialization() {
+        let upgrade = Upgrade {
+            component: "Storage".to_string(),
+            current: "HDD".to_string(),
+            recommended: "SSD".to_string(),
+            estimated_cost: "$30".to_string(),
+            performance_gain: "10x faster".to_string(),
+            priority: 1,
+        };
+        let json = serde_json::to_string(&upgrade).unwrap();
+        assert!(json.contains("\"component\":\"Storage\""));
+        assert!(json.contains("\"priority\":1"));
+    }
+
+    #[test]
+    fn test_upgrade_struct_deserialization() {
+        let json = r#"{
+            "component": "RAM",
+            "current": "8GB",
+            "recommended": "16GB",
+            "estimated_cost": "$50",
+            "performance_gain": "Faster",
+            "priority": 2
+        }"#;
+        let upgrade: Upgrade = serde_json::from_str(json).unwrap();
+        assert_eq!(upgrade.component, "RAM");
+        assert_eq!(upgrade.priority, 2);
+    }
+
+    #[test]
+    fn test_upgrade_struct_debug() {
+        let upgrade = Upgrade {
+            component: "Test".to_string(),
+            current: "Old".to_string(),
+            recommended: "New".to_string(),
+            estimated_cost: "$0".to_string(),
+            performance_gain: "Better".to_string(),
+            priority: 1,
+        };
+        let debug_str = format!("{:?}", upgrade);
+        assert!(debug_str.contains("Test"));
+    }
+
+    // ==================== get_upgrade_suggestions tests ====================
+
     #[test]
     fn test_upgrade_suggestions_ancient_no_ssd() {
-        let profile = SystemProfile {
-            ram_gb: 8,
-            vram_gb: None,
-            cpu_cores: 2,
-            cpu_year: Some(2010),
-            cpu_brand: "Intel Core 2 Duo".to_string(),
-            has_ssd: false,
-            architecture: super::super::detector::CpuArchitecture::X86_64,
-            is_sbc: false,
-            tier: HardwareTier::Ancient,
-        };
-
+        let profile = make_profile(HardwareTier::Ancient, 8, false, false);
         let suggestions = profile.get_upgrade_suggestions();
         assert!(!suggestions.is_empty());
 
@@ -219,18 +286,67 @@ mod tests {
     }
 
     #[test]
+    fn test_upgrade_suggestions_ancient_with_ssd() {
+        let profile = make_profile(HardwareTier::Ancient, 8, true, false);
+        let suggestions = profile.get_upgrade_suggestions();
+
+        // Should NOT suggest SSD
+        let ssd_suggestion = suggestions.iter().find(|u| u.component == "Storage");
+        assert!(ssd_suggestion.is_none());
+
+        // RAM should now be priority 1
+        let ram_suggestion = suggestions.iter().find(|u| u.component == "RAM");
+        assert!(ram_suggestion.is_some());
+        assert_eq!(ram_suggestion.unwrap().priority, 1);
+    }
+
+    #[test]
+    fn test_upgrade_suggestions_tiny_tier() {
+        let profile = make_profile(HardwareTier::Tiny, 8, true, false);
+        let suggestions = profile.get_upgrade_suggestions();
+
+        // Should suggest RAM upgrade
+        let ram_suggestion = suggestions.iter().find(|u| u.component == "RAM");
+        assert!(ram_suggestion.is_some());
+        assert!(ram_suggestion.unwrap().recommended.contains("16GB"));
+    }
+
+    #[test]
+    fn test_upgrade_suggestions_tiny_with_16gb() {
+        let profile = make_profile(HardwareTier::Tiny, 16, true, false);
+        let suggestions = profile.get_upgrade_suggestions();
+
+        // Should NOT suggest RAM upgrade
+        let ram_suggestion = suggestions.iter().find(|u| u.component == "RAM");
+        assert!(ram_suggestion.is_none());
+    }
+
+    #[test]
+    fn test_upgrade_suggestions_small_tier() {
+        let profile = make_profile(HardwareTier::Small, 16, true, false);
+        let suggestions = profile.get_upgrade_suggestions();
+
+        // Should suggest RAM upgrade to 32GB
+        let ram_suggestion = suggestions.iter().find(|u| u.component == "RAM");
+        assert!(ram_suggestion.is_some());
+        assert!(ram_suggestion.unwrap().recommended.contains("32GB"));
+    }
+
+    #[test]
+    fn test_upgrade_suggestions_small_with_32gb() {
+        let profile = make_profile(HardwareTier::Small, 32, true, false);
+        let suggestions = profile.get_upgrade_suggestions();
+
+        // Should NOT suggest RAM upgrade
+        let ram_suggestion = suggestions.iter().find(|u| u.component == "RAM");
+        assert!(ram_suggestion.is_none());
+    }
+
+    #[test]
     fn test_upgrade_suggestions_raspberry_pi() {
-        let profile = SystemProfile {
-            ram_gb: 8,
-            vram_gb: None,
-            cpu_cores: 4,
-            cpu_year: Some(2020),
-            cpu_brand: "BCM2711".to_string(),
-            has_ssd: false,
-            architecture: super::super::detector::CpuArchitecture::ARM64,
-            is_sbc: true,
-            tier: HardwareTier::UltraTiny,
-        };
+        let mut profile = make_profile(HardwareTier::UltraTiny, 8, false, true);
+        profile.architecture = super::super::detector::CpuArchitecture::ARM64;
+        profile.cpu_brand = "BCM2711".to_string();
 
         let suggestions = profile.get_upgrade_suggestions();
 
@@ -245,60 +361,222 @@ mod tests {
     }
 
     #[test]
-    fn test_upgrade_suggestions_modern_system() {
-        let profile = SystemProfile {
-            ram_gb: 32,
-            vram_gb: Some(8),
-            cpu_cores: 8,
-            cpu_year: Some(2021),
-            cpu_brand: "Apple M1 Pro".to_string(),
-            has_ssd: true,
-            architecture: super::super::detector::CpuArchitecture::ARM64,
-            is_sbc: false,
-            tier: HardwareTier::Large,
-        };
+    fn test_upgrade_suggestions_raspberry_pi_with_ssd() {
+        let mut profile = make_profile(HardwareTier::UltraTiny, 8, true, true);
+        profile.architecture = super::super::detector::CpuArchitecture::ARM64;
 
         let suggestions = profile.get_upgrade_suggestions();
-        // Modern system should have minimal or no upgrade suggestions
-        assert!(suggestions.is_empty() || suggestions.len() == 1); // Might have tier upgrade suggestion
+
+        // Should NOT suggest SSD
+        let ssd_suggestion = suggestions.iter().find(|u| u.component == "Storage");
+        assert!(ssd_suggestion.is_none());
+
+        // Should still suggest active cooling
+        let cooling_suggestion = suggestions.iter().find(|u| u.component == "Cooling");
+        assert!(cooling_suggestion.is_some());
     }
 
     #[test]
-    fn test_get_next_tier() {
-        let profile = SystemProfile {
-            ram_gb: 8,
-            vram_gb: None,
-            cpu_cores: 2,
-            cpu_year: Some(2010),
-            cpu_brand: "Test CPU".to_string(),
-            has_ssd: false,
-            architecture: super::super::detector::CpuArchitecture::X86_64,
-            is_sbc: false,
-            tier: HardwareTier::Ancient,
-        };
+    fn test_upgrade_suggestions_medium_tier() {
+        let profile = make_profile(HardwareTier::Medium, 32, true, false);
+        let suggestions = profile.get_upgrade_suggestions();
 
+        // Medium tier should only have tier upgrade suggestion
+        assert!(suggestions.len() <= 1);
+        if !suggestions.is_empty() {
+            assert_eq!(suggestions[0].component, "Complete Upgrade");
+        }
+    }
+
+    #[test]
+    fn test_upgrade_suggestions_large_tier() {
+        let profile = make_profile(HardwareTier::Large, 64, true, false);
+        let suggestions = profile.get_upgrade_suggestions();
+
+        // Large tier should have no suggestions
+        assert!(suggestions.is_empty());
+    }
+
+    #[test]
+    fn test_upgrade_suggestions_cloud_tier() {
+        let profile = make_profile(HardwareTier::Cloud, 128, true, false);
+        let suggestions = profile.get_upgrade_suggestions();
+
+        // Cloud tier should have no suggestions
+        assert!(suggestions.is_empty());
+    }
+
+    #[test]
+    fn test_upgrade_suggestions_includes_tier_upgrade() {
+        let profile = make_profile(HardwareTier::Small, 16, true, false);
+        let suggestions = profile.get_upgrade_suggestions();
+
+        // Should include tier upgrade suggestion
+        let tier_upgrade = suggestions
+            .iter()
+            .find(|u| u.component == "Complete Upgrade");
+        assert!(tier_upgrade.is_some());
+        assert_eq!(tier_upgrade.unwrap().priority, 3);
+    }
+
+    // ==================== get_next_tier tests ====================
+
+    #[test]
+    fn test_get_next_tier_ultra_tiny() {
+        let profile = make_profile(HardwareTier::UltraTiny, 4, false, false);
+        assert_eq!(profile.get_next_tier(), Some(HardwareTier::Ancient));
+    }
+
+    #[test]
+    fn test_get_next_tier_ancient() {
+        let profile = make_profile(HardwareTier::Ancient, 8, false, false);
         assert_eq!(profile.get_next_tier(), Some(HardwareTier::Tiny));
     }
 
     #[test]
-    fn test_upgrade_message() {
-        let profile = SystemProfile {
-            ram_gb: 8,
-            vram_gb: None,
-            cpu_cores: 2,
-            cpu_year: Some(2010),
-            cpu_brand: "Intel Core 2 Duo".to_string(),
-            has_ssd: false,
-            architecture: super::super::detector::CpuArchitecture::X86_64,
-            is_sbc: false,
-            tier: HardwareTier::Ancient,
-        };
+    fn test_get_next_tier_tiny() {
+        let profile = make_profile(HardwareTier::Tiny, 8, true, false);
+        assert_eq!(profile.get_next_tier(), Some(HardwareTier::Small));
+    }
 
+    #[test]
+    fn test_get_next_tier_small() {
+        let profile = make_profile(HardwareTier::Small, 16, true, false);
+        assert_eq!(profile.get_next_tier(), Some(HardwareTier::Medium));
+    }
+
+    #[test]
+    fn test_get_next_tier_medium() {
+        let profile = make_profile(HardwareTier::Medium, 32, true, false);
+        assert_eq!(profile.get_next_tier(), Some(HardwareTier::Large));
+    }
+
+    #[test]
+    fn test_get_next_tier_large() {
+        let profile = make_profile(HardwareTier::Large, 64, true, false);
+        assert_eq!(profile.get_next_tier(), None);
+    }
+
+    #[test]
+    fn test_get_next_tier_cloud() {
+        let profile = make_profile(HardwareTier::Cloud, 128, true, false);
+        assert_eq!(profile.get_next_tier(), None);
+    }
+
+    // ==================== estimate_tier_upgrade_cost tests ====================
+
+    #[test]
+    fn test_estimate_cost_ultra_tiny_sbc() {
+        let profile = make_profile(HardwareTier::UltraTiny, 4, false, true);
+        let cost = profile.estimate_tier_upgrade_cost();
+        assert!(cost.contains("Dell OptiPlex"));
+    }
+
+    #[test]
+    fn test_estimate_cost_ultra_tiny_non_sbc() {
+        let profile = make_profile(HardwareTier::UltraTiny, 4, false, false);
+        let cost = profile.estimate_tier_upgrade_cost();
+        assert!(cost.contains("RAM + SSD"));
+    }
+
+    #[test]
+    fn test_estimate_cost_ancient_with_ssd() {
+        let profile = make_profile(HardwareTier::Ancient, 8, true, false);
+        let cost = profile.estimate_tier_upgrade_cost();
+        assert!(cost.contains("RAM upgrade"));
+    }
+
+    #[test]
+    fn test_estimate_cost_ancient_without_ssd() {
+        let profile = make_profile(HardwareTier::Ancient, 8, false, false);
+        let cost = profile.estimate_tier_upgrade_cost();
+        assert!(cost.contains("SSD + RAM"));
+    }
+
+    #[test]
+    fn test_estimate_cost_tiny() {
+        let profile = make_profile(HardwareTier::Tiny, 8, true, false);
+        let cost = profile.estimate_tier_upgrade_cost();
+        assert!(cost.contains("laptop"));
+    }
+
+    #[test]
+    fn test_estimate_cost_small() {
+        let profile = make_profile(HardwareTier::Small, 16, true, false);
+        let cost = profile.estimate_tier_upgrade_cost();
+        assert!(cost.contains("modern laptop"));
+    }
+
+    #[test]
+    fn test_estimate_cost_medium() {
+        let profile = make_profile(HardwareTier::Medium, 32, true, false);
+        let cost = profile.estimate_tier_upgrade_cost();
+        assert!(cost.contains("workstation"));
+    }
+
+    #[test]
+    fn test_estimate_cost_large() {
+        let profile = make_profile(HardwareTier::Large, 64, true, false);
+        let cost = profile.estimate_tier_upgrade_cost();
+        assert!(cost.contains("No upgrade needed"));
+    }
+
+    // ==================== upgrade_message tests ====================
+
+    #[test]
+    fn test_upgrade_message_ancient() {
+        let profile = make_profile(HardwareTier::Ancient, 8, false, false);
         let message = profile.upgrade_message();
         assert!(message.is_some());
 
         let msg = message.unwrap();
         assert!(msg.contains("Upgrade Suggestions"));
         assert!(msg.contains("Priority"));
+        assert!(msg.contains("8GB RAM"));
+        assert!(msg.contains("HDD"));
+    }
+
+    #[test]
+    fn test_upgrade_message_large() {
+        let profile = make_profile(HardwareTier::Large, 64, true, false);
+        let message = profile.upgrade_message();
+        // Large tier has no suggestions
+        assert!(message.is_none());
+    }
+
+    #[test]
+    fn test_upgrade_message_format() {
+        let profile = make_profile(HardwareTier::Tiny, 8, false, false);
+        let message = profile.upgrade_message();
+        assert!(message.is_some());
+
+        let msg = message.unwrap();
+        assert!(msg.contains("▸ Current:"));
+        assert!(msg.contains("▸ Recommended:"));
+        assert!(msg.contains("▸ Cost:"));
+        assert!(msg.contains("▸ Gain:"));
+    }
+
+    #[test]
+    fn test_upgrade_message_limits_to_three() {
+        let profile = make_profile(HardwareTier::Ancient, 4, false, false);
+        let message = profile.upgrade_message();
+        assert!(message.is_some());
+
+        let msg = message.unwrap();
+        // Should have Priority 1, 2, 3 but not 4
+        assert!(msg.contains("Priority 1:"));
+        // May or may not have 2 and 3 depending on suggestions
+    }
+
+    #[test]
+    fn test_upgrade_message_shows_ssd_status() {
+        let profile_hdd = make_profile(HardwareTier::Small, 16, false, false);
+        let msg_hdd = profile_hdd.upgrade_message().unwrap();
+        assert!(msg_hdd.contains("HDD"));
+
+        let profile_ssd = make_profile(HardwareTier::Small, 16, true, false);
+        let msg_ssd = profile_ssd.upgrade_message().unwrap();
+        assert!(msg_ssd.contains("SSD"));
     }
 }

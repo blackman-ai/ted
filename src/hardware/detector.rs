@@ -463,4 +463,623 @@ mod tests {
         assert_eq!(profile.ram_gb, parsed.ram_gb);
         assert_eq!(profile.tier, parsed.tier);
     }
+
+    // ===== Additional CpuArchitecture Tests =====
+
+    #[test]
+    fn test_cpu_architecture_variants() {
+        // Test all variants are distinct
+        assert_ne!(CpuArchitecture::X86_64, CpuArchitecture::ARM64);
+        assert_ne!(CpuArchitecture::ARM64, CpuArchitecture::ARM32);
+        assert_ne!(CpuArchitecture::ARM32, CpuArchitecture::Other);
+    }
+
+    #[test]
+    fn test_cpu_architecture_equality() {
+        assert_eq!(CpuArchitecture::X86_64, CpuArchitecture::X86_64);
+        assert_eq!(CpuArchitecture::ARM64, CpuArchitecture::ARM64);
+        assert_eq!(CpuArchitecture::ARM32, CpuArchitecture::ARM32);
+        assert_eq!(CpuArchitecture::Other, CpuArchitecture::Other);
+    }
+
+    #[test]
+    fn test_cpu_architecture_clone() {
+        let arch = CpuArchitecture::X86_64;
+        let cloned = arch;
+        assert_eq!(arch, cloned);
+    }
+
+    #[test]
+    fn test_cpu_architecture_debug() {
+        let arch = CpuArchitecture::ARM64;
+        let debug = format!("{:?}", arch);
+        assert!(debug.contains("ARM64"));
+    }
+
+    #[test]
+    fn test_cpu_architecture_serialization() {
+        let arch = CpuArchitecture::X86_64;
+        let json = serde_json::to_string(&arch).unwrap();
+        let parsed: CpuArchitecture = serde_json::from_str(&json).unwrap();
+        assert_eq!(arch, parsed);
+    }
+
+    // ===== Additional CPU Year Estimation Tests =====
+
+    #[test]
+    fn test_estimate_cpu_year_intel_12th_gen() {
+        assert_eq!(
+            SystemProfile::estimate_cpu_year("Intel 12th Gen Core i7-12700K"),
+            Some(2022)
+        );
+        assert_eq!(
+            SystemProfile::estimate_cpu_year("Intel Core i9-12900K"),
+            Some(2022)
+        );
+    }
+
+    #[test]
+    fn test_estimate_cpu_year_intel_11th_gen() {
+        assert_eq!(
+            SystemProfile::estimate_cpu_year("Intel 11th Gen Core i9-11900K"),
+            Some(2021)
+        );
+    }
+
+    #[test]
+    fn test_estimate_cpu_year_intel_10th_gen() {
+        assert_eq!(
+            SystemProfile::estimate_cpu_year("Intel Core i9-10900K 10th Gen"),
+            Some(2020)
+        );
+    }
+
+    #[test]
+    fn test_estimate_cpu_year_intel_9th_gen() {
+        assert_eq!(
+            SystemProfile::estimate_cpu_year("Intel Core i9-9900K"),
+            Some(2019)
+        );
+    }
+
+    #[test]
+    fn test_estimate_cpu_year_intel_8th_gen() {
+        assert_eq!(
+            SystemProfile::estimate_cpu_year("Intel Core i7-8700K 8th Gen"),
+            Some(2018)
+        );
+    }
+
+    #[test]
+    fn test_estimate_cpu_year_intel_7th_gen() {
+        assert_eq!(
+            SystemProfile::estimate_cpu_year("Intel Core i7-7700K 7th Gen"),
+            Some(2017)
+        );
+    }
+
+    #[test]
+    fn test_estimate_cpu_year_intel_6th_gen() {
+        assert_eq!(
+            SystemProfile::estimate_cpu_year("Intel Core i7-6700K 6th Gen"),
+            Some(2016)
+        );
+    }
+
+    #[test]
+    fn test_estimate_cpu_year_intel_5th_gen() {
+        assert_eq!(
+            SystemProfile::estimate_cpu_year("Intel Core i7-5775C 5th Gen"),
+            Some(2015)
+        );
+    }
+
+    #[test]
+    fn test_estimate_cpu_year_intel_4th_gen() {
+        assert_eq!(
+            SystemProfile::estimate_cpu_year("Intel Core i7-4790K 4th Gen"),
+            Some(2014)
+        );
+    }
+
+    #[test]
+    fn test_estimate_cpu_year_intel_3rd_gen() {
+        assert_eq!(
+            SystemProfile::estimate_cpu_year("Intel Core i7-3770K 3rd Gen"),
+            Some(2012)
+        );
+    }
+
+    #[test]
+    fn test_estimate_cpu_year_intel_2nd_gen() {
+        assert_eq!(
+            SystemProfile::estimate_cpu_year("Intel Core i7-2600K 2nd Gen"),
+            Some(2011)
+        );
+    }
+
+    #[test]
+    fn test_estimate_cpu_year_intel_core2() {
+        assert_eq!(
+            SystemProfile::estimate_cpu_year("Intel Core 2 Duo E8400"),
+            Some(2008)
+        );
+    }
+
+    #[test]
+    fn test_estimate_cpu_year_amd_ryzen_7900() {
+        assert_eq!(
+            SystemProfile::estimate_cpu_year("AMD Ryzen 9 7900X"),
+            Some(2023)
+        );
+    }
+
+    #[test]
+    fn test_estimate_cpu_year_amd_ryzen_3700() {
+        assert_eq!(
+            SystemProfile::estimate_cpu_year("AMD Ryzen 7 3700X"),
+            Some(2019)
+        );
+    }
+
+    #[test]
+    fn test_estimate_cpu_year_amd_ryzen_2700() {
+        assert_eq!(
+            SystemProfile::estimate_cpu_year("AMD Ryzen 7 2700X"),
+            Some(2018)
+        );
+    }
+
+    #[test]
+    fn test_estimate_cpu_year_amd_ryzen_1700() {
+        assert_eq!(
+            SystemProfile::estimate_cpu_year("AMD Ryzen 7 1700X"),
+            Some(2017)
+        );
+    }
+
+    #[test]
+    fn test_estimate_cpu_year_apple_m2() {
+        assert_eq!(SystemProfile::estimate_cpu_year("Apple M2 Pro"), Some(2022));
+    }
+
+    #[test]
+    fn test_estimate_cpu_year_apple_m3() {
+        assert_eq!(SystemProfile::estimate_cpu_year("Apple M3 Max"), Some(2023));
+    }
+
+    #[test]
+    fn test_estimate_cpu_year_case_insensitive() {
+        assert_eq!(
+            SystemProfile::estimate_cpu_year("INTEL CORE I9-13900K"),
+            Some(2023)
+        );
+        assert_eq!(SystemProfile::estimate_cpu_year("apple m1"), Some(2021));
+    }
+
+    // ===== Additional Determine Tier Tests =====
+
+    #[test]
+    fn test_determine_tier_medium() {
+        assert_eq!(
+            SystemProfile::determine_tier(16, 8, Some(2020), CpuArchitecture::X86_64, false, true),
+            HardwareTier::Medium
+        );
+    }
+
+    #[test]
+    fn test_determine_tier_small() {
+        assert_eq!(
+            SystemProfile::determine_tier(8, 4, Some(2018), CpuArchitecture::X86_64, false, true),
+            HardwareTier::Small
+        );
+    }
+
+    #[test]
+    fn test_determine_tier_tiny() {
+        assert_eq!(
+            SystemProfile::determine_tier(8, 4, Some(2015), CpuArchitecture::X86_64, false, true),
+            HardwareTier::Tiny
+        );
+    }
+
+    #[test]
+    fn test_determine_tier_low_ram() {
+        assert_eq!(
+            SystemProfile::determine_tier(4, 8, Some(2021), CpuArchitecture::X86_64, false, true),
+            HardwareTier::Ancient
+        );
+    }
+
+    #[test]
+    fn test_determine_tier_arm64_with_good_ram() {
+        assert_eq!(
+            SystemProfile::determine_tier(16, 8, Some(2020), CpuArchitecture::ARM64, false, true),
+            HardwareTier::Medium
+        );
+    }
+
+    #[test]
+    fn test_determine_tier_no_cpu_year_large() {
+        assert_eq!(
+            SystemProfile::determine_tier(32, 8, None, CpuArchitecture::X86_64, false, true),
+            HardwareTier::Large
+        );
+    }
+
+    #[test]
+    fn test_determine_tier_no_cpu_year_medium() {
+        assert_eq!(
+            SystemProfile::determine_tier(16, 8, None, CpuArchitecture::X86_64, false, true),
+            HardwareTier::Medium
+        );
+    }
+
+    #[test]
+    fn test_determine_tier_no_cpu_year_small_with_ssd() {
+        assert_eq!(
+            SystemProfile::determine_tier(8, 4, None, CpuArchitecture::X86_64, false, true),
+            HardwareTier::Small
+        );
+    }
+
+    #[test]
+    fn test_determine_tier_no_cpu_year_tiny_without_ssd() {
+        assert_eq!(
+            SystemProfile::determine_tier(8, 4, None, CpuArchitecture::X86_64, false, false),
+            HardwareTier::Tiny
+        );
+    }
+
+    #[test]
+    fn test_determine_tier_no_cpu_year_ancient_low_cores() {
+        assert_eq!(
+            SystemProfile::determine_tier(8, 2, None, CpuArchitecture::X86_64, false, true),
+            HardwareTier::Ancient
+        );
+    }
+
+    #[test]
+    fn test_determine_tier_very_old_cpu() {
+        assert_eq!(
+            SystemProfile::determine_tier(16, 8, Some(2014), CpuArchitecture::X86_64, false, true),
+            HardwareTier::Ancient
+        );
+    }
+
+    // ===== SystemProfile Method Tests =====
+
+    #[test]
+    fn test_recommended_model() {
+        let profile = SystemProfile {
+            ram_gb: 32,
+            vram_gb: None,
+            cpu_cores: 8,
+            cpu_year: Some(2021),
+            cpu_brand: "Test CPU".to_string(),
+            has_ssd: true,
+            architecture: CpuArchitecture::X86_64,
+            is_sbc: false,
+            tier: HardwareTier::Large,
+        };
+        let model = profile.recommended_model();
+        assert!(!model.is_empty());
+    }
+
+    #[test]
+    fn test_should_use_streaming() {
+        let large_profile = SystemProfile {
+            ram_gb: 32,
+            vram_gb: None,
+            cpu_cores: 8,
+            cpu_year: Some(2021),
+            cpu_brand: "Test CPU".to_string(),
+            has_ssd: true,
+            architecture: CpuArchitecture::X86_64,
+            is_sbc: false,
+            tier: HardwareTier::Large,
+        };
+        // Large tier doesn't require streaming-only
+        assert!(!large_profile.should_use_streaming());
+
+        let sbc_profile = SystemProfile {
+            ram_gb: 8,
+            vram_gb: None,
+            cpu_cores: 4,
+            cpu_year: None,
+            cpu_brand: "BCM2711".to_string(),
+            has_ssd: false,
+            architecture: CpuArchitecture::ARM64,
+            is_sbc: true,
+            tier: HardwareTier::UltraTiny,
+        };
+        // UltraTiny requires streaming
+        assert!(sbc_profile.should_use_streaming());
+    }
+
+    // ===== SystemProfile Debug and Clone Tests =====
+
+    #[test]
+    fn test_system_profile_debug() {
+        let profile = SystemProfile {
+            ram_gb: 16,
+            vram_gb: None,
+            cpu_cores: 8,
+            cpu_year: Some(2021),
+            cpu_brand: "Test CPU".to_string(),
+            has_ssd: true,
+            architecture: CpuArchitecture::X86_64,
+            is_sbc: false,
+            tier: HardwareTier::Medium,
+        };
+        let debug = format!("{:?}", profile);
+        assert!(debug.contains("SystemProfile"));
+        assert!(debug.contains("16"));
+    }
+
+    #[test]
+    fn test_system_profile_clone() {
+        let profile = SystemProfile {
+            ram_gb: 16,
+            vram_gb: Some(8),
+            cpu_cores: 8,
+            cpu_year: Some(2021),
+            cpu_brand: "Test CPU".to_string(),
+            has_ssd: true,
+            architecture: CpuArchitecture::X86_64,
+            is_sbc: false,
+            tier: HardwareTier::Medium,
+        };
+        let cloned = profile.clone();
+        assert_eq!(cloned.ram_gb, profile.ram_gb);
+        assert_eq!(cloned.vram_gb, profile.vram_gb);
+        assert_eq!(cloned.cpu_cores, profile.cpu_cores);
+        assert_eq!(cloned.tier, profile.tier);
+    }
+
+    #[test]
+    fn test_system_profile_with_vram() {
+        let profile = SystemProfile {
+            ram_gb: 32,
+            vram_gb: Some(24),
+            cpu_cores: 16,
+            cpu_year: Some(2023),
+            cpu_brand: "Test GPU Workstation".to_string(),
+            has_ssd: true,
+            architecture: CpuArchitecture::X86_64,
+            is_sbc: false,
+            tier: HardwareTier::Large,
+        };
+        assert_eq!(profile.vram_gb, Some(24));
+    }
+
+    #[test]
+    fn test_system_profile_without_vram() {
+        let profile = SystemProfile {
+            ram_gb: 16,
+            vram_gb: None,
+            cpu_cores: 8,
+            cpu_year: Some(2020),
+            cpu_brand: "Test CPU".to_string(),
+            has_ssd: true,
+            architecture: CpuArchitecture::X86_64,
+            is_sbc: false,
+            tier: HardwareTier::Medium,
+        };
+        assert!(profile.vram_gb.is_none());
+    }
+
+    #[test]
+    fn test_meets_minimum_requirements_exactly_8gb() {
+        let profile = SystemProfile {
+            ram_gb: 8,
+            vram_gb: None,
+            cpu_cores: 4,
+            cpu_year: Some(2018),
+            cpu_brand: "Test CPU".to_string(),
+            has_ssd: true,
+            architecture: CpuArchitecture::X86_64,
+            is_sbc: false,
+            tier: HardwareTier::Small,
+        };
+        assert!(profile.meets_minimum_requirements().is_ok());
+    }
+
+    #[test]
+    fn test_meets_minimum_requirements_7gb() {
+        let profile = SystemProfile {
+            ram_gb: 7,
+            vram_gb: None,
+            cpu_cores: 4,
+            cpu_year: Some(2018),
+            cpu_brand: "Test CPU".to_string(),
+            has_ssd: true,
+            architecture: CpuArchitecture::X86_64,
+            is_sbc: false,
+            tier: HardwareTier::Ancient,
+        };
+        let result = profile.meets_minimum_requirements();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("8GB"));
+    }
+
+    // ==================== Additional Edge Case Tests ====================
+
+    #[test]
+    fn test_determine_tier_arm32() {
+        // ARM32 with year 2020, 8GB RAM -> Small (year >= 2018 && ram >= 8)
+        assert_eq!(
+            SystemProfile::determine_tier(8, 4, Some(2020), CpuArchitecture::ARM32, false, true),
+            HardwareTier::Small
+        );
+    }
+
+    #[test]
+    fn test_determine_tier_other_architecture() {
+        // Other architecture falls through to RAM/core logic
+        assert_eq!(
+            SystemProfile::determine_tier(32, 8, None, CpuArchitecture::Other, false, true),
+            HardwareTier::Large
+        );
+    }
+
+    #[test]
+    fn test_estimate_cpu_year_empty_string() {
+        assert_eq!(SystemProfile::estimate_cpu_year(""), None);
+    }
+
+    #[test]
+    fn test_estimate_cpu_year_numbers_only() {
+        assert_eq!(SystemProfile::estimate_cpu_year("12345"), None);
+    }
+
+    #[test]
+    fn test_estimate_cpu_year_partial_match() {
+        // Contains "intel" but no generation info
+        assert_eq!(SystemProfile::estimate_cpu_year("Intel Xeon E5"), None);
+    }
+
+    #[test]
+    fn test_estimate_cpu_year_amd_no_ryzen() {
+        // AMD but not Ryzen
+        assert_eq!(SystemProfile::estimate_cpu_year("AMD Athlon 64 X2"), None);
+    }
+
+    #[test]
+    fn test_determine_tier_16gb_few_cores_with_ssd() {
+        // Mid-range RAM, few cores, no year info
+        assert_eq!(
+            SystemProfile::determine_tier(16, 4, None, CpuArchitecture::X86_64, false, true),
+            HardwareTier::Small
+        );
+    }
+
+    #[test]
+    fn test_determine_tier_16gb_few_cores_no_ssd() {
+        // Mid-range RAM, few cores, no SSD
+        assert_eq!(
+            SystemProfile::determine_tier(16, 4, None, CpuArchitecture::X86_64, false, false),
+            HardwareTier::Small
+        );
+    }
+
+    #[test]
+    fn test_determine_tier_exactly_32gb() {
+        // Exactly at Large threshold
+        assert_eq!(
+            SystemProfile::determine_tier(32, 8, None, CpuArchitecture::X86_64, false, true),
+            HardwareTier::Large
+        );
+    }
+
+    #[test]
+    fn test_determine_tier_31gb() {
+        // Just under Large threshold
+        assert_eq!(
+            SystemProfile::determine_tier(31, 8, None, CpuArchitecture::X86_64, false, true),
+            HardwareTier::Medium
+        );
+    }
+
+    #[test]
+    fn test_determine_tier_arm64_low_ram() {
+        // ARM64 but low RAM, falls through to RAM check
+        assert_eq!(
+            SystemProfile::determine_tier(4, 4, Some(2020), CpuArchitecture::ARM64, false, true),
+            HardwareTier::Ancient
+        );
+    }
+
+    #[test]
+    fn test_determine_tier_arm64_medium_ram_non_sbc() {
+        // ARM64 with 15GB falls through ARM64 check (needs >=16GB),
+        // then year >= 2018 && ram >= 8 -> Small
+        assert_eq!(
+            SystemProfile::determine_tier(15, 8, Some(2020), CpuArchitecture::ARM64, false, true),
+            HardwareTier::Small
+        );
+    }
+
+    #[test]
+    fn test_determine_tier_year_2019() {
+        assert_eq!(
+            SystemProfile::determine_tier(8, 4, Some(2019), CpuArchitecture::X86_64, false, true),
+            HardwareTier::Small
+        );
+    }
+
+    #[test]
+    fn test_determine_tier_year_2016() {
+        assert_eq!(
+            SystemProfile::determine_tier(8, 4, Some(2016), CpuArchitecture::X86_64, false, true),
+            HardwareTier::Tiny
+        );
+    }
+
+    #[test]
+    fn test_system_profile_serialization_roundtrip() {
+        let original = SystemProfile {
+            ram_gb: 16,
+            vram_gb: Some(8),
+            cpu_cores: 8,
+            cpu_year: Some(2021),
+            cpu_brand: "Test CPU Brand".to_string(),
+            has_ssd: true,
+            architecture: CpuArchitecture::ARM64,
+            is_sbc: false,
+            tier: HardwareTier::Medium,
+        };
+
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: SystemProfile = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.ram_gb, original.ram_gb);
+        assert_eq!(parsed.vram_gb, original.vram_gb);
+        assert_eq!(parsed.cpu_cores, original.cpu_cores);
+        assert_eq!(parsed.cpu_year, original.cpu_year);
+        assert_eq!(parsed.cpu_brand, original.cpu_brand);
+        assert_eq!(parsed.has_ssd, original.has_ssd);
+        assert_eq!(parsed.architecture, original.architecture);
+        assert_eq!(parsed.is_sbc, original.is_sbc);
+        assert_eq!(parsed.tier, original.tier);
+    }
+
+    #[test]
+    fn test_cpu_architecture_all_serialization() {
+        for arch in [
+            CpuArchitecture::X86_64,
+            CpuArchitecture::ARM64,
+            CpuArchitecture::ARM32,
+            CpuArchitecture::Other,
+        ] {
+            let json = serde_json::to_string(&arch).unwrap();
+            let parsed: CpuArchitecture = serde_json::from_str(&json).unwrap();
+            assert_eq!(arch, parsed);
+        }
+    }
+
+    #[test]
+    fn test_thermal_throttle_risk_various_profiles() {
+        // SBC always has risk
+        let sbc = SystemProfile {
+            ram_gb: 8,
+            vram_gb: None,
+            cpu_cores: 4,
+            cpu_year: Some(2022),
+            cpu_brand: "Cortex".to_string(),
+            has_ssd: true,
+            architecture: CpuArchitecture::ARM64,
+            is_sbc: true,
+            tier: HardwareTier::UltraTiny,
+        };
+        assert!(sbc.thermal_throttle_risk());
+
+        // Desktop never has risk
+        let desktop = SystemProfile {
+            is_sbc: false,
+            ..sbc.clone()
+        };
+        assert!(!desktop.thermal_throttle_risk());
+    }
 }

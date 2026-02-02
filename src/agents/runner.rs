@@ -487,9 +487,78 @@ pub fn spawn_background_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::message::Role;
+    use crate::llm::provider::{ModelInfo, StreamEvent};
+    use futures::stream;
+    use std::pin::Pin;
 
-    // Note: Full integration tests would require mocking the LLM provider
-    // These are unit tests for the helper functions
+    // ==================== Mock Provider ====================
+
+    /// Mock LLM provider for testing
+    struct MockProvider;
+
+    #[async_trait::async_trait]
+    impl LlmProvider for MockProvider {
+        fn name(&self) -> &str {
+            "mock"
+        }
+
+        fn available_models(&self) -> Vec<ModelInfo> {
+            vec![ModelInfo {
+                id: "test-model".to_string(),
+                display_name: "Test Model".to_string(),
+                context_window: 4096,
+                max_output_tokens: 4096,
+                supports_tools: true,
+                supports_vision: false,
+                input_cost_per_1k: 0.0,
+                output_cost_per_1k: 0.0,
+            }]
+        }
+
+        fn supports_model(&self, model: &str) -> bool {
+            model == "test-model"
+        }
+
+        async fn complete(
+            &self,
+            _request: CompletionRequest,
+        ) -> crate::error::Result<crate::llm::provider::CompletionResponse> {
+            Ok(crate::llm::provider::CompletionResponse {
+                id: "mock-response-id".to_string(),
+                model: "test-model".to_string(),
+                content: vec![ContentBlockResponse::Text {
+                    text: "Mock response".to_string(),
+                }],
+                usage: crate::llm::provider::Usage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 0,
+                },
+                stop_reason: Some(StopReason::EndTurn),
+            })
+        }
+
+        async fn complete_stream(
+            &self,
+            _request: CompletionRequest,
+        ) -> crate::error::Result<
+            Pin<Box<dyn futures::Stream<Item = crate::error::Result<StreamEvent>> + Send>>,
+        > {
+            Ok(Box::pin(stream::empty()))
+        }
+
+        fn count_tokens(&self, _text: &str, _model: &str) -> crate::error::Result<u32> {
+            Ok(10)
+        }
+    }
+
+    fn make_test_runner() -> AgentRunner {
+        AgentRunner::new(Arc::new(MockProvider))
+    }
+
+    // ==================== truncate_str Tests ====================
 
     #[test]
     fn test_truncate_str_short() {
@@ -513,10 +582,417 @@ mod tests {
     }
 
     #[test]
+    fn test_truncate_str_exact_length() {
+        let exact = "A".repeat(100);
+        let result = truncate_str(&exact, 100);
+        assert_eq!(result.len(), 100);
+        assert!(!result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_str_empty() {
+        let empty = "";
+        assert_eq!(truncate_str(empty, 100), "");
+    }
+
+    #[test]
+    fn test_truncate_str_one_over() {
+        let one_over = "A".repeat(101);
+        let result = truncate_str(&one_over, 100);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_str_replaces_all_newlines() {
+        let multi_newline = "A\nB\nC\nD\nE";
+        let result = truncate_str(multi_newline, 100);
+        assert_eq!(result.matches(' ').count(), 4); // Newlines become spaces
+    }
+
+    #[test]
+    fn test_truncate_str_preserves_content_before_truncation() {
+        let content = "Hello World";
+        let result = truncate_str(content, 100);
+        assert_eq!(result, "Hello World");
+    }
+
+    #[test]
+    fn test_truncate_str_zero_max_len() {
+        let content = "Hello";
+        let result = truncate_str(content, 0);
+        assert!(result.ends_with("..."));
+    }
+
+    // ==================== RunnerConfig Tests ====================
+
+    #[test]
     fn test_runner_config_default() {
         let config = RunnerConfig::default();
         assert_eq!(config.max_response_tokens, 4096);
         assert_eq!(config.temperature, 0.7);
         assert!(!config.verbose);
+    }
+
+    #[test]
+    fn test_runner_config_custom() {
+        let config = RunnerConfig {
+            max_response_tokens: 8192,
+            temperature: 0.5,
+            verbose: true,
+        };
+        assert_eq!(config.max_response_tokens, 8192);
+        assert_eq!(config.temperature, 0.5);
+        assert!(config.verbose);
+    }
+
+    #[test]
+    fn test_runner_config_clone() {
+        let config = RunnerConfig::default();
+        let cloned = config.clone();
+        assert_eq!(cloned.max_response_tokens, config.max_response_tokens);
+        assert_eq!(cloned.temperature, config.temperature);
+    }
+
+    #[test]
+    fn test_runner_config_debug() {
+        let config = RunnerConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("RunnerConfig"));
+        assert!(debug_str.contains("4096"));
+    }
+
+    // ==================== generate_summary Tests ====================
+
+    #[test]
+    fn test_generate_summary_short() {
+        let runner = make_test_runner();
+        let summary = runner.generate_summary("Short text");
+        assert_eq!(summary, "Short text");
+    }
+
+    #[test]
+    fn test_generate_summary_long() {
+        let runner = make_test_runner();
+        let long = "A".repeat(300);
+        let summary = runner.generate_summary(&long);
+        assert!(summary.len() <= 204); // 200 chars + "..."
+        assert!(summary.ends_with("..."));
+    }
+
+    #[test]
+    fn test_generate_summary_paragraph_break() {
+        let runner = make_test_runner();
+        let text = "First paragraph.\n\nSecond paragraph.";
+        let summary = runner.generate_summary(text);
+        // First paragraph is taken, but "..." is added since summary < original length
+        assert_eq!(summary, "First paragraph....");
+    }
+
+    #[test]
+    fn test_generate_summary_multiple_paragraphs() {
+        let runner = make_test_runner();
+        let text = "Para 1.\n\nPara 2.\n\nPara 3.";
+        let summary = runner.generate_summary(text);
+        // Should only take first paragraph, with "..." since summary < original
+        assert_eq!(summary, "Para 1....");
+    }
+
+    #[test]
+    fn test_generate_summary_trims_whitespace() {
+        let runner = make_test_runner();
+        let summary = runner.generate_summary("  trimmed  ");
+        assert_eq!(summary, "trimmed");
+    }
+
+    #[test]
+    fn test_generate_summary_empty() {
+        let runner = make_test_runner();
+        let summary = runner.generate_summary("");
+        assert_eq!(summary, "");
+    }
+
+    #[test]
+    fn test_generate_summary_long_first_paragraph() {
+        let runner = make_test_runner();
+        let long_para = "A".repeat(250);
+        let text = format!("{}\n\nSecond para.", long_para);
+        let summary = runner.generate_summary(&text);
+        // Should truncate to 200 chars
+        assert!(summary.len() <= 204);
+        assert!(summary.ends_with("..."));
+    }
+
+    #[test]
+    fn test_generate_summary_no_paragraph_break() {
+        let runner = make_test_runner();
+        let text = "Single line of text without paragraph breaks";
+        let summary = runner.generate_summary(text);
+        assert_eq!(summary, text);
+    }
+
+    #[test]
+    fn test_generate_summary_only_whitespace() {
+        let runner = make_test_runner();
+        let summary = runner.generate_summary("   \n\n   ");
+        // Whitespace splits to "   ", trims to "", but since summary < original, adds "..."
+        assert_eq!(summary, "...");
+    }
+
+    // ==================== response_to_message Tests ====================
+
+    #[test]
+    fn test_response_to_message_text_only() {
+        let runner = make_test_runner();
+        let content = vec![ContentBlockResponse::Text {
+            text: "Hello".to_string(),
+        }];
+        let msg = runner.response_to_message(&content);
+        assert_eq!(msg.role, Role::Assistant);
+
+        if let MessageContent::Blocks(blocks) = &msg.content {
+            assert_eq!(blocks.len(), 1);
+            if let ContentBlock::Text { text } = &blocks[0] {
+                assert_eq!(text, "Hello");
+            } else {
+                panic!("Expected Text block");
+            }
+        } else {
+            panic!("Expected Blocks content");
+        }
+    }
+
+    #[test]
+    fn test_response_to_message_tool_use() {
+        let runner = make_test_runner();
+        let content = vec![ContentBlockResponse::ToolUse {
+            id: "tool-1".to_string(),
+            name: "file_read".to_string(),
+            input: serde_json::json!({"path": "/test"}),
+        }];
+        let msg = runner.response_to_message(&content);
+        assert_eq!(msg.role, Role::Assistant);
+
+        if let MessageContent::Blocks(blocks) = &msg.content {
+            assert_eq!(blocks.len(), 1);
+            if let ContentBlock::ToolUse { id, name, input } = &blocks[0] {
+                assert_eq!(id, "tool-1");
+                assert_eq!(name, "file_read");
+                assert_eq!(input["path"], "/test");
+            } else {
+                panic!("Expected ToolUse block");
+            }
+        } else {
+            panic!("Expected Blocks content");
+        }
+    }
+
+    #[test]
+    fn test_response_to_message_mixed() {
+        let runner = make_test_runner();
+        let content = vec![
+            ContentBlockResponse::Text {
+                text: "I'll read the file".to_string(),
+            },
+            ContentBlockResponse::ToolUse {
+                id: "tool-1".to_string(),
+                name: "file_read".to_string(),
+                input: serde_json::json!({}),
+            },
+        ];
+        let msg = runner.response_to_message(&content);
+
+        if let MessageContent::Blocks(blocks) = &msg.content {
+            assert_eq!(blocks.len(), 2);
+        } else {
+            panic!("Expected Blocks content");
+        }
+    }
+
+    #[test]
+    fn test_response_to_message_empty() {
+        let runner = make_test_runner();
+        let content: Vec<ContentBlockResponse> = vec![];
+        let msg = runner.response_to_message(&content);
+
+        if let MessageContent::Blocks(blocks) = &msg.content {
+            assert!(blocks.is_empty());
+        } else {
+            panic!("Expected Blocks content");
+        }
+    }
+
+    #[test]
+    fn test_response_to_message_multiple_tool_uses() {
+        let runner = make_test_runner();
+        let content = vec![
+            ContentBlockResponse::ToolUse {
+                id: "tool-1".to_string(),
+                name: "file_read".to_string(),
+                input: serde_json::json!({"path": "/a"}),
+            },
+            ContentBlockResponse::ToolUse {
+                id: "tool-2".to_string(),
+                name: "file_write".to_string(),
+                input: serde_json::json!({"path": "/b"}),
+            },
+        ];
+        let msg = runner.response_to_message(&content);
+
+        if let MessageContent::Blocks(blocks) = &msg.content {
+            assert_eq!(blocks.len(), 2);
+        } else {
+            panic!("Expected Blocks content");
+        }
+    }
+
+    // ==================== tool_results_to_message Tests ====================
+
+    #[test]
+    fn test_tool_results_to_message_success() {
+        let runner = make_test_runner();
+        let results = vec![ToolResult {
+            tool_use_id: "tool-1".to_string(),
+            output: ToolOutput::Success("File contents".to_string()),
+        }];
+        let msg = runner.tool_results_to_message(&results);
+        assert_eq!(msg.role, Role::User);
+
+        if let MessageContent::Blocks(blocks) = &msg.content {
+            assert_eq!(blocks.len(), 1);
+            if let ContentBlock::ToolResult {
+                tool_use_id,
+                is_error,
+                ..
+            } = &blocks[0]
+            {
+                assert_eq!(tool_use_id, "tool-1");
+                assert!(is_error.is_none() || *is_error == Some(false));
+            } else {
+                panic!("Expected ToolResult block");
+            }
+        } else {
+            panic!("Expected Blocks content");
+        }
+    }
+
+    #[test]
+    fn test_tool_results_to_message_error() {
+        let runner = make_test_runner();
+        let results = vec![ToolResult {
+            tool_use_id: "tool-1".to_string(),
+            output: ToolOutput::Error("Failed to read".to_string()),
+        }];
+        let msg = runner.tool_results_to_message(&results);
+
+        if let MessageContent::Blocks(blocks) = &msg.content {
+            if let ContentBlock::ToolResult { is_error, .. } = &blocks[0] {
+                assert_eq!(*is_error, Some(true));
+            } else {
+                panic!("Expected ToolResult block");
+            }
+        } else {
+            panic!("Expected Blocks content");
+        }
+    }
+
+    #[test]
+    fn test_tool_results_to_message_multiple() {
+        let runner = make_test_runner();
+        let results = vec![
+            ToolResult {
+                tool_use_id: "tool-1".to_string(),
+                output: ToolOutput::Success("Result 1".to_string()),
+            },
+            ToolResult {
+                tool_use_id: "tool-2".to_string(),
+                output: ToolOutput::Success("Result 2".to_string()),
+            },
+        ];
+        let msg = runner.tool_results_to_message(&results);
+
+        if let MessageContent::Blocks(blocks) = &msg.content {
+            assert_eq!(blocks.len(), 2);
+        } else {
+            panic!("Expected Blocks content");
+        }
+    }
+
+    #[test]
+    fn test_tool_results_to_message_empty() {
+        let runner = make_test_runner();
+        let results: Vec<ToolResult> = vec![];
+        let msg = runner.tool_results_to_message(&results);
+
+        if let MessageContent::Blocks(blocks) = &msg.content {
+            assert!(blocks.is_empty());
+        } else {
+            panic!("Expected Blocks content");
+        }
+    }
+
+    #[test]
+    fn test_tool_results_to_message_mixed() {
+        let runner = make_test_runner();
+        let results = vec![
+            ToolResult {
+                tool_use_id: "tool-1".to_string(),
+                output: ToolOutput::Success("OK".to_string()),
+            },
+            ToolResult {
+                tool_use_id: "tool-2".to_string(),
+                output: ToolOutput::Error("Failed".to_string()),
+            },
+        ];
+        let msg = runner.tool_results_to_message(&results);
+
+        if let MessageContent::Blocks(blocks) = &msg.content {
+            assert_eq!(blocks.len(), 2);
+
+            // First should be success
+            if let ContentBlock::ToolResult { is_error, .. } = &blocks[0] {
+                assert!(is_error.is_none() || *is_error == Some(false));
+            }
+
+            // Second should be error
+            if let ContentBlock::ToolResult { is_error, .. } = &blocks[1] {
+                assert_eq!(*is_error, Some(true));
+            }
+        } else {
+            panic!("Expected Blocks content");
+        }
+    }
+
+    // ==================== AgentRunner Creation Tests ====================
+
+    #[test]
+    fn test_agent_runner_new() {
+        let runner = AgentRunner::new(Arc::new(MockProvider));
+        assert_eq!(runner.config.max_response_tokens, 4096);
+        assert!(!runner.config.verbose);
+    }
+
+    #[test]
+    fn test_agent_runner_with_config() {
+        let config = RunnerConfig {
+            max_response_tokens: 8192,
+            temperature: 0.9,
+            verbose: true,
+        };
+        let runner = AgentRunner::with_config(Arc::new(MockProvider), config);
+        assert_eq!(runner.config.max_response_tokens, 8192);
+        assert!(runner.config.verbose);
+    }
+
+    // ==================== BackgroundAgentHandle Tests ====================
+
+    #[test]
+    fn test_background_agent_handle_fields() {
+        // Just test the struct fields are accessible
+        let id = Uuid::new_v4();
+        let name = "test-agent".to_string();
+        // Can't easily test the handle without spawning a real task
+        // but we can verify the struct is correctly defined
+        assert!(!name.is_empty());
+        assert!(!id.is_nil());
     }
 }

@@ -234,36 +234,188 @@ impl std::fmt::Display for HardwareTier {
 mod tests {
     use super::*;
 
+    // ===== max_context_tokens tests =====
+
     #[test]
     fn test_max_context_tokens() {
         assert_eq!(HardwareTier::UltraTiny.max_context_tokens(), 512);
         assert_eq!(HardwareTier::Ancient.max_context_tokens(), 1024);
+        assert_eq!(HardwareTier::Tiny.max_context_tokens(), 2048);
+        assert_eq!(HardwareTier::Small.max_context_tokens(), 4096);
+        assert_eq!(HardwareTier::Medium.max_context_tokens(), 8192);
+        assert_eq!(HardwareTier::Large.max_context_tokens(), 16384);
         assert_eq!(HardwareTier::Cloud.max_context_tokens(), 100000);
     }
+
+    // ===== max_warm_chunks tests =====
 
     #[test]
     fn test_max_warm_chunks() {
         assert_eq!(HardwareTier::UltraTiny.max_warm_chunks(), 5);
+        assert_eq!(HardwareTier::Ancient.max_warm_chunks(), 10);
+        assert_eq!(HardwareTier::Tiny.max_warm_chunks(), 20);
+        assert_eq!(HardwareTier::Small.max_warm_chunks(), 50);
         assert_eq!(HardwareTier::Medium.max_warm_chunks(), 100);
+        assert_eq!(HardwareTier::Large.max_warm_chunks(), 200);
+        assert_eq!(HardwareTier::Cloud.max_warm_chunks(), 500);
     }
+
+    // ===== disable_background_tasks tests =====
 
     #[test]
     fn test_disable_background_tasks() {
         assert!(HardwareTier::UltraTiny.disable_background_tasks());
         assert!(HardwareTier::Ancient.disable_background_tasks());
+        assert!(!HardwareTier::Tiny.disable_background_tasks());
         assert!(!HardwareTier::Small.disable_background_tasks());
+        assert!(!HardwareTier::Medium.disable_background_tasks());
+        assert!(!HardwareTier::Large.disable_background_tasks());
+        assert!(!HardwareTier::Cloud.disable_background_tasks());
     }
 
+    // ===== streaming_only tests =====
+
     #[test]
-    fn test_recommended_models() {
-        let models = HardwareTier::Small.recommended_models();
-        assert!(models.contains(&"qwen2.5-coder:3b"));
+    fn test_streaming_only() {
+        assert!(HardwareTier::UltraTiny.streaming_only());
+        assert!(HardwareTier::Ancient.streaming_only());
+        assert!(HardwareTier::Tiny.streaming_only());
+        assert!(!HardwareTier::Small.streaming_only());
+        assert!(!HardwareTier::Medium.streaming_only());
+        assert!(!HardwareTier::Large.streaming_only());
+        assert!(!HardwareTier::Cloud.streaming_only());
     }
+
+    // ===== single_file_mode tests =====
+
+    #[test]
+    fn test_single_file_mode() {
+        assert!(HardwareTier::UltraTiny.single_file_mode());
+        assert!(HardwareTier::Ancient.single_file_mode());
+        assert!(!HardwareTier::Tiny.single_file_mode());
+        assert!(!HardwareTier::Small.single_file_mode());
+        assert!(!HardwareTier::Cloud.single_file_mode());
+    }
+
+    // ===== recommended_quantization tests =====
+
+    #[test]
+    fn test_recommended_quantization() {
+        assert_eq!(HardwareTier::UltraTiny.recommended_quantization(), "Q3_K_M");
+        assert_eq!(HardwareTier::Ancient.recommended_quantization(), "Q4_K_M");
+        assert_eq!(HardwareTier::Tiny.recommended_quantization(), "Q4_K_M");
+        assert_eq!(HardwareTier::Small.recommended_quantization(), "Q5_K_M");
+        assert_eq!(HardwareTier::Medium.recommended_quantization(), "Q5_K_M");
+        assert_eq!(HardwareTier::Large.recommended_quantization(), "Q6_K");
+        assert_eq!(HardwareTier::Cloud.recommended_quantization(), "none");
+    }
+
+    // ===== disable_indexer tests =====
+
+    #[test]
+    fn test_disable_indexer() {
+        assert!(HardwareTier::UltraTiny.disable_indexer());
+        assert!(HardwareTier::Ancient.disable_indexer());
+        assert!(HardwareTier::Tiny.disable_indexer());
+        assert!(!HardwareTier::Small.disable_indexer());
+        assert!(!HardwareTier::Medium.disable_indexer());
+        assert!(!HardwareTier::Large.disable_indexer());
+        assert!(!HardwareTier::Cloud.disable_indexer());
+    }
+
+    // ===== monitor_thermal tests =====
+
+    #[test]
+    fn test_monitor_thermal() {
+        assert!(HardwareTier::UltraTiny.monitor_thermal());
+        assert!(!HardwareTier::Ancient.monitor_thermal());
+        assert!(!HardwareTier::Tiny.monitor_thermal());
+        assert!(!HardwareTier::Cloud.monitor_thermal());
+    }
+
+    // ===== description tests =====
 
     #[test]
     fn test_description() {
+        assert!(HardwareTier::UltraTiny
+            .description()
+            .contains("Raspberry Pi"));
         assert!(HardwareTier::Ancient.description().contains("2010-2015"));
+        assert!(HardwareTier::Tiny.description().contains("2015-2020"));
+        assert!(HardwareTier::Small.description().contains("Entry-level"));
+        assert!(HardwareTier::Medium.description().contains("Modern"));
+        assert!(HardwareTier::Large.description().contains("Workstation"));
+        assert!(HardwareTier::Cloud.description().contains("Cloud"));
     }
+
+    // ===== recommended_models tests =====
+
+    #[test]
+    fn test_recommended_models() {
+        let models = HardwareTier::UltraTiny.recommended_models();
+        assert!(models.contains(&"qwen2.5-coder:1.5b"));
+
+        let models = HardwareTier::Small.recommended_models();
+        assert!(models.contains(&"qwen2.5-coder:3b"));
+
+        let models = HardwareTier::Cloud.recommended_models();
+        assert!(models.contains(&"claude-sonnet-4"));
+    }
+
+    // ===== expected_response_time tests =====
+
+    #[test]
+    fn test_expected_response_time() {
+        let (min, max) = HardwareTier::UltraTiny.expected_response_time();
+        assert_eq!(min, 15);
+        assert_eq!(max, 40);
+
+        let (min, max) = HardwareTier::Cloud.expected_response_time();
+        assert_eq!(min, 1);
+        assert_eq!(max, 3);
+
+        // Higher tiers should have faster response times
+        let (_, ultra_max) = HardwareTier::UltraTiny.expected_response_time();
+        let (_, cloud_max) = HardwareTier::Cloud.expected_response_time();
+        assert!(cloud_max < ultra_max);
+    }
+
+    // ===== capabilities tests =====
+
+    #[test]
+    fn test_capabilities() {
+        let caps = HardwareTier::UltraTiny.capabilities();
+        assert!(caps.contains(&"Simple apps"));
+
+        let caps = HardwareTier::Cloud.capabilities();
+        assert!(caps.contains(&"Unlimited complexity"));
+    }
+
+    // ===== limitations tests =====
+
+    #[test]
+    fn test_limitations() {
+        let limits = HardwareTier::UltraTiny.limitations();
+        assert!(limits.contains(&"Professional development"));
+
+        let limits = HardwareTier::Cloud.limitations();
+        assert!(limits.contains(&"None"));
+    }
+
+    // ===== Display tests =====
+
+    #[test]
+    fn test_display() {
+        assert_eq!(format!("{}", HardwareTier::UltraTiny), "UltraTiny");
+        assert_eq!(format!("{}", HardwareTier::Ancient), "Ancient");
+        assert_eq!(format!("{}", HardwareTier::Tiny), "Tiny");
+        assert_eq!(format!("{}", HardwareTier::Small), "Small");
+        assert_eq!(format!("{}", HardwareTier::Medium), "Medium");
+        assert_eq!(format!("{}", HardwareTier::Large), "Large");
+        assert_eq!(format!("{}", HardwareTier::Cloud), "Cloud");
+    }
+
+    // ===== Serialization tests =====
 
     #[test]
     fn test_serialization() {
@@ -271,5 +423,66 @@ mod tests {
         let json = serde_json::to_string(&tier).unwrap();
         let parsed: HardwareTier = serde_json::from_str(&json).unwrap();
         assert_eq!(tier, parsed);
+    }
+
+    #[test]
+    fn test_all_tiers_serialize_roundtrip() {
+        let tiers = [
+            HardwareTier::UltraTiny,
+            HardwareTier::Ancient,
+            HardwareTier::Tiny,
+            HardwareTier::Small,
+            HardwareTier::Medium,
+            HardwareTier::Large,
+            HardwareTier::Cloud,
+        ];
+
+        for tier in tiers {
+            let json = serde_json::to_string(&tier).unwrap();
+            let parsed: HardwareTier = serde_json::from_str(&json).unwrap();
+            assert_eq!(tier, parsed);
+        }
+    }
+
+    // ===== Tier ordering tests =====
+
+    #[test]
+    fn test_context_tokens_increase_with_tier() {
+        let tiers = [
+            HardwareTier::UltraTiny,
+            HardwareTier::Ancient,
+            HardwareTier::Tiny,
+            HardwareTier::Small,
+            HardwareTier::Medium,
+            HardwareTier::Large,
+            HardwareTier::Cloud,
+        ];
+
+        for i in 1..tiers.len() {
+            assert!(
+                tiers[i].max_context_tokens() >= tiers[i - 1].max_context_tokens(),
+                "Context tokens should increase with tier"
+            );
+        }
+    }
+
+    #[test]
+    fn test_warm_chunks_increase_with_tier() {
+        let tiers = [
+            HardwareTier::UltraTiny,
+            HardwareTier::Ancient,
+            HardwareTier::Tiny,
+            HardwareTier::Small,
+            HardwareTier::Medium,
+            HardwareTier::Large,
+            HardwareTier::Cloud,
+        ];
+
+        for i in 1..tiers.len() {
+            assert!(
+                tiers[i].max_warm_chunks() >= tiers[i - 1].max_warm_chunks(),
+                "Warm chunks should increase with tier"
+            );
+        }
     }
 }

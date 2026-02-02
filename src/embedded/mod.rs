@@ -298,3 +298,657 @@ impl JsonLEmitter {
         self.emit("conversation_history", ConversationHistoryData { messages })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ===== BaseEvent tests =====
+
+    #[test]
+    fn test_base_event_creation() {
+        let event = BaseEvent {
+            event_type: "test".to_string(),
+            timestamp: 1234567890,
+            session_id: "session-123".to_string(),
+            data: "test data",
+        };
+
+        assert_eq!(event.event_type, "test");
+        assert_eq!(event.timestamp, 1234567890);
+        assert_eq!(event.session_id, "session-123");
+    }
+
+    #[test]
+    fn test_base_event_serialization() {
+        let event = BaseEvent {
+            event_type: "test".to_string(),
+            timestamp: 1234567890,
+            session_id: "session-123".to_string(),
+            data: serde_json::json!({"key": "value"}),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"test\""));
+        assert!(json.contains("\"session_id\":\"session-123\""));
+    }
+
+    // ===== PlanStep tests =====
+
+    #[test]
+    fn test_plan_step_creation() {
+        let step = PlanStep {
+            id: "step-1".to_string(),
+            description: "Do something".to_string(),
+            estimated_files: Some(vec!["file1.rs".to_string()]),
+        };
+
+        assert_eq!(step.id, "step-1");
+        assert_eq!(step.description, "Do something");
+        assert!(step.estimated_files.is_some());
+    }
+
+    #[test]
+    fn test_plan_step_serialization() {
+        let step = PlanStep {
+            id: "step-1".to_string(),
+            description: "Do something".to_string(),
+            estimated_files: None,
+        };
+
+        let json = serde_json::to_string(&step).unwrap();
+        assert!(json.contains("\"id\":\"step-1\""));
+        // estimated_files should be skipped when None
+        assert!(!json.contains("estimated_files"));
+    }
+
+    #[test]
+    fn test_plan_data_creation() {
+        let data = PlanData {
+            steps: vec![
+                PlanStep {
+                    id: "1".to_string(),
+                    description: "First".to_string(),
+                    estimated_files: None,
+                },
+                PlanStep {
+                    id: "2".to_string(),
+                    description: "Second".to_string(),
+                    estimated_files: None,
+                },
+            ],
+        };
+
+        assert_eq!(data.steps.len(), 2);
+    }
+
+    // ===== FileCreateData tests =====
+
+    #[test]
+    fn test_file_create_data() {
+        let data = FileCreateData {
+            path: "/test/file.rs".to_string(),
+            content: "fn main() {}".to_string(),
+            mode: Some(0o644),
+        };
+
+        assert_eq!(data.path, "/test/file.rs");
+        assert_eq!(data.content, "fn main() {}");
+        assert_eq!(data.mode, Some(0o644));
+    }
+
+    #[test]
+    fn test_file_create_data_serialization() {
+        let data = FileCreateData {
+            path: "/test.txt".to_string(),
+            content: "hello".to_string(),
+            mode: None,
+        };
+
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(json.contains("\"path\":\"/test.txt\""));
+        // mode should be skipped when None
+        assert!(!json.contains("mode"));
+    }
+
+    // ===== FileEditData tests =====
+
+    #[test]
+    fn test_file_edit_data() {
+        let data = FileEditData {
+            path: "/test.rs".to_string(),
+            operation: "replace".to_string(),
+            old_text: Some("old".to_string()),
+            new_text: Some("new".to_string()),
+            line: None,
+            text: None,
+        };
+
+        assert_eq!(data.path, "/test.rs");
+        assert_eq!(data.operation, "replace");
+        assert_eq!(data.old_text, Some("old".to_string()));
+    }
+
+    // ===== FileDeleteData tests =====
+
+    #[test]
+    fn test_file_delete_data() {
+        let data = FileDeleteData {
+            path: "/to/delete.txt".to_string(),
+        };
+
+        assert_eq!(data.path, "/to/delete.txt");
+    }
+
+    // ===== CommandData tests =====
+
+    #[test]
+    fn test_command_data() {
+        let mut env = std::collections::HashMap::new();
+        env.insert("VAR".to_string(), "value".to_string());
+
+        let data = CommandData {
+            command: "cargo build".to_string(),
+            cwd: Some("/project".to_string()),
+            env: Some(env),
+        };
+
+        assert_eq!(data.command, "cargo build");
+        assert_eq!(data.cwd, Some("/project".to_string()));
+        assert!(data.env.is_some());
+    }
+
+    // ===== CommandOutputData tests =====
+
+    #[test]
+    fn test_command_output_data() {
+        let data = CommandOutputData {
+            stream: "stdout".to_string(),
+            text: "Hello, world!".to_string(),
+            done: Some(true),
+            exit_code: Some(0),
+        };
+
+        assert_eq!(data.stream, "stdout");
+        assert_eq!(data.text, "Hello, world!");
+        assert_eq!(data.done, Some(true));
+        assert_eq!(data.exit_code, Some(0));
+    }
+
+    // ===== StatusData tests =====
+
+    #[test]
+    fn test_status_data() {
+        let data = StatusData {
+            state: "thinking".to_string(),
+            message: "Processing request".to_string(),
+            progress: Some(50),
+        };
+
+        assert_eq!(data.state, "thinking");
+        assert_eq!(data.message, "Processing request");
+        assert_eq!(data.progress, Some(50));
+    }
+
+    // ===== ErrorData tests =====
+
+    #[test]
+    fn test_error_data() {
+        let data = ErrorData {
+            code: "FILE_NOT_FOUND".to_string(),
+            message: "The file does not exist".to_string(),
+            suggested_fix: Some("Create the file first".to_string()),
+            context: Some(serde_json::json!({"path": "/missing.txt"})),
+        };
+
+        assert_eq!(data.code, "FILE_NOT_FOUND");
+        assert_eq!(data.message, "The file does not exist");
+        assert!(data.suggested_fix.is_some());
+    }
+
+    // ===== CompletionData tests =====
+
+    #[test]
+    fn test_completion_data() {
+        let data = CompletionData {
+            success: true,
+            summary: "Task completed".to_string(),
+            files_changed: vec!["file1.rs".to_string(), "file2.rs".to_string()],
+        };
+
+        assert!(data.success);
+        assert_eq!(data.summary, "Task completed");
+        assert_eq!(data.files_changed.len(), 2);
+    }
+
+    // ===== MessageData tests =====
+
+    #[test]
+    fn test_message_data() {
+        let data = MessageData {
+            role: "assistant".to_string(),
+            content: "Hello!".to_string(),
+            delta: Some(true),
+        };
+
+        assert_eq!(data.role, "assistant");
+        assert_eq!(data.content, "Hello!");
+        assert_eq!(data.delta, Some(true));
+    }
+
+    // ===== HistoryMessageData tests =====
+
+    #[test]
+    fn test_history_message_data() {
+        let data = HistoryMessageData {
+            role: "user".to_string(),
+            content: "What is Rust?".to_string(),
+        };
+
+        assert_eq!(data.role, "user");
+        assert_eq!(data.content, "What is Rust?");
+    }
+
+    // ===== ConversationHistoryData tests =====
+
+    #[test]
+    fn test_conversation_history_data() {
+        let data = ConversationHistoryData {
+            messages: vec![
+                HistoryMessageData {
+                    role: "user".to_string(),
+                    content: "Hello".to_string(),
+                },
+                HistoryMessageData {
+                    role: "assistant".to_string(),
+                    content: "Hi there!".to_string(),
+                },
+            ],
+        };
+
+        assert_eq!(data.messages.len(), 2);
+    }
+
+    // ===== JsonLEmitter tests =====
+
+    #[test]
+    fn test_jsonl_emitter_creation() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        assert_eq!(emitter.session_id, "test-session");
+    }
+
+    // ===== Clone trait tests =====
+
+    #[test]
+    fn test_plan_step_clone() {
+        let step = PlanStep {
+            id: "step-1".to_string(),
+            description: "Do something".to_string(),
+            estimated_files: Some(vec!["file.rs".to_string()]),
+        };
+        let cloned = step.clone();
+
+        assert_eq!(cloned.id, step.id);
+        assert_eq!(cloned.description, step.description);
+        assert_eq!(cloned.estimated_files, step.estimated_files);
+    }
+
+    #[test]
+    fn test_file_create_data_clone() {
+        let data = FileCreateData {
+            path: "/test.rs".to_string(),
+            content: "content".to_string(),
+            mode: Some(0o755),
+        };
+        let cloned = data.clone();
+
+        assert_eq!(cloned.path, data.path);
+        assert_eq!(cloned.content, data.content);
+        assert_eq!(cloned.mode, data.mode);
+    }
+
+    #[test]
+    fn test_file_edit_data_clone() {
+        let data = FileEditData {
+            path: "/test.rs".to_string(),
+            operation: "replace".to_string(),
+            old_text: Some("old".to_string()),
+            new_text: Some("new".to_string()),
+            line: Some(10),
+            text: Some("line text".to_string()),
+        };
+        let cloned = data.clone();
+
+        assert_eq!(cloned.path, data.path);
+        assert_eq!(cloned.operation, data.operation);
+        assert_eq!(cloned.old_text, data.old_text);
+        assert_eq!(cloned.new_text, data.new_text);
+        assert_eq!(cloned.line, data.line);
+        assert_eq!(cloned.text, data.text);
+    }
+
+    #[test]
+    fn test_status_data_clone() {
+        let data = StatusData {
+            state: "thinking".to_string(),
+            message: "Working...".to_string(),
+            progress: Some(75),
+        };
+        let cloned = data.clone();
+
+        assert_eq!(cloned.state, data.state);
+        assert_eq!(cloned.message, data.message);
+        assert_eq!(cloned.progress, data.progress);
+    }
+
+    #[test]
+    fn test_error_data_clone() {
+        let data = ErrorData {
+            code: "ERR_001".to_string(),
+            message: "Error occurred".to_string(),
+            suggested_fix: Some("Fix it".to_string()),
+            context: Some(serde_json::json!({"key": "value"})),
+        };
+        let cloned = data.clone();
+
+        assert_eq!(cloned.code, data.code);
+        assert_eq!(cloned.message, data.message);
+        assert_eq!(cloned.suggested_fix, data.suggested_fix);
+        assert_eq!(cloned.context, data.context);
+    }
+
+    #[test]
+    fn test_message_data_clone() {
+        let data = MessageData {
+            role: "user".to_string(),
+            content: "Hello".to_string(),
+            delta: Some(false),
+        };
+        let cloned = data.clone();
+
+        assert_eq!(cloned.role, data.role);
+        assert_eq!(cloned.content, data.content);
+        assert_eq!(cloned.delta, data.delta);
+    }
+
+    // ===== Debug trait tests =====
+
+    #[test]
+    fn test_plan_step_debug() {
+        let step = PlanStep {
+            id: "step-1".to_string(),
+            description: "Test".to_string(),
+            estimated_files: None,
+        };
+        let debug = format!("{:?}", step);
+        assert!(debug.contains("PlanStep"));
+        assert!(debug.contains("step-1"));
+    }
+
+    #[test]
+    fn test_base_event_debug() {
+        let event = BaseEvent {
+            event_type: "test".to_string(),
+            timestamp: 0,
+            session_id: "session".to_string(),
+            data: "data",
+        };
+        let debug = format!("{:?}", event);
+        assert!(debug.contains("BaseEvent"));
+    }
+
+    #[test]
+    fn test_file_delete_data_debug() {
+        let data = FileDeleteData {
+            path: "/delete/me.txt".to_string(),
+        };
+        let debug = format!("{:?}", data);
+        assert!(debug.contains("FileDeleteData"));
+        assert!(debug.contains("/delete/me.txt"));
+    }
+
+    #[test]
+    fn test_command_data_debug() {
+        let data = CommandData {
+            command: "ls".to_string(),
+            cwd: None,
+            env: None,
+        };
+        let debug = format!("{:?}", data);
+        assert!(debug.contains("CommandData"));
+        assert!(debug.contains("ls"));
+    }
+
+    // ===== Deserialization tests =====
+
+    #[test]
+    fn test_plan_step_deserialize() {
+        let json = r#"{"id":"step-1","description":"Do something"}"#;
+        let step: PlanStep = serde_json::from_str(json).unwrap();
+        assert_eq!(step.id, "step-1");
+        assert_eq!(step.description, "Do something");
+        assert!(step.estimated_files.is_none());
+    }
+
+    #[test]
+    fn test_plan_step_deserialize_with_files() {
+        let json =
+            r#"{"id":"step-2","description":"With files","estimated_files":["a.rs","b.rs"]}"#;
+        let step: PlanStep = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            step.estimated_files,
+            Some(vec!["a.rs".to_string(), "b.rs".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_file_create_data_deserialize() {
+        let json = r#"{"path":"/test.rs","content":"fn main() {}"}"#;
+        let data: FileCreateData = serde_json::from_str(json).unwrap();
+        assert_eq!(data.path, "/test.rs");
+        assert_eq!(data.content, "fn main() {}");
+        assert!(data.mode.is_none());
+    }
+
+    #[test]
+    fn test_file_edit_data_deserialize() {
+        let json = r#"{"path":"/edit.rs","operation":"replace","old_text":"old","new_text":"new"}"#;
+        let data: FileEditData = serde_json::from_str(json).unwrap();
+        assert_eq!(data.path, "/edit.rs");
+        assert_eq!(data.operation, "replace");
+        assert_eq!(data.old_text, Some("old".to_string()));
+        assert_eq!(data.new_text, Some("new".to_string()));
+    }
+
+    #[test]
+    fn test_command_output_data_deserialize() {
+        let json = r#"{"stream":"stdout","text":"output","done":true,"exit_code":0}"#;
+        let data: CommandOutputData = serde_json::from_str(json).unwrap();
+        assert_eq!(data.stream, "stdout");
+        assert_eq!(data.text, "output");
+        assert_eq!(data.done, Some(true));
+        assert_eq!(data.exit_code, Some(0));
+    }
+
+    #[test]
+    fn test_status_data_deserialize() {
+        let json = r#"{"state":"reading","message":"Reading files","progress":50}"#;
+        let data: StatusData = serde_json::from_str(json).unwrap();
+        assert_eq!(data.state, "reading");
+        assert_eq!(data.message, "Reading files");
+        assert_eq!(data.progress, Some(50));
+    }
+
+    #[test]
+    fn test_error_data_deserialize() {
+        let json = r#"{"code":"ERR","message":"Error message"}"#;
+        let data: ErrorData = serde_json::from_str(json).unwrap();
+        assert_eq!(data.code, "ERR");
+        assert_eq!(data.message, "Error message");
+        assert!(data.suggested_fix.is_none());
+        assert!(data.context.is_none());
+    }
+
+    #[test]
+    fn test_completion_data_deserialize() {
+        let json = r#"{"success":true,"summary":"Done","files_changed":["a.rs"]}"#;
+        let data: CompletionData = serde_json::from_str(json).unwrap();
+        assert!(data.success);
+        assert_eq!(data.summary, "Done");
+        assert_eq!(data.files_changed, vec!["a.rs"]);
+    }
+
+    #[test]
+    fn test_message_data_deserialize() {
+        let json = r#"{"role":"assistant","content":"Hello"}"#;
+        let data: MessageData = serde_json::from_str(json).unwrap();
+        assert_eq!(data.role, "assistant");
+        assert_eq!(data.content, "Hello");
+        assert!(data.delta.is_none());
+    }
+
+    #[test]
+    fn test_base_event_deserialize() {
+        let json = r#"{"type":"test","timestamp":12345,"session_id":"sess-1","data":"payload"}"#;
+        let event: BaseEvent<String> = serde_json::from_str(json).unwrap();
+        assert_eq!(event.event_type, "test");
+        assert_eq!(event.timestamp, 12345);
+        assert_eq!(event.session_id, "sess-1");
+        assert_eq!(event.data, "payload");
+    }
+
+    // ===== Roundtrip serialization tests =====
+
+    #[test]
+    fn test_plan_data_roundtrip() {
+        let original = PlanData {
+            steps: vec![PlanStep {
+                id: "1".to_string(),
+                description: "First".to_string(),
+                estimated_files: Some(vec!["a.rs".to_string()]),
+            }],
+        };
+
+        let json = serde_json::to_string(&original).unwrap();
+        let restored: PlanData = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.steps.len(), original.steps.len());
+        assert_eq!(restored.steps[0].id, original.steps[0].id);
+    }
+
+    #[test]
+    fn test_conversation_history_roundtrip() {
+        let original = ConversationHistoryData {
+            messages: vec![
+                HistoryMessageData {
+                    role: "user".to_string(),
+                    content: "Question".to_string(),
+                },
+                HistoryMessageData {
+                    role: "assistant".to_string(),
+                    content: "Answer".to_string(),
+                },
+            ],
+        };
+
+        let json = serde_json::to_string(&original).unwrap();
+        let restored: ConversationHistoryData = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.messages.len(), 2);
+        assert_eq!(restored.messages[0].role, "user");
+        assert_eq!(restored.messages[1].role, "assistant");
+    }
+
+    // ===== Edge cases =====
+
+    #[test]
+    fn test_empty_strings() {
+        let data = FileCreateData {
+            path: "".to_string(),
+            content: "".to_string(),
+            mode: None,
+        };
+
+        let json = serde_json::to_string(&data).unwrap();
+        let restored: FileCreateData = serde_json::from_str(&json).unwrap();
+
+        assert!(restored.path.is_empty());
+        assert!(restored.content.is_empty());
+    }
+
+    #[test]
+    fn test_unicode_content() {
+        let data = MessageData {
+            role: "user".to_string(),
+            content: "日本語 🚀 émojis".to_string(),
+            delta: None,
+        };
+
+        let json = serde_json::to_string(&data).unwrap();
+        let restored: MessageData = serde_json::from_str(&json).unwrap();
+
+        assert!(restored.content.contains("日本語"));
+        assert!(restored.content.contains("🚀"));
+    }
+
+    #[test]
+    fn test_special_characters() {
+        let data = CommandData {
+            command: "echo 'hello \"world\"' | grep \"test\"".to_string(),
+            cwd: Some("/path/with spaces/and'quotes".to_string()),
+            env: None,
+        };
+
+        let json = serde_json::to_string(&data).unwrap();
+        let restored: CommandData = serde_json::from_str(&json).unwrap();
+
+        assert!(restored.command.contains("'hello"));
+        assert!(restored.cwd.unwrap().contains("spaces"));
+    }
+
+    #[test]
+    fn test_large_content() {
+        let large_content = "x".repeat(100_000);
+        let data = FileCreateData {
+            path: "/large.txt".to_string(),
+            content: large_content.clone(),
+            mode: None,
+        };
+
+        let json = serde_json::to_string(&data).unwrap();
+        let restored: FileCreateData = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.content.len(), 100_000);
+    }
+
+    #[test]
+    fn test_completion_data_empty_files() {
+        let data = CompletionData {
+            success: false,
+            summary: "Failed".to_string(),
+            files_changed: vec![],
+        };
+
+        assert!(!data.success);
+        assert!(data.files_changed.is_empty());
+    }
+
+    #[test]
+    fn test_error_data_full() {
+        let data = ErrorData {
+            code: "NETWORK_ERROR".to_string(),
+            message: "Connection failed".to_string(),
+            suggested_fix: Some("Check your network".to_string()),
+            context: Some(serde_json::json!({
+                "url": "https://api.example.com",
+                "status": 503,
+                "retry_count": 3
+            })),
+        };
+
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(json.contains("NETWORK_ERROR"));
+        assert!(json.contains("suggested_fix"));
+        assert!(json.contains("context"));
+    }
+}

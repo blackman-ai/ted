@@ -234,4 +234,416 @@ mod tests {
         let tags = extract_tags(&messages);
         assert!(tags.len() <= 5);
     }
+
+    // ===== Additional extract_text_content Tests =====
+
+    #[test]
+    fn test_extract_text_content_empty() {
+        let msg = create_test_message(Role::User, "");
+        let text = extract_text_content(&msg);
+        assert!(text.is_none());
+    }
+
+    #[test]
+    fn test_extract_text_content_whitespace_only() {
+        let msg = create_test_message(Role::User, "   \t\n  ");
+        let text = extract_text_content(&msg);
+        // The function returns Some("") after trim for whitespace-only input
+        // This is because the text is not empty before the if check
+        assert!(text.is_some());
+        assert!(text.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_extract_text_content_with_blocks() {
+        let msg = Message {
+            id: Uuid::new_v4(),
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![
+                ContentBlock::Text {
+                    text: "First block".to_string(),
+                },
+                ContentBlock::Text {
+                    text: "Second block".to_string(),
+                },
+            ]),
+            timestamp: Utc::now(),
+            tool_use_id: None,
+            token_count: None,
+        };
+
+        let text = extract_text_content(&msg);
+        assert!(text.is_some());
+        let result = text.unwrap();
+        assert!(result.contains("First block"));
+        assert!(result.contains("Second block"));
+    }
+
+    #[test]
+    fn test_extract_text_content_mixed_blocks() {
+        let msg = Message {
+            id: Uuid::new_v4(),
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![
+                ContentBlock::Text {
+                    text: "Some text".to_string(),
+                },
+                ContentBlock::ToolUse {
+                    id: "t1".to_string(),
+                    name: "test".to_string(),
+                    input: serde_json::json!({}),
+                },
+                ContentBlock::Text {
+                    text: "More text".to_string(),
+                },
+            ]),
+            timestamp: Utc::now(),
+            tool_use_id: None,
+            token_count: None,
+        };
+
+        let text = extract_text_content(&msg);
+        assert!(text.is_some());
+        let result = text.unwrap();
+        assert!(result.contains("Some text"));
+        assert!(result.contains("More text"));
+    }
+
+    #[test]
+    fn test_extract_text_content_only_tool_use() {
+        let msg = Message {
+            id: Uuid::new_v4(),
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                id: "t1".to_string(),
+                name: "test".to_string(),
+                input: serde_json::json!({}),
+            }]),
+            timestamp: Utc::now(),
+            tool_use_id: None,
+            token_count: None,
+        };
+
+        let text = extract_text_content(&msg);
+        assert!(text.is_none());
+    }
+
+    // ===== Additional extract_files_changed Tests =====
+
+    #[test]
+    fn test_extract_files_changed_empty() {
+        let files = extract_files_changed(&[]);
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn test_extract_files_changed_no_tool_use() {
+        let msg = create_test_message(Role::User, "Just some text");
+        let files = extract_files_changed(&[msg]);
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn test_extract_files_changed_file_write() {
+        let msg = Message {
+            id: Uuid::new_v4(),
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                id: "tool_1".to_string(),
+                name: "file_write".to_string(),
+                input: serde_json::json!({
+                    "path": "src/new_file.rs",
+                    "content": "fn main() {}"
+                }),
+            }]),
+            timestamp: Utc::now(),
+            tool_use_id: None,
+            token_count: None,
+        };
+
+        let files = extract_files_changed(&[msg]);
+        assert_eq!(files.len(), 1);
+        assert!(files.contains(&"src/new_file.rs".to_string()));
+    }
+
+    #[test]
+    fn test_extract_files_changed_multiple_files() {
+        let msg = Message {
+            id: Uuid::new_v4(),
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![
+                ContentBlock::ToolUse {
+                    id: "tool_1".to_string(),
+                    name: "file_edit".to_string(),
+                    input: serde_json::json!({
+                        "path": "src/main.rs",
+                        "old_string": "old",
+                        "new_string": "new"
+                    }),
+                },
+                ContentBlock::ToolUse {
+                    id: "tool_2".to_string(),
+                    name: "file_write".to_string(),
+                    input: serde_json::json!({
+                        "path": "src/lib.rs",
+                        "content": "pub mod foo;"
+                    }),
+                },
+            ]),
+            timestamp: Utc::now(),
+            tool_use_id: None,
+            token_count: None,
+        };
+
+        let files = extract_files_changed(&[msg]);
+        assert_eq!(files.len(), 2);
+        assert!(files.contains(&"src/main.rs".to_string()));
+        assert!(files.contains(&"src/lib.rs".to_string()));
+    }
+
+    #[test]
+    fn test_extract_files_changed_propose_file_changes() {
+        let msg = Message {
+            id: Uuid::new_v4(),
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                id: "tool_1".to_string(),
+                name: "propose_file_changes".to_string(),
+                input: serde_json::json!({
+                    "operations": [
+                        {"path": "src/a.rs", "type": "edit"},
+                        {"path": "src/b.rs", "type": "write"},
+                        {"path": "src/c.rs", "type": "delete"}
+                    ]
+                }),
+            }]),
+            timestamp: Utc::now(),
+            tool_use_id: None,
+            token_count: None,
+        };
+
+        let files = extract_files_changed(&[msg]);
+        assert_eq!(files.len(), 3);
+        assert!(files.contains(&"src/a.rs".to_string()));
+        assert!(files.contains(&"src/b.rs".to_string()));
+        assert!(files.contains(&"src/c.rs".to_string()));
+    }
+
+    #[test]
+    fn test_extract_files_changed_deduplicates() {
+        let messages = vec![
+            Message {
+                id: Uuid::new_v4(),
+                role: Role::Assistant,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                    id: "tool_1".to_string(),
+                    name: "file_edit".to_string(),
+                    input: serde_json::json!({"path": "src/main.rs", "old_string": "a", "new_string": "b"}),
+                }]),
+                timestamp: Utc::now(),
+                tool_use_id: None,
+                token_count: None,
+            },
+            Message {
+                id: Uuid::new_v4(),
+                role: Role::Assistant,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                    id: "tool_2".to_string(),
+                    name: "file_edit".to_string(),
+                    input: serde_json::json!({"path": "src/main.rs", "old_string": "c", "new_string": "d"}),
+                }]),
+                timestamp: Utc::now(),
+                tool_use_id: None,
+                token_count: None,
+            },
+        ];
+
+        let files = extract_files_changed(&messages);
+        // Same file edited twice, should only appear once
+        assert_eq!(files.len(), 1);
+    }
+
+    #[test]
+    fn test_extract_files_changed_other_tools_ignored() {
+        let msg = Message {
+            id: Uuid::new_v4(),
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![
+                ContentBlock::ToolUse {
+                    id: "tool_1".to_string(),
+                    name: "file_read".to_string(),
+                    input: serde_json::json!({"path": "src/main.rs"}),
+                },
+                ContentBlock::ToolUse {
+                    id: "tool_2".to_string(),
+                    name: "shell".to_string(),
+                    input: serde_json::json!({"command": "ls"}),
+                },
+            ]),
+            timestamp: Utc::now(),
+            tool_use_id: None,
+            token_count: None,
+        };
+
+        let files = extract_files_changed(&[msg]);
+        // file_read and shell don't count as "changed"
+        assert!(files.is_empty());
+    }
+
+    // ===== Additional extract_tags Tests =====
+
+    #[test]
+    fn test_extract_tags_empty() {
+        let tags = extract_tags(&[]);
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn test_extract_tags_no_matching_keywords() {
+        let messages = vec![create_test_message(
+            Role::User,
+            "Hello, I need help with my project.",
+        )];
+
+        let tags = extract_tags(&messages);
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn test_extract_tags_case_insensitive() {
+        let messages = vec![create_test_message(
+            Role::User,
+            "AUTHENTICATION and DATABASE and API",
+        )];
+
+        let tags = extract_tags(&messages);
+        // Should find tags despite uppercase
+        assert!(!tags.is_empty());
+    }
+
+    #[test]
+    fn test_extract_tags_specific_topics() {
+        // Test each topic individually
+        let test_cases = [
+            ("authentication issue", "auth"),
+            ("database query", "database"),
+            ("api endpoint", "api"),
+            ("test failure", "testing"),
+            ("bug report", "bugfix"),
+            ("refactor code", "refactoring"),
+            ("new feature", "feature"),
+            ("security vulnerability", "security"),
+            ("performance issue", "performance"),
+            ("ui component", "ui"),
+            ("frontend changes", "frontend"),
+            ("backend service", "backend"),
+        ];
+
+        for (text, expected_tag) in test_cases {
+            let messages = vec![create_test_message(Role::User, text)];
+            let tags = extract_tags(&messages);
+            assert!(
+                tags.contains(&expected_tag.to_string()),
+                "Expected tag '{}' for text '{}'",
+                expected_tag,
+                text
+            );
+        }
+    }
+
+    #[test]
+    fn test_extract_tags_from_multiple_messages() {
+        let messages = vec![
+            create_test_message(Role::User, "I need to fix a bug"),
+            create_test_message(Role::Assistant, "I'll help with the security fix"),
+            create_test_message(Role::User, "Also add a test"),
+        ];
+
+        let tags = extract_tags(&messages);
+        assert!(
+            tags.contains(&"bugfix".to_string())
+                || tags.contains(&"security".to_string())
+                || tags.contains(&"testing".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_tags_includes_system_messages() {
+        let messages = vec![Message {
+            id: Uuid::new_v4(),
+            role: Role::System,
+            content: MessageContent::Text("authentication database api".to_string()),
+            timestamp: Utc::now(),
+            tool_use_id: None,
+            token_count: None,
+        }];
+
+        // System messages ARE processed by extract_text_content
+        // The extract_tags function processes all messages regardless of role
+        let tags = extract_tags(&messages);
+        // Should find tags from the system message
+        assert!(!tags.is_empty());
+    }
+
+    // ===== summarize_conversation Tests =====
+
+    // Note: We can't easily test the async summarize_conversation without a mock provider
+    // But we can test the synchronous parts
+
+    #[tokio::test]
+    async fn test_summarize_conversation_short() {
+        use crate::llm::providers::ollama::OllamaProvider;
+
+        let messages = vec![
+            create_test_message(Role::User, "Hello"),
+            create_test_message(Role::Assistant, "Hi there"),
+        ];
+
+        // Create a dummy provider (won't be used for short conversations)
+        let provider = OllamaProvider::new();
+
+        let summary = summarize_conversation(&messages, &provider).await.unwrap();
+
+        // For short conversations, it just extracts content
+        assert!(!summary.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_summarize_conversation_empty() {
+        use crate::llm::providers::ollama::OllamaProvider;
+
+        let messages: Vec<Message> = vec![];
+        let provider = OllamaProvider::new();
+
+        let summary = summarize_conversation(&messages, &provider).await.unwrap();
+
+        // Empty messages should produce empty summary
+        assert!(summary.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_summarize_conversation_long() {
+        use crate::llm::providers::ollama::OllamaProvider;
+
+        // Create a long conversation
+        let long_text = "This is a very long message that contains a lot of content. ".repeat(50);
+        let messages = vec![
+            create_test_message(Role::User, &long_text),
+            create_test_message(Role::Assistant, &long_text),
+        ];
+
+        let provider = OllamaProvider::new();
+
+        let summary = summarize_conversation(&messages, &provider).await.unwrap();
+
+        // Summary should be truncated to 300 chars
+        assert!(summary.len() <= 300);
+    }
+
+    #[test]
+    fn test_create_test_message_helper() {
+        let msg = create_test_message(Role::User, "Test content");
+        assert_eq!(msg.role, Role::User);
+        assert!(matches!(msg.content, MessageContent::Text(ref s) if s == "Test content"));
+    }
 }

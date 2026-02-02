@@ -1764,4 +1764,477 @@ Let me see what files exist."#;
             assert!(model.max_output_tokens > 0);
         }
     }
+
+    // ===== Wiremock Integration Tests =====
+
+    #[tokio::test]
+    async fn test_health_check_success() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "models": []
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let provider = OllamaProvider::with_base_url(mock_server.uri());
+        let result = provider.health_check().await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_health_check_server_error() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock_server)
+            .await;
+
+        let provider = OllamaProvider::with_base_url(mock_server.uri());
+        let result = provider.health_check().await;
+
+        assert!(result.is_ok());
+        assert!(!result.unwrap()); // 500 means not healthy
+    }
+
+    #[tokio::test]
+    async fn test_list_local_models_success() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "models": [
+                    {"name": "qwen2.5-coder:14b"},
+                    {"name": "llama3.2:latest"},
+                    {"name": "codellama:7b"}
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let provider = OllamaProvider::with_base_url(mock_server.uri());
+        let result = provider.list_local_models().await;
+
+        assert!(result.is_ok());
+        let models = result.unwrap();
+        assert_eq!(models.len(), 3);
+        assert!(models.contains(&"qwen2.5-coder:14b".to_string()));
+        assert!(models.contains(&"llama3.2:latest".to_string()));
+        assert!(models.contains(&"codellama:7b".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_list_local_models_empty() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "models": []
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let provider = OllamaProvider::with_base_url(mock_server.uri());
+        let result = provider.list_local_models().await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_local_models_server_error() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("Internal error"))
+            .mount(&mock_server)
+            .await;
+
+        let provider = OllamaProvider::with_base_url(mock_server.uri());
+        let result = provider.list_local_models().await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_complete_success() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": {
+                    "role": "assistant",
+                    "content": "Hello! How can I help you?"
+                },
+                "done": true,
+                "prompt_eval_count": 10,
+                "eval_count": 8
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let provider = OllamaProvider::with_base_url(mock_server.uri());
+        let request = CompletionRequest::new("qwen2.5-coder:14b", vec![Message::user("Hi")]);
+
+        let result = provider.complete(request).await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        assert!(!response.content.is_empty());
+        assert_eq!(response.usage.input_tokens, 10);
+        assert_eq!(response.usage.output_tokens, 8);
+    }
+
+    #[tokio::test]
+    async fn test_complete_with_tool_calls() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "function": {
+                            "name": "file_read",
+                            "arguments": {"path": "/src/main.rs"}
+                        }
+                    }]
+                },
+                "done": true,
+                "prompt_eval_count": 15,
+                "eval_count": 20
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let provider = OllamaProvider::with_base_url(mock_server.uri());
+        let request =
+            CompletionRequest::new("qwen2.5-coder:14b", vec![Message::user("Read main.rs")]);
+
+        let result = provider.complete(request).await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        assert_eq!(response.stop_reason, Some(StopReason::ToolUse));
+
+        // Check that tool use is in the content
+        let has_tool_use = response
+            .content
+            .iter()
+            .any(|c| matches!(c, ContentBlockResponse::ToolUse { .. }));
+        assert!(has_tool_use);
+    }
+
+    #[tokio::test]
+    async fn test_complete_server_error() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(
+                ResponseTemplate::new(500)
+                    .set_body_json(serde_json::json!({"error": "Internal server error"})),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let provider = OllamaProvider::with_base_url(mock_server.uri());
+        let request = CompletionRequest::new("qwen2.5-coder:14b", vec![Message::user("Hi")]);
+
+        let result = provider.complete(request).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_complete_stream_success() {
+        use futures::StreamExt;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        // Simulate streaming NDJSON response
+        let stream_body = r#"{"message":{"role":"assistant","content":"Hello"},"done":false}
+{"message":{"role":"assistant","content":" world"},"done":false}
+{"message":{"role":"assistant","content":"!"},"done":true,"eval_count":3,"prompt_eval_count":5}
+"#;
+
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(stream_body))
+            .mount(&mock_server)
+            .await;
+
+        let provider = OllamaProvider::with_base_url(mock_server.uri());
+        let request = CompletionRequest::new("qwen2.5-coder:14b", vec![Message::user("Hi")]);
+
+        let result = provider.complete_stream(request).await;
+        assert!(result.is_ok());
+
+        let mut stream = result.unwrap();
+        let mut events = Vec::new();
+
+        while let Some(event) = stream.next().await {
+            events.push(event);
+        }
+
+        // Should have received some events
+        assert!(!events.is_empty());
+
+        // Should have a MessageStart
+        let has_start = events.iter().any(|e| {
+            matches!(
+                e,
+                Ok(StreamEvent::MessageStart { .. })
+            )
+        });
+        assert!(has_start);
+
+        // Should have a MessageStop
+        let has_stop = events
+            .iter()
+            .any(|e| matches!(e, Ok(StreamEvent::MessageStop)));
+        assert!(has_stop);
+    }
+
+    #[tokio::test]
+    async fn test_complete_stream_with_tool_call() {
+        use futures::StreamExt;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        // Simulate streaming response with native tool call
+        let stream_body = r#"{"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"glob","arguments":{"pattern":"*.rs"}}}]},"done":true,"eval_count":10,"prompt_eval_count":5}
+"#;
+
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(stream_body))
+            .mount(&mock_server)
+            .await;
+
+        let provider = OllamaProvider::with_base_url(mock_server.uri());
+        let request = CompletionRequest::new("qwen2.5-coder:14b", vec![Message::user("List files")]);
+
+        let result = provider.complete_stream(request).await;
+        assert!(result.is_ok());
+
+        let mut stream = result.unwrap();
+        let mut events = Vec::new();
+
+        while let Some(event) = stream.next().await {
+            events.push(event);
+        }
+
+        // Should have tool use events
+        let has_tool_use = events.iter().any(|e| {
+            matches!(
+                e,
+                Ok(StreamEvent::ContentBlockStart {
+                    content_block: ContentBlockResponse::ToolUse { .. },
+                    ..
+                })
+            )
+        });
+        assert!(has_tool_use);
+    }
+
+    #[tokio::test]
+    async fn test_complete_stream_json_tool_call_in_text() {
+        use futures::StreamExt;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        // Model outputs tool call as JSON text (common for smaller models)
+        let stream_body = r#"{"message":{"role":"assistant","content":"{\"name\": \"glob\", \"arguments\": {\"pattern\": \"*.rs\"}}"},"done":true,"eval_count":10,"prompt_eval_count":5}
+"#;
+
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(stream_body))
+            .mount(&mock_server)
+            .await;
+
+        let provider = OllamaProvider::with_base_url(mock_server.uri());
+        let request = CompletionRequest::new("qwen2.5-coder:7b", vec![Message::user("List files")]);
+
+        let result = provider.complete_stream(request).await;
+        assert!(result.is_ok());
+
+        let mut stream = result.unwrap();
+        let mut events = Vec::new();
+
+        while let Some(event) = stream.next().await {
+            events.push(event);
+        }
+
+        // Should detect and parse the JSON tool call
+        let has_tool_use = events.iter().any(|e| {
+            matches!(
+                e,
+                Ok(StreamEvent::ContentBlockStart {
+                    content_block: ContentBlockResponse::ToolUse { .. },
+                    ..
+                })
+            )
+        });
+        assert!(has_tool_use);
+    }
+
+    #[tokio::test]
+    async fn test_complete_stream_server_error() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(
+                ResponseTemplate::new(500)
+                    .set_body_json(serde_json::json!({"error": "Server error"})),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let provider = OllamaProvider::with_base_url(mock_server.uri());
+        let request = CompletionRequest::new("qwen2.5-coder:14b", vec![Message::user("Hi")]);
+
+        let result = provider.complete_stream(request).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_pull_model_success() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        // Simulate streaming pull progress
+        let pull_body = r#"{"status":"pulling manifest"}
+{"status":"downloading","completed":1000,"total":10000}
+{"status":"downloading","completed":10000,"total":10000}
+{"status":"success"}
+"#;
+
+        Mock::given(method("POST"))
+            .and(path("/api/pull"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(pull_body))
+            .mount(&mock_server)
+            .await;
+
+        let provider = OllamaProvider::with_base_url(mock_server.uri());
+        let result = provider.pull_model("qwen2.5-coder:14b").await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_pull_model_failure() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/pull"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("Model not found"))
+            .mount(&mock_server)
+            .await;
+
+        let provider = OllamaProvider::with_base_url(mock_server.uri());
+        let result = provider.pull_model("nonexistent-model").await;
+
+        assert!(result.is_err());
+    }
+
+    // ===== Additional Tool Call Deduplication Tests =====
+
+    #[test]
+    fn test_try_parse_all_deduplicates() {
+        // Same tool call repeated multiple times
+        let text = r#"{"name": "glob", "arguments": {"pattern": "*.rs"}}
+{"name": "glob", "arguments": {"pattern": "*.rs"}}
+{"name": "glob", "arguments": {"pattern": "*.rs"}}"#;
+
+        let results = try_parse_all_json_tool_calls(text);
+        // Should deduplicate to 1
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_try_parse_all_multiple_different() {
+        let text = r#"{"name": "glob", "arguments": {"pattern": "*.rs"}}
+{"name": "file_read", "arguments": {"path": "/src/main.rs"}}"#;
+
+        let results = try_parse_all_json_tool_calls(text);
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_try_parse_markdown_code_block() {
+        let text = r#"I'll read the file:
+
+```json
+{"name": "file_read", "arguments": {"path": "/src/lib.rs"}}
+```
+
+Let me check it."#;
+
+        let results = try_parse_all_json_tool_calls(text);
+        assert_eq!(results.len(), 1);
+        let (name, args) = &results[0];
+        assert_eq!(name, "file_read");
+        assert_eq!(args["path"], "/src/lib.rs");
+    }
+
+    #[test]
+    fn test_try_parse_qwen_deduplicates() {
+        let text = r#"<function=glob><parameter=pattern>*.rs</parameter></function>
+<function=glob><parameter=pattern>*.rs</parameter></function>"#;
+
+        let results = try_parse_qwen_tool_calls(text);
+        assert_eq!(results.len(), 1);
+    }
 }

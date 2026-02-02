@@ -412,4 +412,343 @@ mod tests {
             }
         }
     }
+
+    // ===== Additional FileGitMetrics Tests =====
+
+    #[test]
+    fn test_file_git_metrics_clone() {
+        let metrics = FileGitMetrics {
+            commit_count: 5,
+            last_modified: Some(Utc::now()),
+            first_commit: Some(Utc::now() - chrono::Duration::days(5)),
+            churn_rate: 1.0,
+            author_count: 2,
+            lines_added: 100,
+            lines_deleted: 50,
+        };
+
+        let cloned = metrics.clone();
+        assert_eq!(cloned.commit_count, metrics.commit_count);
+        assert_eq!(cloned.author_count, metrics.author_count);
+        assert_eq!(cloned.lines_added, metrics.lines_added);
+        assert_eq!(cloned.lines_deleted, metrics.lines_deleted);
+    }
+
+    #[test]
+    fn test_file_git_metrics_debug() {
+        let metrics = FileGitMetrics::default();
+        let debug_str = format!("{:?}", metrics);
+        assert!(debug_str.contains("FileGitMetrics"));
+        assert!(debug_str.contains("commit_count"));
+    }
+
+    #[test]
+    fn test_churn_calculation_no_commits() {
+        let mut metrics = FileGitMetrics::default();
+        metrics.calculate_churn();
+        // With no first/last commit, churn should remain 0
+        assert_eq!(metrics.churn_rate, 0.0);
+    }
+
+    #[test]
+    fn test_churn_calculation_same_day() {
+        let now = Utc::now();
+        let mut metrics = FileGitMetrics {
+            commit_count: 5,
+            first_commit: Some(now),
+            last_modified: Some(now),
+            ..Default::default()
+        };
+
+        metrics.calculate_churn();
+        // Same day = 1 day minimum, 5 commits = 5.0 churn rate
+        assert_eq!(metrics.churn_rate, 5.0);
+    }
+
+    #[test]
+    fn test_churn_calculation_one_commit() {
+        let mut metrics = FileGitMetrics {
+            commit_count: 1,
+            first_commit: Some(Utc::now() - chrono::Duration::days(100)),
+            last_modified: Some(Utc::now()),
+            ..Default::default()
+        };
+
+        metrics.calculate_churn();
+        // 1 commit over 100 days = 0.01 churn
+        assert!(metrics.churn_rate > 0.0);
+        assert!(metrics.churn_rate < 0.02);
+    }
+
+    #[test]
+    fn test_normalized_churn_zero() {
+        let metrics = FileGitMetrics::default();
+        assert_eq!(metrics.normalized_churn(), 0.0);
+    }
+
+    #[test]
+    fn test_normalized_churn_low() {
+        let metrics = FileGitMetrics {
+            churn_rate: 0.1,
+            ..Default::default()
+        };
+        assert_eq!(metrics.normalized_churn(), 0.1);
+    }
+
+    #[test]
+    fn test_normalized_churn_exactly_one() {
+        let metrics = FileGitMetrics {
+            churn_rate: 1.0,
+            ..Default::default()
+        };
+        assert_eq!(metrics.normalized_churn(), 1.0);
+    }
+
+    #[test]
+    fn test_normalized_churn_very_high() {
+        let metrics = FileGitMetrics {
+            churn_rate: 100.0,
+            ..Default::default()
+        };
+        assert_eq!(metrics.normalized_churn(), 1.0); // Capped at 1.0
+    }
+
+    #[test]
+    fn test_file_git_metrics_fields() {
+        let metrics = FileGitMetrics {
+            commit_count: 42,
+            last_modified: None,
+            first_commit: None,
+            churn_rate: 0.5,
+            author_count: 3,
+            lines_added: 1000,
+            lines_deleted: 200,
+        };
+
+        assert_eq!(metrics.commit_count, 42);
+        assert!(metrics.last_modified.is_none());
+        assert!(metrics.first_commit.is_none());
+        assert_eq!(metrics.churn_rate, 0.5);
+        assert_eq!(metrics.author_count, 3);
+        assert_eq!(metrics.lines_added, 1000);
+        assert_eq!(metrics.lines_deleted, 200);
+    }
+
+    // ===== Additional project_hash Tests =====
+
+    #[test]
+    fn test_project_hash_consistency() {
+        let path = Path::new("/test/path/to/project");
+        let hash1 = project_hash(path);
+        let hash2 = project_hash(path);
+        let hash3 = project_hash(path);
+
+        assert_eq!(hash1, hash2);
+        assert_eq!(hash2, hash3);
+    }
+
+    #[test]
+    fn test_project_hash_different_paths() {
+        let hashes: Vec<String> = vec![
+            project_hash(Path::new("/a")),
+            project_hash(Path::new("/b")),
+            project_hash(Path::new("/a/b")),
+            project_hash(Path::new("/a/b/c")),
+        ];
+
+        // All hashes should be unique
+        let unique: std::collections::HashSet<_> = hashes.iter().collect();
+        assert_eq!(unique.len(), hashes.len());
+    }
+
+    #[test]
+    fn test_project_hash_format() {
+        let hash = project_hash(Path::new("/test"));
+        // Should be 16 hex characters
+        assert_eq!(hash.len(), 16);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_project_hash_empty_path() {
+        let hash = project_hash(Path::new(""));
+        // Should still produce a valid hash
+        assert_eq!(hash.len(), 16);
+    }
+
+    #[test]
+    fn test_project_hash_relative_path() {
+        let hash = project_hash(Path::new("relative/path"));
+        assert_eq!(hash.len(), 16);
+    }
+
+    #[test]
+    fn test_project_hash_with_special_chars() {
+        let hash = project_hash(Path::new("/path/with spaces/and-dashes"));
+        assert_eq!(hash.len(), 16);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    // ===== Additional GitAnalyzer Tests =====
+
+    #[test]
+    fn test_has_uncommitted_changes() {
+        if let Some(analyzer) = get_test_repo() {
+            // Just verify the method works without crashing
+            let _ = analyzer.has_uncommitted_changes(Path::new("Cargo.toml"));
+            let _ = analyzer.has_uncommitted_changes(Path::new("nonexistent/file.txt"));
+        }
+    }
+
+    #[test]
+    fn test_analyze_nonexistent_file() {
+        if let Some(analyzer) = get_test_repo() {
+            let metrics = analyzer.analyze_file(Path::new("this/file/does/not/exist.txt"));
+            // Should succeed but with 0 commits
+            if let Ok(m) = metrics {
+                assert_eq!(m.commit_count, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_root_path() {
+        if let Some(analyzer) = get_test_repo() {
+            let root = analyzer.root();
+            assert!(root.exists());
+            assert!(root.is_dir());
+        }
+    }
+
+    #[test]
+    fn test_analyze_all() {
+        if let Some(analyzer) = get_test_repo() {
+            let result = analyzer.analyze_all();
+            assert!(result.is_ok());
+            let metrics = result.unwrap();
+            // A real repo should have some files
+            // Just verify the result is a valid HashMap
+            let _ = metrics.len();
+        }
+    }
+
+    #[test]
+    fn test_open_nonexistent_repo() {
+        let result = GitAnalyzer::open(Path::new("/nonexistent/path/to/repo"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_tracked_files_not_empty() {
+        if let Some(analyzer) = get_test_repo() {
+            let files = analyzer.tracked_files().unwrap();
+            // A real repo with code should have some tracked files
+            if !files.is_empty() {
+                // Verify files are PathBuf
+                for file in &files {
+                    let _ = file.to_str();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_current_branch_format() {
+        if let Some(analyzer) = get_test_repo() {
+            if let Some(branch) = analyzer.current_branch() {
+                // Branch name should be non-empty
+                assert!(!branch.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn test_head_commit_hash_format() {
+        if let Some(analyzer) = get_test_repo() {
+            if let Some(hash) = analyzer.head_commit_hash() {
+                // Should be exactly 8 hex characters
+                assert_eq!(hash.len(), 8);
+                assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+            }
+        }
+    }
+
+    // ===== Edge Cases =====
+
+    #[test]
+    fn test_file_git_metrics_with_timestamps() {
+        let first = Utc::now() - chrono::Duration::days(365);
+        let last = Utc::now();
+
+        let mut metrics = FileGitMetrics {
+            commit_count: 52,
+            first_commit: Some(first),
+            last_modified: Some(last),
+            ..Default::default()
+        };
+
+        metrics.calculate_churn();
+
+        // 52 commits over ~365 days should be ~0.14 commits/day
+        assert!(metrics.churn_rate > 0.1);
+        assert!(metrics.churn_rate < 0.2);
+    }
+
+    #[test]
+    fn test_file_git_metrics_high_commit_count() {
+        let mut metrics = FileGitMetrics {
+            commit_count: 1000,
+            first_commit: Some(Utc::now() - chrono::Duration::days(10)),
+            last_modified: Some(Utc::now()),
+            ..Default::default()
+        };
+
+        metrics.calculate_churn();
+
+        // 1000 commits over 10 days = 100 commits/day
+        assert_eq!(metrics.churn_rate, 100.0);
+        // Normalized should be capped at 1.0
+        assert_eq!(metrics.normalized_churn(), 1.0);
+    }
+
+    #[test]
+    fn test_file_git_metrics_lines_changed() {
+        let metrics = FileGitMetrics {
+            lines_added: 500,
+            lines_deleted: 300,
+            ..Default::default()
+        };
+
+        // Net change = 200 lines added
+        let net_change = metrics.lines_added as i64 - metrics.lines_deleted as i64;
+        assert_eq!(net_change, 200);
+    }
+
+    #[test]
+    fn test_churn_only_first_commit() {
+        let mut metrics = FileGitMetrics {
+            commit_count: 1,
+            first_commit: Some(Utc::now()),
+            last_modified: None,
+            ..Default::default()
+        };
+
+        metrics.calculate_churn();
+        // With only first_commit, churn can't be calculated
+        assert_eq!(metrics.churn_rate, 0.0);
+    }
+
+    #[test]
+    fn test_churn_only_last_modified() {
+        let mut metrics = FileGitMetrics {
+            commit_count: 1,
+            first_commit: None,
+            last_modified: Some(Utc::now()),
+            ..Default::default()
+        };
+
+        metrics.calculate_churn();
+        // With only last_modified, churn can't be calculated
+        assert_eq!(metrics.churn_rate, 0.0);
+    }
 }

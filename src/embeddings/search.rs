@@ -159,6 +159,183 @@ impl SemanticSearch {
 mod tests {
     use super::*;
 
+    // ===== Unit Tests (no Ollama required) =====
+
+    #[test]
+    fn test_search_result_creation() {
+        let result = SearchResult {
+            content: "test content".to_string(),
+            score: 0.85,
+            metadata: None,
+        };
+
+        assert_eq!(result.content, "test content");
+        assert!((result.score - 0.85).abs() < 0.001);
+        assert!(result.metadata.is_none());
+    }
+
+    #[test]
+    fn test_search_result_with_metadata() {
+        let metadata = serde_json::json!({
+            "file": "test.rs",
+            "line": 42
+        });
+
+        let result = SearchResult {
+            content: "code snippet".to_string(),
+            score: 0.92,
+            metadata: Some(metadata.clone()),
+        };
+
+        assert_eq!(result.content, "code snippet");
+        assert!(result.metadata.is_some());
+        let meta = result.metadata.unwrap();
+        assert_eq!(meta["file"], "test.rs");
+        assert_eq!(meta["line"], 42);
+    }
+
+    #[test]
+    fn test_search_result_clone() {
+        let result = SearchResult {
+            content: "cloneable content".to_string(),
+            score: 0.75,
+            metadata: Some(serde_json::json!({"key": "value"})),
+        };
+
+        let cloned = result.clone();
+        assert_eq!(cloned.content, result.content);
+        assert_eq!(cloned.score, result.score);
+        assert_eq!(cloned.metadata, result.metadata);
+    }
+
+    #[test]
+    fn test_search_result_debug() {
+        let result = SearchResult {
+            content: "debug test".to_string(),
+            score: 0.5,
+            metadata: None,
+        };
+
+        let debug_str = format!("{:?}", result);
+        assert!(debug_str.contains("SearchResult"));
+        assert!(debug_str.contains("debug test"));
+        assert!(debug_str.contains("0.5"));
+    }
+
+    #[test]
+    fn test_search_result_score_ranges() {
+        // Test various score values
+        let scores = vec![0.0, 0.25, 0.5, 0.75, 1.0];
+        for score in scores {
+            let result = SearchResult {
+                content: "test".to_string(),
+                score,
+                metadata: None,
+            };
+            assert!((result.score - score).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    fn test_search_result_empty_content() {
+        let result = SearchResult {
+            content: "".to_string(),
+            score: 0.0,
+            metadata: None,
+        };
+
+        assert!(result.content.is_empty());
+    }
+
+    #[test]
+    fn test_search_result_unicode_content() {
+        let result = SearchResult {
+            content: "日本語テスト 🦀 émojis and ünïcödé".to_string(),
+            score: 0.88,
+            metadata: None,
+        };
+
+        assert!(result.content.contains("日本語"));
+        assert!(result.content.contains("🦀"));
+    }
+
+    #[test]
+    fn test_search_result_complex_metadata() {
+        let metadata = serde_json::json!({
+            "nested": {
+                "deep": {
+                    "value": 123
+                }
+            },
+            "array": [1, 2, 3],
+            "string": "hello"
+        });
+
+        let result = SearchResult {
+            content: "complex".to_string(),
+            score: 0.6,
+            metadata: Some(metadata),
+        };
+
+        let meta = result.metadata.unwrap();
+        assert_eq!(meta["nested"]["deep"]["value"], 123);
+        assert_eq!(meta["array"][0], 1);
+    }
+
+    #[test]
+    fn test_semantic_search_creation() {
+        let generator = EmbeddingGenerator::new();
+        let search = SemanticSearch::new(generator);
+
+        // Just verify the struct can be created
+        let _ = search;
+    }
+
+    #[test]
+    fn test_search_result_sorting_by_score() {
+        let mut results = [
+            SearchResult {
+                content: "low".to_string(),
+                score: 0.2,
+                metadata: None,
+            },
+            SearchResult {
+                content: "high".to_string(),
+                score: 0.9,
+                metadata: None,
+            },
+            SearchResult {
+                content: "medium".to_string(),
+                score: 0.5,
+                metadata: None,
+            },
+        ];
+
+        // Sort by score descending
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        assert_eq!(results[0].content, "high");
+        assert_eq!(results[1].content, "medium");
+        assert_eq!(results[2].content, "low");
+    }
+
+    #[test]
+    fn test_search_result_with_nan_score() {
+        let result = SearchResult {
+            content: "nan test".to_string(),
+            score: f32::NAN,
+            metadata: None,
+        };
+
+        assert!(result.score.is_nan());
+    }
+
+    // ===== Integration Tests (require Ollama) =====
+
     #[tokio::test]
     #[ignore] // Requires Ollama running
     async fn test_semantic_search() {

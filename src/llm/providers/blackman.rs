@@ -942,4 +942,222 @@ mod tests {
         // Unknown defaults to Anthropic
         assert_eq!(provider.detect_provider("unknown-model"), "Anthropic");
     }
+
+    // ===== Additional tests for convert_messages =====
+
+    #[test]
+    fn test_convert_messages_user_text() {
+        let provider = BlackmanProvider::new("test-key");
+        let messages = vec![Message::user("Hello")];
+        let converted = provider.convert_messages(&messages, None);
+
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].role, "user");
+        match &converted[0].content {
+            BlackmanContent::Text(text) => assert_eq!(text, "Hello"),
+            _ => panic!("Expected text content"),
+        }
+    }
+
+    #[test]
+    fn test_convert_messages_with_system() {
+        let provider = BlackmanProvider::new("test-key");
+        let messages = vec![Message::user("Hello")];
+        let converted = provider.convert_messages(&messages, Some("You are helpful"));
+
+        assert_eq!(converted.len(), 2);
+        assert_eq!(converted[0].role, "system");
+        match &converted[0].content {
+            BlackmanContent::Text(text) => assert_eq!(text, "You are helpful"),
+            _ => panic!("Expected text content"),
+        }
+    }
+
+    #[test]
+    fn test_convert_messages_assistant() {
+        let provider = BlackmanProvider::new("test-key");
+        let messages = vec![Message::assistant("I can help")];
+        let converted = provider.convert_messages(&messages, None);
+
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].role, "assistant");
+    }
+
+    #[test]
+    fn test_convert_messages_skips_system_role() {
+        let provider = BlackmanProvider::new("test-key");
+        let messages = vec![Message::system("System message"), Message::user("Hello")];
+        let converted = provider.convert_messages(&messages, None);
+
+        // System messages in the message list are skipped (use system parameter instead)
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].role, "user");
+    }
+
+    // ===== Additional tests for convert_tools =====
+
+    #[test]
+    fn test_convert_tools_empty() {
+        let provider = BlackmanProvider::new("test-key");
+        let tools: Vec<ToolDefinition> = vec![];
+        let converted = provider.convert_tools(&tools);
+
+        assert!(converted.is_empty());
+    }
+
+    #[test]
+    fn test_convert_tools_single() {
+        let provider = BlackmanProvider::new("test-key");
+        let tools = vec![make_tool("test_tool")];
+        let converted = provider.convert_tools(&tools);
+
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].tool_type, "function");
+        assert_eq!(converted[0].function.name, "test_tool");
+    }
+
+    #[test]
+    fn test_convert_tools_multiple() {
+        let provider = BlackmanProvider::new("test-key");
+        let tools = vec![make_tool("tool1"), make_tool("tool2"), make_tool("tool3")];
+        let converted = provider.convert_tools(&tools);
+
+        assert_eq!(converted.len(), 3);
+        assert_eq!(converted[0].function.name, "tool1");
+        assert_eq!(converted[1].function.name, "tool2");
+        assert_eq!(converted[2].function.name, "tool3");
+    }
+
+    #[test]
+    fn test_convert_tools_preserves_description() {
+        let provider = BlackmanProvider::new("test-key");
+        let tools = vec![make_tool("file_read")];
+        let converted = provider.convert_tools(&tools);
+
+        assert_eq!(converted[0].function.description, "Test tool: file_read");
+    }
+
+    // ===== Tests for available_models =====
+
+    #[test]
+    fn test_available_models_not_empty() {
+        let provider = BlackmanProvider::new("test-key");
+        let models = provider.available_models();
+        assert!(!models.is_empty());
+    }
+
+    #[test]
+    fn test_available_models_contains_gpt4o() {
+        let provider = BlackmanProvider::new("test-key");
+        let models = provider.available_models();
+        assert!(models.iter().any(|m| m.id == "gpt-4o"));
+    }
+
+    #[test]
+    fn test_available_models_contains_claude() {
+        let provider = BlackmanProvider::new("test-key");
+        let models = provider.available_models();
+        assert!(models.iter().any(|m| m.id.contains("claude")));
+    }
+
+    #[test]
+    fn test_available_models_have_tool_support() {
+        let provider = BlackmanProvider::new("test-key");
+        let models = provider.available_models();
+        // All listed models should support tools
+        for model in &models {
+            assert!(
+                model.supports_tools,
+                "Model {} should support tools",
+                model.id
+            );
+        }
+    }
+
+    // ===== Tests for supports_model =====
+
+    #[test]
+    fn test_supports_model_true() {
+        let provider = BlackmanProvider::new("test-key");
+        assert!(provider.supports_model("gpt-4o"));
+        assert!(provider.supports_model("gpt-4o-mini"));
+    }
+
+    #[test]
+    fn test_supports_model_false() {
+        let provider = BlackmanProvider::new("test-key");
+        assert!(!provider.supports_model("nonexistent-model"));
+        assert!(!provider.supports_model("gpt-5-super")); // Hypothetical
+    }
+
+    // ===== Tests for count_tokens =====
+
+    #[test]
+    fn test_count_tokens_empty() {
+        let provider = BlackmanProvider::new("test-key");
+        let count = provider.count_tokens("", "gpt-4o").unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_count_tokens_short() {
+        let provider = BlackmanProvider::new("test-key");
+        // "hello" is 5 chars, 5/4 = 1 token
+        let count = provider.count_tokens("hello", "gpt-4o").unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_count_tokens_longer() {
+        let provider = BlackmanProvider::new("test-key");
+        // 100 chars / 4 = 25 tokens
+        let text = "x".repeat(100);
+        let count = provider.count_tokens(&text, "gpt-4o").unwrap();
+        assert_eq!(count, 25);
+    }
+
+    // ===== Tests for api_url edge cases =====
+
+    #[test]
+    fn test_api_url_with_v1_in_middle() {
+        let provider = BlackmanProvider::with_base_url("key", "https://api.com/v1/custom");
+        assert_eq!(provider.api_url(), "https://api.com/v1/custom");
+    }
+
+    #[test]
+    fn test_api_url_without_v1() {
+        let provider = BlackmanProvider::with_base_url("key", "https://api.com/custom");
+        assert_eq!(provider.api_url(), "https://api.com/custom/v1/completions");
+    }
+
+    // ===== Tests for detect_provider edge cases =====
+
+    #[test]
+    fn test_detect_provider_o3_model() {
+        let provider = BlackmanProvider::new("test-key");
+        assert_eq!(provider.detect_provider("o3-preview"), "OpenAI");
+        assert_eq!(provider.detect_provider("o3-mini"), "OpenAI");
+    }
+
+    #[test]
+    fn test_detect_provider_groq_in_name() {
+        let provider = BlackmanProvider::new("test-key");
+        assert_eq!(provider.detect_provider("groq-hosted-llama"), "Groq");
+    }
+
+    #[test]
+    fn test_detect_provider_case_insensitive() {
+        let provider = BlackmanProvider::new("test-key");
+        assert_eq!(provider.detect_provider("GPT-4O"), "OpenAI");
+        assert_eq!(provider.detect_provider("CLAUDE-3-OPUS"), "Anthropic");
+        assert_eq!(provider.detect_provider("Gemini-Pro"), "Gemini");
+    }
+
+    // ===== Tests for name() =====
+
+    #[test]
+    fn test_name() {
+        let provider = BlackmanProvider::new("test-key");
+        assert_eq!(provider.name(), "blackman");
+    }
 }

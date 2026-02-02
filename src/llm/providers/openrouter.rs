@@ -1177,4 +1177,577 @@ mod tests {
             assert!(model.max_output_tokens > 0);
         }
     }
+
+    // ===== Wiremock Integration Tests =====
+
+    #[tokio::test]
+    async fn test_complete_success() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(header("Authorization", "Bearer test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "chatcmpl-123",
+                "model": "openai/gpt-4o",
+                "choices": [{
+                    "message": {
+                        "content": "Hello! How can I help you today?"
+                    },
+                    "finish_reason": "stop"
+                }],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 8
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let provider = OpenRouterProvider::with_base_url(
+            "test-key",
+            format!("{}/v1/chat/completions", mock_server.uri()),
+        );
+
+        let request = CompletionRequest::new("openai/gpt-4o", vec![Message::user("Hi")]);
+
+        let result = provider.complete(request).await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        assert_eq!(response.id, "chatcmpl-123");
+        assert_eq!(response.model, "openai/gpt-4o");
+        assert_eq!(response.usage.input_tokens, 10);
+        assert_eq!(response.usage.output_tokens, 8);
+        assert_eq!(response.stop_reason, Some(StopReason::EndTurn));
+    }
+
+    #[tokio::test]
+    async fn test_complete_with_tool_calls() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "chatcmpl-tool",
+                "model": "openai/gpt-4o",
+                "choices": [{
+                    "message": {
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call_123",
+                            "type": "function",
+                            "function": {
+                                "name": "file_read",
+                                "arguments": "{\"path\": \"/src/main.rs\"}"
+                            }
+                        }]
+                    },
+                    "finish_reason": "tool_calls"
+                }],
+                "usage": {
+                    "prompt_tokens": 15,
+                    "completion_tokens": 20
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let provider = OpenRouterProvider::with_base_url(
+            "test-key",
+            format!("{}/v1/chat/completions", mock_server.uri()),
+        );
+
+        let request = CompletionRequest::new("openai/gpt-4o", vec![Message::user("Read main.rs")]);
+
+        let result = provider.complete(request).await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        assert_eq!(response.stop_reason, Some(StopReason::ToolUse));
+
+        let has_tool_use = response
+            .content
+            .iter()
+            .any(|c| matches!(c, ContentBlockResponse::ToolUse { name, .. } if name == "file_read"));
+        assert!(has_tool_use);
+    }
+
+    #[tokio::test]
+    async fn test_complete_authentication_error() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                "error": {
+                    "code": "invalid_api_key",
+                    "message": "Invalid API key provided"
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let provider = OpenRouterProvider::with_base_url(
+            "bad-key",
+            format!("{}/v1/chat/completions", mock_server.uri()),
+        );
+
+        let request = CompletionRequest::new("openai/gpt-4o", vec![Message::user("Hi")]);
+
+        let result = provider.complete(request).await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            TedError::Api(ApiError::AuthenticationFailed) => {}
+            e => panic!("Expected AuthenticationFailed, got {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_complete_rate_limited() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(429).set_body_json(serde_json::json!({
+                "error": {
+                    "code": "rate_limit_exceeded",
+                    "message": "Too many requests"
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let provider = OpenRouterProvider::with_base_url(
+            "test-key",
+            format!("{}/v1/chat/completions", mock_server.uri()),
+        );
+
+        let request = CompletionRequest::new("openai/gpt-4o", vec![Message::user("Hi")]);
+
+        let result = provider.complete(request).await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            TedError::Api(ApiError::RateLimited(_)) => {}
+            e => panic!("Expected RateLimited, got {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_complete_no_choices() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "chatcmpl-empty",
+                "model": "openai/gpt-4o",
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 0
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let provider = OpenRouterProvider::with_base_url(
+            "test-key",
+            format!("{}/v1/chat/completions", mock_server.uri()),
+        );
+
+        let request = CompletionRequest::new("openai/gpt-4o", vec![Message::user("Hi")]);
+
+        let result = provider.complete(request).await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            TedError::Api(ApiError::InvalidResponse(_)) => {}
+            e => panic!("Expected InvalidResponse, got {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_complete_stream_success() {
+        use futures::StreamExt;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        // Simulate SSE streaming response
+        let stream_body = r#"data: {"id":"chatcmpl-123","model":"openai/gpt-4o","choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-123","model":"openai/gpt-4o","choices":[{"delta":{"content":" world"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-123","model":"openai/gpt-4o","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2}}
+
+data: [DONE]
+"#;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(stream_body))
+            .mount(&mock_server)
+            .await;
+
+        let provider = OpenRouterProvider::with_base_url(
+            "test-key",
+            format!("{}/v1/chat/completions", mock_server.uri()),
+        );
+
+        let request = CompletionRequest::new("openai/gpt-4o", vec![Message::user("Hi")]);
+
+        let result = provider.complete_stream(request).await;
+        assert!(result.is_ok());
+
+        let mut stream = result.unwrap();
+        let mut events = Vec::new();
+
+        while let Some(event) = stream.next().await {
+            events.push(event);
+        }
+
+        // Should have received some events
+        assert!(!events.is_empty());
+
+        // Check for MessageStart
+        let has_start = events.iter().any(|e| {
+            matches!(
+                e,
+                Ok(StreamEvent::MessageStart { .. })
+            )
+        });
+        assert!(has_start);
+
+        // Check for text deltas
+        let has_text = events.iter().any(|e| {
+            matches!(
+                e,
+                Ok(StreamEvent::ContentBlockDelta {
+                    delta: ContentBlockDelta::TextDelta { .. },
+                    ..
+                })
+            )
+        });
+        assert!(has_text);
+
+        // Check for MessageStop
+        let has_stop = events
+            .iter()
+            .any(|e| matches!(e, Ok(StreamEvent::MessageStop)));
+        assert!(has_stop);
+    }
+
+    #[tokio::test]
+    async fn test_complete_stream_with_tool_call() {
+        use futures::StreamExt;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        let stream_body = r#"data: {"id":"chatcmpl-tool","model":"openai/gpt-4o","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_123","function":{"name":"glob","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-tool","model":"openai/gpt-4o","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"pattern\""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-tool","model":"openai/gpt-4o","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":": \"*.rs\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-tool","model":"openai/gpt-4o","choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":15}}
+
+data: [DONE]
+"#;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(stream_body))
+            .mount(&mock_server)
+            .await;
+
+        let provider = OpenRouterProvider::with_base_url(
+            "test-key",
+            format!("{}/v1/chat/completions", mock_server.uri()),
+        );
+
+        let request = CompletionRequest::new("openai/gpt-4o", vec![Message::user("List rs files")]);
+
+        let result = provider.complete_stream(request).await;
+        assert!(result.is_ok());
+
+        let mut stream = result.unwrap();
+        let mut events = Vec::new();
+
+        while let Some(event) = stream.next().await {
+            events.push(event);
+        }
+
+        // Should have tool use events
+        let has_tool_start = events.iter().any(|e| {
+            matches!(
+                e,
+                Ok(StreamEvent::ContentBlockStart {
+                    content_block: ContentBlockResponse::ToolUse { .. },
+                    ..
+                })
+            )
+        });
+        assert!(has_tool_start);
+
+        // Check stop reason is ToolUse
+        let has_tool_stop = events.iter().any(|e| {
+            matches!(
+                e,
+                Ok(StreamEvent::MessageDelta {
+                    stop_reason: Some(StopReason::ToolUse),
+                    ..
+                })
+            )
+        });
+        assert!(has_tool_stop);
+    }
+
+    #[tokio::test]
+    async fn test_complete_stream_server_error() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "error": {
+                    "code": "server_error",
+                    "message": "Internal server error"
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let provider = OpenRouterProvider::with_base_url(
+            "test-key",
+            format!("{}/v1/chat/completions", mock_server.uri()),
+        );
+
+        let request = CompletionRequest::new("openai/gpt-4o", vec![Message::user("Hi")]);
+
+        let result = provider.complete_stream(request).await;
+        assert!(result.is_err());
+    }
+
+    // ===== Additional Unit Tests =====
+
+    #[test]
+    fn test_parse_token_counts_two_numbers() {
+        let message = "context too long: 150000 tokens > 128000 limit";
+        let (current, limit) = OpenRouterProvider::parse_token_counts(message);
+        assert_eq!(current, 150000);
+        assert_eq!(limit, 128000);
+    }
+
+    #[test]
+    fn test_parse_token_counts_one_number() {
+        let message = "maximum context length is 128000 tokens";
+        let (current, limit) = OpenRouterProvider::parse_token_counts(message);
+        assert_eq!(current, 128000);
+        assert_eq!(limit, 0);
+    }
+
+    #[test]
+    fn test_parse_token_counts_no_numbers() {
+        let message = "some error without numbers";
+        let (current, limit) = OpenRouterProvider::parse_token_counts(message);
+        assert_eq!(current, 0);
+        assert_eq!(limit, 0);
+    }
+
+    #[test]
+    fn test_parse_error_context_in_message() {
+        let provider = OpenRouterProvider::new("test-key");
+        let body = r#"{"error": {"code": "unknown", "message": "context token limit exceeded: 150000 > 100000"}}"#;
+
+        let error = provider.parse_error(400, body);
+
+        match error {
+            TedError::Api(ApiError::ContextTooLong { current, limit }) => {
+                assert_eq!(current, 150000);
+                assert_eq!(limit, 100000);
+            }
+            _ => panic!("Expected ContextTooLong error"),
+        }
+    }
+
+    #[test]
+    fn test_parse_error_generic_server_error() {
+        let provider = OpenRouterProvider::new("test-key");
+        let body = r#"{"error": {"code": "unknown", "message": "Something went wrong"}}"#;
+
+        let error = provider.parse_error(500, body);
+
+        match error {
+            TedError::Api(ApiError::ServerError { status, message }) => {
+                assert_eq!(status, 500);
+                assert!(message.contains("Something went wrong"));
+            }
+            _ => panic!("Expected ServerError"),
+        }
+    }
+
+    #[test]
+    fn test_parse_error_invalid_json() {
+        let provider = OpenRouterProvider::new("test-key");
+        let body = "not valid json";
+
+        let error = provider.parse_error(500, body);
+
+        match error {
+            TedError::Api(ApiError::ServerError { message, .. }) => {
+                assert_eq!(message, "not valid json");
+            }
+            _ => panic!("Expected ServerError with body as message"),
+        }
+    }
+
+    #[test]
+    fn test_build_request_with_tool_choice_auto() {
+        let provider = OpenRouterProvider::new("test-key");
+        let tools = vec![ToolDefinition {
+            name: "test".to_string(),
+            description: "Test".to_string(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: serde_json::json!({}),
+                required: vec![],
+            },
+        }];
+
+        let request = CompletionRequest::new("openai/gpt-4o", vec![Message::user("Hi")])
+            .with_tools(tools)
+            .with_tool_choice(ToolChoice::Auto);
+
+        let built = provider.build_request(&request, false);
+
+        assert!(built.tool_choice.is_some());
+    }
+
+    #[test]
+    fn test_build_request_with_tool_choice_required() {
+        let provider = OpenRouterProvider::new("test-key");
+        let tools = vec![ToolDefinition {
+            name: "test".to_string(),
+            description: "Test".to_string(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: serde_json::json!({}),
+                required: vec![],
+            },
+        }];
+
+        let request = CompletionRequest::new("openai/gpt-4o", vec![Message::user("Hi")])
+            .with_tools(tools)
+            .with_tool_choice(ToolChoice::Required);
+
+        let built = provider.build_request(&request, false);
+
+        assert!(built.tool_choice.is_some());
+    }
+
+    #[test]
+    fn test_build_request_with_specific_tool_choice() {
+        let provider = OpenRouterProvider::new("test-key");
+        let tools = vec![ToolDefinition {
+            name: "file_read".to_string(),
+            description: "Read file".to_string(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: serde_json::json!({}),
+                required: vec![],
+            },
+        }];
+
+        let request = CompletionRequest::new("openai/gpt-4o", vec![Message::user("Hi")])
+            .with_tools(tools)
+            .with_tool_choice(ToolChoice::Specific("file_read".to_string()));
+
+        let built = provider.build_request(&request, false);
+
+        assert!(built.tool_choice.is_some());
+    }
+
+    #[test]
+    fn test_convert_messages_empty() {
+        let provider = OpenRouterProvider::new("test-key");
+        let messages: Vec<Message> = vec![];
+
+        let converted = provider.convert_messages(&messages, None);
+        assert!(converted.is_empty());
+    }
+
+    #[test]
+    fn test_convert_tools_empty() {
+        let provider = OpenRouterProvider::new("test-key");
+        let tools: Vec<ToolDefinition> = vec![];
+
+        let converted = provider.convert_tools(&tools);
+        assert!(converted.is_empty());
+    }
+
+    #[test]
+    fn test_convert_tools_multiple() {
+        let provider = OpenRouterProvider::new("test-key");
+        let tools = vec![
+            ToolDefinition {
+                name: "tool1".to_string(),
+                description: "First".to_string(),
+                input_schema: ToolInputSchema {
+                    schema_type: "object".to_string(),
+                    properties: serde_json::json!({}),
+                    required: vec![],
+                },
+            },
+            ToolDefinition {
+                name: "tool2".to_string(),
+                description: "Second".to_string(),
+                input_schema: ToolInputSchema {
+                    schema_type: "object".to_string(),
+                    properties: serde_json::json!({}),
+                    required: vec![],
+                },
+            },
+        ];
+
+        let converted = provider.convert_tools(&tools);
+        assert_eq!(converted.len(), 2);
+    }
+
+    #[test]
+    fn test_tool_choice_function_serialization() {
+        let choice = OpenRouterToolChoice::Function {
+            r#type: "function".to_string(),
+            function: OpenRouterFunctionName {
+                name: "file_read".to_string(),
+            },
+        };
+
+        let json = serde_json::to_string(&choice).unwrap();
+        assert!(json.contains("function"));
+        assert!(json.contains("file_read"));
+    }
 }

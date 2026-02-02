@@ -192,3 +192,278 @@ pub fn execute(args: &SystemArgs, format: &OutputFormat) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== HardwareInfo Serialization ====================
+
+    #[test]
+    fn test_hardware_info_serialization() {
+        let info = HardwareInfo {
+            tier: "Medium".to_string(),
+            tier_description: "Good performance for most tasks".to_string(),
+            cpu_brand: "Intel Core i7".to_string(),
+            cpu_cores: 8,
+            ram_gb: 16,
+            has_ssd: true,
+            architecture: "X86_64".to_string(),
+            is_sbc: false,
+            cpu_year: Some(2020),
+            recommended_models: vec!["claude-3-5-sonnet".to_string()],
+            expected_response_time: (2, 5),
+            capabilities: vec!["Code completion".to_string()],
+            limitations: vec![],
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"tier\":\"Medium\""));
+        assert!(json.contains("\"cpuBrand\":\"Intel Core i7\"")); // camelCase
+        assert!(json.contains("\"cpuCores\":8"));
+        assert!(json.contains("\"ramGb\":16"));
+        assert!(json.contains("\"hasSsd\":true"));
+        assert!(json.contains("\"isSbc\":false"));
+    }
+
+    #[test]
+    fn test_hardware_info_json_camel_case() {
+        let info = HardwareInfo {
+            tier: "Small".to_string(),
+            tier_description: "Basic".to_string(),
+            cpu_brand: "AMD".to_string(),
+            cpu_cores: 4,
+            ram_gb: 8,
+            has_ssd: false,
+            architecture: "X86_64".to_string(),
+            is_sbc: false,
+            cpu_year: None,
+            recommended_models: vec![],
+            expected_response_time: (5, 10),
+            capabilities: vec![],
+            limitations: vec!["Limited context".to_string()],
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        // Verify camelCase conversion
+        assert!(json.contains("tierDescription"));
+        assert!(json.contains("cpuBrand"));
+        assert!(json.contains("cpuCores"));
+        assert!(json.contains("ramGb"));
+        assert!(json.contains("hasSsd"));
+        assert!(json.contains("cpuYear"));
+        assert!(json.contains("recommendedModels"));
+        assert!(json.contains("expectedResponseTime"));
+        // Not snake_case
+        assert!(!json.contains("tier_description"));
+        assert!(!json.contains("cpu_brand"));
+    }
+
+    #[test]
+    fn test_hardware_info_null_cpu_year() {
+        let info = HardwareInfo {
+            tier: "Ancient".to_string(),
+            tier_description: "Legacy hardware".to_string(),
+            cpu_brand: "Unknown".to_string(),
+            cpu_cores: 2,
+            ram_gb: 4,
+            has_ssd: false,
+            architecture: "X86_64".to_string(),
+            is_sbc: false,
+            cpu_year: None, // Unknown
+            recommended_models: vec![],
+            expected_response_time: (30, 60),
+            capabilities: vec![],
+            limitations: vec![],
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"cpuYear\":null"));
+    }
+
+    #[test]
+    fn test_hardware_info_sbc_detection() {
+        let info = HardwareInfo {
+            tier: "UltraTiny".to_string(),
+            tier_description: "SBC tier".to_string(),
+            cpu_brand: "ARM Cortex".to_string(),
+            cpu_cores: 4,
+            ram_gb: 4,
+            has_ssd: false,
+            architecture: "ARM64".to_string(),
+            is_sbc: true, // Raspberry Pi
+            cpu_year: Some(2021),
+            recommended_models: vec![],
+            expected_response_time: (20, 40),
+            capabilities: vec![],
+            limitations: vec!["Limited to very small models".to_string()],
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"isSbc\":true"));
+        assert!(json.contains("\"architecture\":\"ARM64\""));
+    }
+
+    #[test]
+    fn test_hardware_info_expected_response_time_tuple() {
+        let info = HardwareInfo {
+            tier: "Large".to_string(),
+            tier_description: "High-end".to_string(),
+            cpu_brand: "Apple M2".to_string(),
+            cpu_cores: 10,
+            ram_gb: 32,
+            has_ssd: true,
+            architecture: "ARM64".to_string(),
+            is_sbc: false,
+            cpu_year: Some(2023),
+            recommended_models: vec!["claude-3-opus".to_string()],
+            expected_response_time: (1, 3),
+            capabilities: vec!["Full agent capabilities".to_string()],
+            limitations: vec![],
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"expectedResponseTime\":[1,3]"));
+    }
+
+    #[test]
+    fn test_hardware_info_recommended_models_array() {
+        let info = HardwareInfo {
+            tier: "Medium".to_string(),
+            tier_description: "Good".to_string(),
+            cpu_brand: "Intel".to_string(),
+            cpu_cores: 6,
+            ram_gb: 16,
+            has_ssd: true,
+            architecture: "X86_64".to_string(),
+            is_sbc: false,
+            cpu_year: Some(2021),
+            recommended_models: vec![
+                "llama3:8b".to_string(),
+                "mistral:7b".to_string(),
+                "codellama:7b".to_string(),
+            ],
+            expected_response_time: (3, 8),
+            capabilities: vec![],
+            limitations: vec![],
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("llama3:8b"));
+        assert!(json.contains("mistral:7b"));
+        assert!(json.contains("codellama:7b"));
+    }
+
+    #[test]
+    fn test_hardware_info_capabilities_and_limitations() {
+        let info = HardwareInfo {
+            tier: "Small".to_string(),
+            tier_description: "Entry level".to_string(),
+            cpu_brand: "Intel i5".to_string(),
+            cpu_cores: 4,
+            ram_gb: 8,
+            has_ssd: true,
+            architecture: "X86_64".to_string(),
+            is_sbc: false,
+            cpu_year: Some(2019),
+            recommended_models: vec!["phi3:mini".to_string()],
+            expected_response_time: (5, 15),
+            capabilities: vec![
+                "Basic code completion".to_string(),
+                "Simple refactoring".to_string(),
+            ],
+            limitations: vec![
+                "Limited context window".to_string(),
+                "Slower response times".to_string(),
+            ],
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("Basic code completion"));
+        assert!(json.contains("Limited context window"));
+    }
+
+    #[test]
+    fn test_hardware_info_pretty_json() {
+        let info = HardwareInfo {
+            tier: "Medium".to_string(),
+            tier_description: "Good".to_string(),
+            cpu_brand: "AMD Ryzen".to_string(),
+            cpu_cores: 8,
+            ram_gb: 32,
+            has_ssd: true,
+            architecture: "X86_64".to_string(),
+            is_sbc: false,
+            cpu_year: Some(2022),
+            recommended_models: vec!["llama3:8b".to_string()],
+            expected_response_time: (2, 6),
+            capabilities: vec!["Full features".to_string()],
+            limitations: vec![],
+        };
+
+        let pretty = serde_json::to_string_pretty(&info).unwrap();
+        // Pretty format should have newlines and indentation
+        assert!(pretty.contains("\n"));
+        assert!(pretty.contains("  ")); // Indentation
+    }
+
+    // ==================== SystemArgs Tests ====================
+
+    #[test]
+    fn test_system_args_default() {
+        let args = SystemArgs {
+            upgrades: false,
+            detailed: false,
+        };
+        assert!(!args.upgrades);
+        assert!(!args.detailed);
+    }
+
+    #[test]
+    fn test_system_args_with_upgrades() {
+        let args = SystemArgs {
+            upgrades: true,
+            detailed: false,
+        };
+        assert!(args.upgrades);
+    }
+
+    #[test]
+    fn test_system_args_with_detailed() {
+        let args = SystemArgs {
+            upgrades: false,
+            detailed: true,
+        };
+        assert!(args.detailed);
+    }
+
+    #[test]
+    fn test_system_args_both_flags() {
+        let args = SystemArgs {
+            upgrades: true,
+            detailed: true,
+        };
+        assert!(args.upgrades);
+        assert!(args.detailed);
+    }
+
+    // ==================== OutputFormat Tests ====================
+
+    #[test]
+    fn test_output_format_json_match() {
+        let format = OutputFormat::Json;
+        assert!(matches!(format, OutputFormat::Json));
+    }
+
+    #[test]
+    fn test_output_format_text_match() {
+        let format = OutputFormat::Text;
+        assert!(matches!(format, OutputFormat::Text));
+    }
+
+    #[test]
+    fn test_output_format_markdown_match() {
+        let format = OutputFormat::Markdown;
+        assert!(matches!(format, OutputFormat::Markdown));
+    }
+}

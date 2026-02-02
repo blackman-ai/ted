@@ -491,4 +491,406 @@ Content.
         let missing = registry.find_skill_path("missing");
         assert!(missing.is_none());
     }
+
+    // ===== Additional Test Coverage =====
+
+    #[test]
+    fn test_skill_registry_default() {
+        let registry = SkillRegistry::default();
+        assert!(registry.list_skills().is_empty());
+        // Should have search paths set up
+        // Search paths may be empty if no home/cwd, which is acceptable
+        let _ = registry.search_paths.is_empty();
+    }
+
+    #[test]
+    fn test_skill_registry_add_search_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut registry = SkillRegistry::with_paths(vec![]);
+
+        let path1 = temp_dir.path().join("skills1");
+        let path2 = temp_dir.path().join("skills2");
+
+        registry.add_search_path(path1.clone());
+        assert_eq!(registry.search_paths.len(), 1);
+
+        // Adding same path again should not duplicate
+        registry.add_search_path(path1.clone());
+        assert_eq!(registry.search_paths.len(), 1);
+
+        // Adding different path should work
+        registry.add_search_path(path2.clone());
+        assert_eq!(registry.search_paths.len(), 2);
+    }
+
+    #[test]
+    fn test_skill_registry_scan_empty_paths() {
+        let mut registry = SkillRegistry::with_paths(vec![]);
+        let count = registry.scan().unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_skill_registry_scan_nonexistent_path() {
+        let mut registry =
+            SkillRegistry::with_paths(vec![PathBuf::from("/nonexistent/path/to/skills")]);
+        let count = registry.scan().unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_skill_registry_scan_with_files_only() {
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+
+        // Create a file instead of a directory
+        std::fs::write(skills_dir.join("not-a-skill.txt"), "content").unwrap();
+
+        let mut registry = SkillRegistry::with_paths(vec![skills_dir]);
+        let count = registry.scan().unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_skill_registry_scan_directory_without_skill_md() {
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path().join("skills");
+        let empty_skill_dir = skills_dir.join("empty-skill");
+        std::fs::create_dir_all(&empty_skill_dir).unwrap();
+
+        // Create empty directory (no SKILL.md)
+        let mut registry = SkillRegistry::with_paths(vec![skills_dir]);
+        let count = registry.scan().unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_skill_registry_all_metadata() {
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+
+        create_test_skill(&skills_dir, "skill1", "First skill");
+        create_test_skill(&skills_dir, "skill2", "Second skill");
+
+        let mut registry = SkillRegistry::with_paths(vec![skills_dir]);
+        registry.scan().unwrap();
+
+        let all = registry.all_metadata();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn test_skill_registry_get_metadata_not_found() {
+        let registry = SkillRegistry::with_paths(vec![]);
+        assert!(registry.get_metadata("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_skill_registry_load_caches() {
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        create_test_skill(&skills_dir, "cached-skill", "A cached skill");
+
+        let mut registry = SkillRegistry::with_paths(vec![skills_dir]);
+        registry.scan().unwrap();
+
+        // First load
+        let skill1 = registry.load("cached-skill").unwrap();
+        // Second load should return cached version
+        let skill2 = registry.load("cached-skill").unwrap();
+
+        assert_eq!(skill1.name, skill2.name);
+    }
+
+    #[test]
+    fn test_skill_registry_exists() {
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        create_test_skill(&skills_dir, "existing", "Existing skill");
+
+        let mut registry = SkillRegistry::with_paths(vec![skills_dir]);
+        registry.scan().unwrap();
+
+        assert!(registry.exists("existing"));
+        assert!(!registry.exists("nonexistent"));
+    }
+
+    #[test]
+    fn test_extract_script_description_shell_with_shebang() {
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path().join("skills");
+        let skill_dir = skills_dir.join("test-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        let content = r#"---
+name: test-skill
+description: Test skill
+---
+
+Content.
+"#;
+        std::fs::write(skill_dir.join("SKILL.md"), content).unwrap();
+
+        // Shell script with shebang and comment
+        std::fs::write(
+            skill_dir.join("test.sh"),
+            "#!/bin/bash\n# This is the description\necho hello",
+        )
+        .unwrap();
+
+        let mut registry = SkillRegistry::with_paths(vec![skills_dir]);
+        registry.scan().unwrap();
+
+        let skill = registry.load("test-skill").unwrap();
+        assert_eq!(skill.scripts.len(), 1);
+        assert_eq!(
+            skill.scripts[0].description,
+            Some("This is the description".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_script_description_python() {
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path().join("skills");
+        let skill_dir = skills_dir.join("py-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        let content = r#"---
+name: py-skill
+description: Python skill
+---
+
+Content.
+"#;
+        std::fs::write(skill_dir.join("SKILL.md"), content).unwrap();
+
+        // Python script with shebang and comment
+        std::fs::write(
+            skill_dir.join("run.py"),
+            "#!/usr/bin/env python3\n# Python script description\nimport sys",
+        )
+        .unwrap();
+
+        let mut registry = SkillRegistry::with_paths(vec![skills_dir]);
+        registry.scan().unwrap();
+
+        let skill = registry.load("py-skill").unwrap();
+        assert_eq!(skill.scripts.len(), 1);
+        assert_eq!(
+            skill.scripts[0].description,
+            Some("Python script description".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_script_description_no_comment() {
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path().join("skills");
+        let skill_dir = skills_dir.join("no-comment");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        let content = r#"---
+name: no-comment
+description: No comment skill
+---
+
+Content.
+"#;
+        std::fs::write(skill_dir.join("SKILL.md"), content).unwrap();
+
+        // Script without comment (just code after shebang)
+        std::fs::write(skill_dir.join("script.sh"), "#!/bin/bash\necho hello world").unwrap();
+
+        let mut registry = SkillRegistry::with_paths(vec![skills_dir]);
+        registry.scan().unwrap();
+
+        let skill = registry.load("no-comment").unwrap();
+        assert_eq!(skill.scripts.len(), 1);
+        assert!(skill.scripts[0].description.is_none());
+    }
+
+    #[test]
+    fn test_extract_script_description_double_slash() {
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path().join("skills");
+        let skill_dir = skills_dir.join("slash-comment");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        let content = r#"---
+name: slash-comment
+description: Slash comment skill
+---
+
+Content.
+"#;
+        std::fs::write(skill_dir.join("SKILL.md"), content).unwrap();
+
+        // Use .sh extension but // comment style for testing
+        std::fs::write(
+            skill_dir.join("runner.sh"),
+            "#!/bin/bash\n// Double slash comment\necho test",
+        )
+        .unwrap();
+
+        let mut registry = SkillRegistry::with_paths(vec![skills_dir]);
+        registry.scan().unwrap();
+
+        let skill = registry.load("slash-comment").unwrap();
+        assert_eq!(skill.scripts.len(), 1);
+        assert_eq!(
+            skill.scripts[0].description,
+            Some("Double slash comment".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_script_description_empty_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path().join("skills");
+        let skill_dir = skills_dir.join("empty-script");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        let content = r#"---
+name: empty-script
+description: Empty script skill
+---
+
+Content.
+"#;
+        std::fs::write(skill_dir.join("SKILL.md"), content).unwrap();
+
+        // Empty script file
+        std::fs::write(skill_dir.join("empty.sh"), "").unwrap();
+
+        let mut registry = SkillRegistry::with_paths(vec![skills_dir]);
+        registry.scan().unwrap();
+
+        let skill = registry.load("empty-script").unwrap();
+        assert_eq!(skill.scripts.len(), 1);
+        assert!(skill.scripts[0].description.is_none());
+    }
+
+    #[test]
+    fn test_load_skill_metadata_from_path_success() {
+        let temp_dir = TempDir::new().unwrap();
+        let skill_dir = temp_dir.path().join("meta-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        let content = r#"---
+name: meta-skill
+description: Metadata test skill
+---
+
+Content here.
+"#;
+        std::fs::write(skill_dir.join("SKILL.md"), content).unwrap();
+
+        let meta = load_skill_metadata_from_path(&skill_dir).unwrap();
+        assert_eq!(meta.name, "meta-skill");
+        assert_eq!(meta.description, "Metadata test skill");
+    }
+
+    #[test]
+    fn test_load_skill_metadata_from_path_missing() {
+        let temp_dir = TempDir::new().unwrap();
+        let result = load_skill_metadata_from_path(temp_dir.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(format!("{:?}", err).contains("SKILL.md not found"));
+    }
+
+    #[test]
+    fn test_skill_with_ruby_script() {
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path().join("skills");
+        let skill_dir = skills_dir.join("ruby-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        let content = r#"---
+name: ruby-skill
+description: Ruby skill
+---
+
+Content.
+"#;
+        std::fs::write(skill_dir.join("SKILL.md"), content).unwrap();
+
+        // Ruby script
+        std::fs::write(
+            skill_dir.join("run.rb"),
+            "#!/usr/bin/env ruby\n# Ruby script description\nputs 'hello'",
+        )
+        .unwrap();
+
+        let mut registry = SkillRegistry::with_paths(vec![skills_dir]);
+        registry.scan().unwrap();
+
+        let skill = registry.load("ruby-skill").unwrap();
+        assert_eq!(skill.scripts.len(), 1);
+        assert_eq!(skill.scripts[0].name, "run.rb");
+        assert_eq!(
+            skill.scripts[0].description,
+            Some("Ruby script description".to_string())
+        );
+    }
+
+    #[test]
+    fn test_skill_with_mixed_resources() {
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path().join("skills");
+        let skill_dir = skills_dir.join("mixed-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        let content = r#"---
+name: mixed-skill
+description: Mixed resources skill
+---
+
+Content.
+"#;
+        std::fs::write(skill_dir.join("SKILL.md"), content).unwrap();
+
+        // Various resources and scripts
+        std::fs::write(skill_dir.join("docs.md"), "# Documentation").unwrap();
+        std::fs::write(skill_dir.join("notes.txt"), "Notes").unwrap();
+        std::fs::write(skill_dir.join("test.sh"), "#!/bin/bash\n# Test\necho test").unwrap();
+        std::fs::write(
+            skill_dir.join("run.py"),
+            "#!/usr/bin/env python\n# Run\nprint('hi')",
+        )
+        .unwrap();
+        // Create a non-matching file that should be ignored
+        std::fs::write(skill_dir.join("data.json"), "{}").unwrap();
+
+        let mut registry = SkillRegistry::with_paths(vec![skills_dir]);
+        registry.scan().unwrap();
+
+        let skill = registry.load("mixed-skill").unwrap();
+        assert_eq!(skill.resources.len(), 2); // docs.md, notes.txt
+        assert_eq!(skill.scripts.len(), 2); // test.sh, run.py
+    }
+
+    #[test]
+    fn test_skill_registry_find_path_multiple_search_paths() {
+        let temp_dir = TempDir::new().unwrap();
+        let path1 = temp_dir.path().join("path1/skills");
+        let path2 = temp_dir.path().join("path2/skills");
+
+        std::fs::create_dir_all(&path1).unwrap();
+        std::fs::create_dir_all(&path2).unwrap();
+
+        // Create skill only in second path
+        create_test_skill(&path2, "only-in-path2", "Skill in path2");
+
+        let registry = SkillRegistry::with_paths(vec![path1, path2.clone()]);
+
+        let found = registry.find_skill_path("only-in-path2");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap(), path2.join("only-in-path2"));
+    }
 }

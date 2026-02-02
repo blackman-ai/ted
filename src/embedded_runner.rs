@@ -1405,3 +1405,914 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::message::{ContentBlock, Message, MessageContent, Role};
+    use serde_json::json;
+
+    // ===== tool_call_key tests =====
+
+    #[test]
+    fn test_tool_call_key_basic() {
+        let key = tool_call_key("file_read", &json!({"path": "/test.txt"}));
+        assert!(key.starts_with("file_read:"));
+        assert!(key.contains("path"));
+    }
+
+    #[test]
+    fn test_tool_call_key_uniqueness() {
+        let key1 = tool_call_key("file_read", &json!({"path": "/a.txt"}));
+        let key2 = tool_call_key("file_read", &json!({"path": "/b.txt"}));
+        let key3 = tool_call_key("file_write", &json!({"path": "/a.txt"}));
+
+        assert_ne!(key1, key2); // Different paths
+        assert_ne!(key1, key3); // Different tools
+    }
+
+    // ===== extract_history_messages tests =====
+
+    #[test]
+    fn test_extract_history_messages_user_message() {
+        let messages = vec![Message::user("Hello")];
+        let history = extract_history_messages(&messages);
+
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].role, "user");
+        assert_eq!(history[0].content, "Hello");
+    }
+
+    #[test]
+    fn test_extract_history_messages_assistant_message() {
+        let messages = vec![Message::assistant("Hi there")];
+        let history = extract_history_messages(&messages);
+
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].role, "assistant");
+        assert_eq!(history[0].content, "Hi there");
+    }
+
+    #[test]
+    fn test_extract_history_messages_skips_system() {
+        let messages = vec![Message::system("You are helpful"), Message::user("Hello")];
+        let history = extract_history_messages(&messages);
+
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].role, "user");
+    }
+
+    #[test]
+    fn test_extract_history_messages_skips_stop_messages() {
+        let messages = vec![
+            Message::user("STOP! Don't do that"),
+            Message::user("Normal message"),
+        ];
+        let history = extract_history_messages(&messages);
+
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].content, "Normal message");
+    }
+
+    #[test]
+    fn test_extract_history_messages_skips_empty() {
+        let messages = vec![Message::user(""), Message::user("Not empty")];
+        let history = extract_history_messages(&messages);
+
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].content, "Not empty");
+    }
+
+    #[test]
+    fn test_extract_history_messages_handles_blocks() {
+        let msg = Message {
+            id: uuid::Uuid::new_v4(),
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![
+                ContentBlock::Text {
+                    text: "First part".to_string(),
+                },
+                ContentBlock::Text {
+                    text: " second part".to_string(),
+                },
+            ]),
+            timestamp: chrono::Utc::now(),
+            tool_use_id: None,
+            token_count: None,
+        };
+        let history = extract_history_messages(&[msg]);
+
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].content, "First part second part");
+    }
+
+    // ===== parse_tool_from_json tests =====
+
+    #[test]
+    fn test_parse_tool_from_json_with_arguments() {
+        let value = json!({
+            "name": "file_read",
+            "arguments": {"path": "/test.txt"}
+        });
+
+        let result = parse_tool_from_json(&value);
+        assert!(result.is_some());
+
+        let (name, args) = result.unwrap();
+        assert_eq!(name, "file_read");
+        assert_eq!(args["path"], "/test.txt");
+    }
+
+    #[test]
+    fn test_parse_tool_from_json_with_input() {
+        let value = json!({
+            "name": "file_read",
+            "input": {"path": "/test.txt"}
+        });
+
+        let result = parse_tool_from_json(&value);
+        assert!(result.is_some());
+
+        let (name, _args) = result.unwrap();
+        assert_eq!(name, "file_read");
+    }
+
+    #[test]
+    fn test_parse_tool_from_json_name_normalization() {
+        // Test read_file -> file_read
+        let value = json!({"name": "read_file", "arguments": {"path": "/test"}});
+        let (name, _) = parse_tool_from_json(&value).unwrap();
+        assert_eq!(name, "file_read");
+
+        // Test edit_file -> file_edit
+        let value = json!({"name": "edit_file", "arguments": {"path": "/test", "old_string": "a", "new_string": "b"}});
+        let (name, _) = parse_tool_from_json(&value).unwrap();
+        assert_eq!(name, "file_edit");
+
+        // Test create_file -> file_write
+        let value =
+            json!({"name": "create_file", "arguments": {"path": "/test", "content": "hello"}});
+        let (name, _) = parse_tool_from_json(&value).unwrap();
+        assert_eq!(name, "file_write");
+    }
+
+    #[test]
+    fn test_parse_tool_from_json_empty_old_string_converts_to_write() {
+        // file_edit with empty old_string should become file_write
+        let value = json!({
+            "name": "file_edit",
+            "arguments": {"path": "/test.txt", "old_string": "", "new_string": "content"}
+        });
+
+        let (name, args) = parse_tool_from_json(&value).unwrap();
+        assert_eq!(name, "file_write");
+        assert_eq!(args["content"], "content");
+    }
+
+    #[test]
+    fn test_parse_tool_from_json_returns_none_for_invalid() {
+        // Missing name
+        let value = json!({"arguments": {"path": "/test"}});
+        assert!(parse_tool_from_json(&value).is_none());
+
+        // Missing arguments/input
+        let value = json!({"name": "file_read"});
+        assert!(parse_tool_from_json(&value).is_none());
+
+        // Not an object
+        let value = json!("just a string");
+        assert!(parse_tool_from_json(&value).is_none());
+    }
+
+    // ===== map_file_read_arguments tests =====
+
+    #[test]
+    fn test_map_file_read_arguments_path_variations() {
+        // Test file -> path
+        let args = json!({"file": "/test.txt"});
+        let mapped = map_file_read_arguments(&args);
+        assert_eq!(mapped["path"], "/test.txt");
+
+        // Test filepath -> path
+        let args = json!({"filepath": "/test.txt"});
+        let mapped = map_file_read_arguments(&args);
+        assert_eq!(mapped["path"], "/test.txt");
+
+        // Test file_path -> path
+        let args = json!({"file_path": "/test.txt"});
+        let mapped = map_file_read_arguments(&args);
+        assert_eq!(mapped["path"], "/test.txt");
+
+        // Test filename -> path
+        let args = json!({"filename": "/test.txt"});
+        let mapped = map_file_read_arguments(&args);
+        assert_eq!(mapped["path"], "/test.txt");
+    }
+
+    #[test]
+    fn test_map_file_read_arguments_preserves_path() {
+        let args = json!({"path": "/original.txt"});
+        let mapped = map_file_read_arguments(&args);
+        assert_eq!(mapped["path"], "/original.txt");
+    }
+
+    #[test]
+    fn test_map_file_read_arguments_non_object() {
+        let args = json!("not an object");
+        let mapped = map_file_read_arguments(&args);
+        assert_eq!(mapped, args);
+    }
+
+    // ===== map_file_write_arguments tests =====
+
+    #[test]
+    fn test_map_file_write_arguments_content_variations() {
+        // Test text -> content
+        let args = json!({"path": "/test.txt", "text": "hello"});
+        let mapped = map_file_write_arguments(&args);
+        assert_eq!(mapped["content"], "hello");
+
+        // Test data -> content
+        let args = json!({"path": "/test.txt", "data": "hello"});
+        let mapped = map_file_write_arguments(&args);
+        assert_eq!(mapped["content"], "hello");
+
+        // Test code -> content
+        let args = json!({"path": "/test.txt", "code": "fn main() {}"});
+        let mapped = map_file_write_arguments(&args);
+        assert_eq!(mapped["content"], "fn main() {}");
+    }
+
+    #[test]
+    fn test_map_file_write_arguments_path_variations() {
+        let args = json!({"file": "/test.txt", "content": "hello"});
+        let mapped = map_file_write_arguments(&args);
+        assert_eq!(mapped["path"], "/test.txt");
+    }
+
+    // ===== map_file_edit_arguments tests =====
+
+    #[test]
+    fn test_map_file_edit_arguments_old_new_variations() {
+        // Test old_text/new_text -> old_string/new_string
+        let args = json!({"path": "/test.txt", "old_text": "old", "new_text": "new"});
+        let mapped = map_file_edit_arguments(&args);
+        assert_eq!(mapped["old_string"], "old");
+        assert_eq!(mapped["new_string"], "new");
+
+        // Test find/replace -> old_string/new_string
+        let args = json!({"path": "/test.txt", "find": "old", "replace": "new"});
+        let mapped = map_file_edit_arguments(&args);
+        assert_eq!(mapped["old_string"], "old");
+        assert_eq!(mapped["new_string"], "new");
+
+        // Test original/modified -> old_string/new_string
+        let args = json!({"path": "/test.txt", "original": "old", "modified": "new"});
+        let mapped = map_file_edit_arguments(&args);
+        assert_eq!(mapped["old_string"], "old");
+        assert_eq!(mapped["new_string"], "new");
+    }
+
+    #[test]
+    fn test_map_file_edit_arguments_array_to_string() {
+        // Test array of lines -> joined string
+        let args = json!({
+            "path": "/test.txt",
+            "old_string": ["line1", "line2"],
+            "new_string": ["new1", "new2", "new3"]
+        });
+        let mapped = map_file_edit_arguments(&args);
+        assert_eq!(mapped["old_string"], "line1\nline2");
+        assert_eq!(mapped["new_string"], "new1\nnew2\nnew3");
+    }
+
+    #[test]
+    fn test_map_file_edit_arguments_file_path_variations() {
+        let args = json!({"file": "/test.txt", "old_string": "a", "new_string": "b"});
+        let mapped = map_file_edit_arguments(&args);
+        assert_eq!(mapped["path"], "/test.txt");
+    }
+
+    // ===== map_shell_arguments tests =====
+
+    #[test]
+    fn test_map_shell_arguments_command_variations() {
+        // Test cmd -> command
+        let args = json!({"cmd": "ls -la"});
+        let mapped = map_shell_arguments(&args);
+        assert_eq!(mapped["command"], "ls -la");
+
+        // Test shell_command -> command
+        let args = json!({"shell_command": "pwd"});
+        let mapped = map_shell_arguments(&args);
+        assert_eq!(mapped["command"], "pwd");
+
+        // Test bash -> command
+        let args = json!({"bash": "echo hello"});
+        let mapped = map_shell_arguments(&args);
+        assert_eq!(mapped["command"], "echo hello");
+
+        // Test exec -> command
+        let args = json!({"exec": "cat file.txt"});
+        let mapped = map_shell_arguments(&args);
+        assert_eq!(mapped["command"], "cat file.txt");
+
+        // Test run -> command
+        let args = json!({"run": "make build"});
+        let mapped = map_shell_arguments(&args);
+        assert_eq!(mapped["command"], "make build");
+    }
+
+    #[test]
+    fn test_map_shell_arguments_preserves_command() {
+        let args = json!({"command": "cargo test"});
+        let mapped = map_shell_arguments(&args);
+        assert_eq!(mapped["command"], "cargo test");
+    }
+
+    // ===== extract_json_tool_calls tests =====
+
+    #[test]
+    fn test_extract_json_tool_calls_markdown_block() {
+        let text = r#"Let me read that file for you.
+
+```json
+{"name": "file_read", "arguments": {"path": "/test.txt"}}
+```
+
+I'll show you the contents."#;
+
+        let tools = extract_json_tool_calls(text);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].0, "file_read");
+    }
+
+    #[test]
+    fn test_extract_json_tool_calls_multiple_blocks() {
+        let text = r#"
+```json
+{"name": "file_read", "arguments": {"path": "/a.txt"}}
+```
+And also:
+```json
+{"name": "file_read", "arguments": {"path": "/b.txt"}}
+```
+"#;
+
+        let tools = extract_json_tool_calls(text);
+        assert_eq!(tools.len(), 2);
+    }
+
+    #[test]
+    fn test_extract_json_tool_calls_no_blocks() {
+        let text = "Just some regular text without any JSON blocks.";
+        let tools = extract_json_tool_calls(text);
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_extract_json_tool_calls_invalid_json() {
+        let text = r#"
+```json
+{not valid json}
+```
+"#;
+
+        let tools = extract_json_tool_calls(text);
+        assert!(tools.is_empty());
+    }
+
+    // ===== extract_json_objects_by_braces tests =====
+
+    #[test]
+    fn test_extract_json_objects_by_braces_simple() {
+        let text = r#"{"name": "file_read", "arguments": {"path": "/test.txt"}}"#;
+        let tools = extract_json_objects_by_braces(text);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].0, "file_read");
+    }
+
+    #[test]
+    fn test_extract_json_objects_by_braces_embedded_in_text() {
+        let text = r#"I will use the tool {"name": "file_read", "input": {"path": "/test.txt"}} to read the file."#;
+        let tools = extract_json_objects_by_braces(text);
+        assert_eq!(tools.len(), 1);
+    }
+
+    #[test]
+    fn test_extract_json_objects_by_braces_nested_braces() {
+        let text = r#"{"name": "shell", "arguments": {"command": "echo '{\"nested\": true}'"}}"#;
+        let tools = extract_json_objects_by_braces(text);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].0, "shell");
+    }
+
+    #[test]
+    fn test_extract_json_objects_by_braces_escaped_quotes() {
+        let text = r#"{"name": "file_write", "arguments": {"path": "/test.txt", "content": "line with \"quotes\""}}"#;
+        let tools = extract_json_objects_by_braces(text);
+        assert_eq!(tools.len(), 1);
+    }
+
+    #[test]
+    fn test_extract_json_objects_by_braces_ignores_non_tool_json() {
+        // JSON without "name" and "arguments"/"input" should be ignored
+        let text = r#"{"just": "some", "random": "json"}"#;
+        let tools = extract_json_objects_by_braces(text);
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_extract_json_objects_by_braces_multiple_tools() {
+        let text = r#"First: {"name": "file_read", "arguments": {"path": "/a.txt"}}
+Second: {"name": "file_read", "arguments": {"path": "/b.txt"}}"#;
+        let tools = extract_json_objects_by_braces(text);
+        assert_eq!(tools.len(), 2);
+    }
+
+    // ===== Additional extract_json_tool_calls tests =====
+
+    #[test]
+    fn test_extract_json_tool_calls_array_in_block() {
+        let text = r#"
+```json
+[
+  {"name": "file_read", "arguments": {"path": "/a.txt"}},
+  {"name": "file_read", "arguments": {"path": "/b.txt"}}
+]
+```
+"#;
+        let tools = extract_json_tool_calls(text);
+        assert_eq!(tools.len(), 2);
+    }
+
+    #[test]
+    fn test_extract_json_tool_calls_generic_block_without_json_marker() {
+        let text = r#"
+```
+{"name": "file_read", "arguments": {"path": "/test.txt"}}
+```
+"#;
+        let tools = extract_json_tool_calls(text);
+        assert_eq!(tools.len(), 1);
+    }
+
+    #[test]
+    fn test_extract_json_tool_calls_generic_block_array() {
+        let text = r#"
+```
+[{"name": "file_read", "arguments": {"path": "/test.txt"}}]
+```
+"#;
+        let tools = extract_json_tool_calls(text);
+        assert_eq!(tools.len(), 1);
+    }
+
+    #[test]
+    fn test_extract_json_tool_calls_generic_block_not_json() {
+        let text = r#"
+```
+This is not JSON at all
+```
+"#;
+        let tools = extract_json_tool_calls(text);
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_extract_json_tool_calls_falls_back_to_brace_scan() {
+        // No markdown blocks, but valid JSON in text
+        let text = r#"I'll use this: {"name": "file_read", "input": {"path": "/test.txt"}}"#;
+        let tools = extract_json_tool_calls(text);
+        assert_eq!(tools.len(), 1);
+    }
+
+    // ===== Additional map_file_edit_arguments tests =====
+
+    #[test]
+    fn test_map_file_edit_arguments_before_after() {
+        let args = json!({"path": "/test.txt", "before": "old text", "after": "new text"});
+        let mapped = map_file_edit_arguments(&args);
+        assert_eq!(mapped["old_string"], "old text");
+        assert_eq!(mapped["new_string"], "new text");
+    }
+
+    #[test]
+    fn test_map_file_edit_arguments_search_pattern() {
+        let args = json!({"path": "/test.txt", "search": "find me", "with": "replace me"});
+        let mapped = map_file_edit_arguments(&args);
+        assert_eq!(mapped["old_string"], "find me");
+        assert_eq!(mapped["new_string"], "replace me");
+    }
+
+    #[test]
+    fn test_map_file_edit_arguments_target_updated() {
+        let args = json!({"path": "/test.txt", "target": "original", "updated": "modified"});
+        let mapped = map_file_edit_arguments(&args);
+        assert_eq!(mapped["old_string"], "original");
+        assert_eq!(mapped["new_string"], "modified");
+    }
+
+    #[test]
+    fn test_map_file_edit_arguments_camel_case() {
+        let args = json!({"path": "/test.txt", "oldText": "old", "newText": "new"});
+        let mapped = map_file_edit_arguments(&args);
+        assert_eq!(mapped["old_string"], "old");
+        assert_eq!(mapped["new_string"], "new");
+    }
+
+    #[test]
+    fn test_map_file_edit_arguments_content_variation() {
+        let args = json!({"path": "/test.txt", "old_content": "old", "content": "new"});
+        let mapped = map_file_edit_arguments(&args);
+        assert_eq!(mapped["old_string"], "old");
+        assert_eq!(mapped["new_string"], "new");
+    }
+
+    #[test]
+    fn test_map_file_edit_arguments_match_pattern() {
+        let args = json!({"path": "/test.txt", "match": "find", "replacement": "replace"});
+        let mapped = map_file_edit_arguments(&args);
+        assert_eq!(mapped["old_string"], "find");
+        assert_eq!(mapped["new_string"], "replace");
+    }
+
+    // ===== Additional map_file_write_arguments tests =====
+
+    #[test]
+    fn test_map_file_write_arguments_contents_variation() {
+        let args = json!({"path": "/test.txt", "contents": "file contents"});
+        let mapped = map_file_write_arguments(&args);
+        assert_eq!(mapped["content"], "file contents");
+    }
+
+    #[test]
+    fn test_map_file_write_arguments_file_content_variation() {
+        let args = json!({"path": "/test.txt", "file_content": "the content"});
+        let mapped = map_file_write_arguments(&args);
+        assert_eq!(mapped["content"], "the content");
+    }
+
+    #[test]
+    fn test_map_file_write_arguments_body_variation() {
+        let args = json!({"path": "/test.txt", "body": "request body"});
+        let mapped = map_file_write_arguments(&args);
+        assert_eq!(mapped["content"], "request body");
+    }
+
+    #[test]
+    fn test_map_file_write_arguments_name_variation() {
+        let args = json!({"name": "/test.txt", "content": "test"});
+        let mapped = map_file_write_arguments(&args);
+        assert_eq!(mapped["path"], "/test.txt");
+    }
+
+    #[test]
+    fn test_map_file_write_arguments_file_name_variation() {
+        let args = json!({"file_name": "/test.txt", "content": "test"});
+        let mapped = map_file_write_arguments(&args);
+        assert_eq!(mapped["path"], "/test.txt");
+    }
+
+    // ===== Additional map_file_read_arguments tests =====
+
+    #[test]
+    fn test_map_file_read_arguments_name_variation() {
+        let args = json!({"name": "/some/file.txt"});
+        let mapped = map_file_read_arguments(&args);
+        assert_eq!(mapped["path"], "/some/file.txt");
+    }
+
+    #[test]
+    fn test_map_file_read_arguments_file_name_variation() {
+        let args = json!({"file_name": "/another/file.txt"});
+        let mapped = map_file_read_arguments(&args);
+        assert_eq!(mapped["path"], "/another/file.txt");
+    }
+
+    #[test]
+    fn test_map_file_read_arguments_preserves_unknown_keys() {
+        let args = json!({"path": "/test.txt", "encoding": "utf-8", "start_line": 10});
+        let mapped = map_file_read_arguments(&args);
+        assert_eq!(mapped["path"], "/test.txt");
+        assert_eq!(mapped["encoding"], "utf-8");
+        assert_eq!(mapped["start_line"], 10);
+    }
+
+    // ===== Additional map_shell_arguments tests =====
+
+    #[test]
+    fn test_map_shell_arguments_non_object() {
+        let args = json!("just a string");
+        let mapped = map_shell_arguments(&args);
+        assert_eq!(mapped, args);
+    }
+
+    #[test]
+    fn test_map_shell_arguments_preserves_unknown_keys() {
+        let args = json!({"command": "ls", "cwd": "/home", "timeout": 30});
+        let mapped = map_shell_arguments(&args);
+        assert_eq!(mapped["command"], "ls");
+        assert_eq!(mapped["cwd"], "/home");
+        assert_eq!(mapped["timeout"], 30);
+    }
+
+    // ===== Additional parse_tool_from_json tests =====
+
+    #[test]
+    fn test_parse_tool_from_json_file_write_via_write_file() {
+        let value =
+            json!({"name": "write_file", "arguments": {"path": "/test.txt", "content": "test"}});
+        let (name, _) = parse_tool_from_json(&value).unwrap();
+        assert_eq!(name, "file_write");
+    }
+
+    #[test]
+    fn test_parse_tool_from_json_file_delete() {
+        let value = json!({"name": "delete_file", "arguments": {"path": "/test.txt"}});
+        let (name, _) = parse_tool_from_json(&value).unwrap();
+        assert_eq!(name, "file_delete");
+    }
+
+    #[test]
+    fn test_parse_tool_from_json_unknown_tool_passed_through() {
+        let value = json!({"name": "custom_tool", "arguments": {"param": "value"}});
+        let (name, args) = parse_tool_from_json(&value).unwrap();
+        assert_eq!(name, "custom_tool");
+        assert_eq!(args["param"], "value");
+    }
+
+    #[test]
+    fn test_parse_tool_from_json_whitespace_only_old_string() {
+        // file_edit with whitespace-only old_string should become file_write
+        let value = json!({
+            "name": "file_edit",
+            "arguments": {"path": "/test.txt", "old_string": "   ", "new_string": "content"}
+        });
+
+        let (name, args) = parse_tool_from_json(&value).unwrap();
+        assert_eq!(name, "file_write");
+        assert_eq!(args["content"], "content");
+    }
+
+    #[test]
+    fn test_parse_tool_from_json_file_edit_with_real_content() {
+        // file_edit with real old_string should stay as file_edit
+        let value = json!({
+            "name": "file_edit",
+            "arguments": {"path": "/test.txt", "old_string": "real content", "new_string": "new content"}
+        });
+
+        let (name, args) = parse_tool_from_json(&value).unwrap();
+        assert_eq!(name, "file_edit");
+        assert_eq!(args["old_string"], "real content");
+    }
+
+    // ===== Additional extract_json_objects_by_braces tests =====
+
+    #[test]
+    fn test_extract_json_objects_by_braces_unbalanced_braces() {
+        let text = r#"{"name": "file_read", "arguments": {"path": "/test.txt"}"#; // Missing closing brace
+        let tools = extract_json_objects_by_braces(text);
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_extract_json_objects_by_braces_empty_string() {
+        let tools = extract_json_objects_by_braces("");
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_extract_json_objects_by_braces_no_braces() {
+        let text = "No braces here at all";
+        let tools = extract_json_objects_by_braces(text);
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_extract_json_objects_by_braces_deeply_nested() {
+        let text = r#"{"name": "shell", "arguments": {"command": "echo", "nested": {"deep": {"value": 1}}}}"#;
+        let tools = extract_json_objects_by_braces(text);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].0, "shell");
+    }
+
+    // ===== Additional extract_history_messages tests =====
+
+    #[test]
+    fn test_extract_history_messages_empty_list() {
+        let messages: Vec<Message> = vec![];
+        let history = extract_history_messages(&messages);
+        assert!(history.is_empty());
+    }
+
+    #[test]
+    fn test_extract_history_messages_multiple_messages() {
+        let messages = vec![
+            Message::user("First question"),
+            Message::assistant("First answer"),
+            Message::user("Second question"),
+            Message::assistant("Second answer"),
+        ];
+        let history = extract_history_messages(&messages);
+
+        assert_eq!(history.len(), 4);
+        assert_eq!(history[0].role, "user");
+        assert_eq!(history[1].role, "assistant");
+        assert_eq!(history[2].role, "user");
+        assert_eq!(history[3].role, "assistant");
+    }
+
+    #[test]
+    fn test_extract_history_messages_mixed_with_stop_and_system() {
+        let messages = vec![
+            Message::system("System prompt"),
+            Message::user("Hello"),
+            Message::user("STOP! Internal message"),
+            Message::assistant("Response"),
+        ];
+        let history = extract_history_messages(&messages);
+
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].content, "Hello");
+        assert_eq!(history[1].content, "Response");
+    }
+
+    #[test]
+    fn test_extract_history_messages_blocks_with_tool_use() {
+        let msg = Message {
+            id: uuid::Uuid::new_v4(),
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![
+                ContentBlock::Text {
+                    text: "I'll read the file.".to_string(),
+                },
+                ContentBlock::ToolUse {
+                    id: "call_123".to_string(),
+                    name: "file_read".to_string(),
+                    input: json!({"path": "/test.txt"}),
+                },
+            ]),
+            timestamp: chrono::Utc::now(),
+            tool_use_id: None,
+            token_count: None,
+        };
+        let history = extract_history_messages(&[msg]);
+
+        assert_eq!(history.len(), 1);
+        // ToolUse blocks are ignored, only text is extracted
+        assert_eq!(history[0].content, "I'll read the file.");
+    }
+
+    #[test]
+    fn test_extract_history_messages_blocks_only_tool_use() {
+        let msg = Message {
+            id: uuid::Uuid::new_v4(),
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                id: "call_123".to_string(),
+                name: "file_read".to_string(),
+                input: json!({"path": "/test.txt"}),
+            }]),
+            timestamp: chrono::Utc::now(),
+            tool_use_id: None,
+            token_count: None,
+        };
+        let history = extract_history_messages(&[msg]);
+
+        // Message with only tool use (no text) is skipped as empty
+        assert!(history.is_empty());
+    }
+
+    // ===== Additional tool_call_key tests =====
+
+    #[test]
+    fn test_tool_call_key_complex_input() {
+        let input = json!({
+            "path": "/test.txt",
+            "options": {
+                "encoding": "utf-8",
+                "flags": ["a", "b"]
+            }
+        });
+        let key = tool_call_key("complex_tool", &input);
+        assert!(key.starts_with("complex_tool:"));
+        assert!(key.contains("path"));
+    }
+
+    #[test]
+    fn test_tool_call_key_empty_input() {
+        let key = tool_call_key("simple_tool", &json!({}));
+        assert!(key.starts_with("simple_tool:"));
+    }
+
+    #[test]
+    fn test_tool_call_key_null_input() {
+        let key = tool_call_key("tool", &json!(null));
+        assert!(key.starts_with("tool:"));
+    }
+
+    // ===== HistoryMessage tests =====
+
+    #[test]
+    fn test_history_message_serialization() {
+        let msg = HistoryMessage {
+            role: "user".to_string(),
+            content: "Hello".to_string(),
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"role\":\"user\""));
+        assert!(json.contains("\"content\":\"Hello\""));
+    }
+
+    #[test]
+    fn test_history_message_deserialization() {
+        let json = r#"{"role":"assistant","content":"Hi there"}"#;
+        let msg: HistoryMessage = serde_json::from_str(json).unwrap();
+
+        assert_eq!(msg.role, "assistant");
+        assert_eq!(msg.content, "Hi there");
+    }
+
+    #[test]
+    fn test_history_message_clone() {
+        let msg = HistoryMessage {
+            role: "user".to_string(),
+            content: "Test".to_string(),
+        };
+        let cloned = msg.clone();
+
+        assert_eq!(cloned.role, msg.role);
+        assert_eq!(cloned.content, msg.content);
+    }
+
+    #[test]
+    fn test_history_message_debug() {
+        let msg = HistoryMessage {
+            role: "user".to_string(),
+            content: "Debug test".to_string(),
+        };
+
+        let debug = format!("{:?}", msg);
+        assert!(debug.contains("HistoryMessage"));
+        assert!(debug.contains("user"));
+    }
+
+    // ===== Additional edge case tests =====
+
+    #[test]
+    fn test_map_file_edit_arguments_empty_array() {
+        let args = json!({"path": "/test.txt", "old_string": [], "new_string": []});
+        let mapped = map_file_edit_arguments(&args);
+        assert_eq!(mapped["old_string"], "");
+        assert_eq!(mapped["new_string"], "");
+    }
+
+    #[test]
+    fn test_map_file_edit_arguments_mixed_array() {
+        // Array with non-string values - should filter them out
+        let args = json!({"path": "/test.txt", "old_string": ["line1", 123, "line2"]});
+        let mapped = map_file_edit_arguments(&args);
+        // Non-strings are filtered out
+        assert_eq!(mapped["old_string"], "line1\nline2");
+    }
+
+    #[test]
+    fn test_extract_json_tool_calls_with_qwen_format() {
+        // Qwen sometimes outputs tool calls in a specific format
+        let text = r#"
+I will read the file.
+
+```json
+{
+    "name": "file_read",
+    "arguments": {
+        "path": "/Users/test/file.txt"
+    }
+}
+```
+"#;
+        let tools = extract_json_tool_calls(text);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].0, "file_read");
+        assert_eq!(tools[0].1["path"], "/Users/test/file.txt");
+    }
+
+    #[test]
+    fn test_extract_json_tool_calls_compact_json() {
+        let text = r#"```json
+{"name":"file_read","arguments":{"path":"/test.txt"}}
+```"#;
+        let tools = extract_json_tool_calls(text);
+        assert_eq!(tools.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_tool_from_json_file_create_to_write() {
+        let value = json!({"name": "file_create", "arguments": {"path": "/new.txt", "content": "new file"}});
+        let (name, _) = parse_tool_from_json(&value).unwrap();
+        assert_eq!(name, "file_write");
+    }
+}

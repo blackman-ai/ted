@@ -337,4 +337,373 @@ mod tests {
         assert!(!tool_result.is_error());
         assert!(tool_result.output_text().contains("Incremental mode"));
     }
+
+    // ===== Tool Definition Tests =====
+
+    #[test]
+    fn test_definition() {
+        let tool = FileChangeSetTool;
+        let def = tool.definition();
+
+        assert_eq!(def.name, "propose_file_changes");
+        assert!(def.description.contains("change"));
+        assert!(def.description.contains("atomic"));
+        assert!(def.description.contains("incremental"));
+    }
+
+    #[test]
+    fn test_definition_has_required_fields() {
+        let tool = FileChangeSetTool;
+        let def = tool.definition();
+
+        // Check required fields
+        assert!(def.input_schema.required.contains(&"id".to_string()));
+        assert!(def
+            .input_schema
+            .required
+            .contains(&"description".to_string()));
+        assert!(def
+            .input_schema
+            .required
+            .contains(&"operations".to_string()));
+    }
+
+    #[test]
+    fn test_definition_has_all_properties() {
+        let tool = FileChangeSetTool;
+        let def = tool.definition();
+
+        let properties = def.input_schema.properties.as_object().unwrap();
+        assert!(properties.contains_key("id"));
+        assert!(properties.contains_key("description"));
+        assert!(properties.contains_key("operations"));
+        assert!(properties.contains_key("related_files"));
+        assert!(properties.contains_key("mode"));
+    }
+
+    // ===== Permission Request Tests =====
+
+    #[test]
+    fn test_permission_request_atomic() {
+        let tool = FileChangeSetTool;
+        let input = json!({
+            "id": "test",
+            "description": "Test changes",
+            "mode": "atomic",
+            "operations": [
+                {"type": "write", "path": "file1.txt", "content": "hello"}
+            ]
+        });
+
+        let request = tool.permission_request(&input).unwrap();
+        assert_eq!(request.tool_name, "propose_file_changes");
+        assert!(request.action_description.contains("atomic"));
+        assert!(request.is_destructive);
+        assert_eq!(request.affected_paths.len(), 1);
+        assert!(request.affected_paths.contains(&"file1.txt".to_string()));
+    }
+
+    #[test]
+    fn test_permission_request_incremental() {
+        let tool = FileChangeSetTool;
+        let input = json!({
+            "id": "test",
+            "description": "Test changes",
+            "mode": "incremental",
+            "operations": [
+                {"type": "edit", "path": "src/main.rs", "old_string": "a", "new_string": "b"}
+            ]
+        });
+
+        let request = tool.permission_request(&input).unwrap();
+        assert!(request.action_description.contains("incremental"));
+    }
+
+    #[test]
+    fn test_permission_request_multiple_operations() {
+        let tool = FileChangeSetTool;
+        let input = json!({
+            "id": "multi",
+            "description": "Multiple operations",
+            "operations": [
+                {"type": "read", "path": "file1.txt"},
+                {"type": "write", "path": "file2.txt", "content": "content"},
+                {"type": "edit", "path": "file3.txt", "old_string": "a", "new_string": "b"},
+                {"type": "delete", "path": "file4.txt"}
+            ]
+        });
+
+        let request = tool.permission_request(&input).unwrap();
+        assert_eq!(request.affected_paths.len(), 4);
+        assert!(request.affected_paths.contains(&"file1.txt".to_string()));
+        assert!(request.affected_paths.contains(&"file2.txt".to_string()));
+        assert!(request.affected_paths.contains(&"file3.txt".to_string()));
+        assert!(request.affected_paths.contains(&"file4.txt".to_string()));
+    }
+
+    #[test]
+    fn test_permission_request_invalid_input() {
+        let tool = FileChangeSetTool;
+        let input = json!({"invalid": "input"});
+
+        let request = tool.permission_request(&input);
+        assert!(request.is_none());
+    }
+
+    // ===== Execute Tests =====
+
+    #[tokio::test]
+    async fn test_execute_invalid_input() {
+        let tool = FileChangeSetTool;
+        let context = ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+
+        let input = json!({"invalid": "input"});
+        let result = tool.execute("test".to_string(), input, &context).await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_execute_read_operation() {
+        let tool = FileChangeSetTool;
+        let context = ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+
+        let input = json!({
+            "id": "read-test",
+            "description": "Read a file",
+            "operations": [
+                {"type": "read", "path": "Cargo.toml"}
+            ]
+        });
+
+        let result = tool.execute("test".to_string(), input, &context).await;
+        assert!(result.is_ok());
+
+        let tool_result = result.unwrap();
+        assert!(tool_result.output_text().contains("Read"));
+        assert!(tool_result.output_text().contains("Cargo.toml"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_delete_operation() {
+        let tool = FileChangeSetTool;
+        let context = ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+
+        let input = json!({
+            "id": "delete-test",
+            "description": "Delete a file",
+            "operations": [
+                {"type": "delete", "path": "to_delete.txt"}
+            ]
+        });
+
+        let result = tool.execute("test".to_string(), input, &context).await;
+        assert!(result.is_ok());
+
+        let tool_result = result.unwrap();
+        assert!(tool_result.output_text().contains("Delete"));
+        assert!(tool_result.output_text().contains("to_delete.txt"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_write_shows_byte_count() {
+        let tool = FileChangeSetTool;
+        let context = ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+
+        let content = "Hello, World! This is test content.";
+        let input = json!({
+            "id": "write-test",
+            "description": "Write file",
+            "operations": [
+                {"type": "write", "path": "test.txt", "content": content}
+            ]
+        });
+
+        let result = tool.execute("test".to_string(), input, &context).await;
+        assert!(result.is_ok());
+
+        let tool_result = result.unwrap();
+        assert!(tool_result.output_text().contains("bytes"));
+        assert!(tool_result
+            .output_text()
+            .contains(&format!("{}", content.len())));
+    }
+
+    #[tokio::test]
+    async fn test_execute_edit_truncates_long_strings() {
+        let tool = FileChangeSetTool;
+        let context = ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+
+        let long_string = "a".repeat(100);
+        let input = json!({
+            "id": "edit-test",
+            "description": "Edit with long strings",
+            "operations": [
+                {"type": "edit", "path": "test.txt", "old_string": long_string, "new_string": "short"}
+            ]
+        });
+
+        let result = tool.execute("test".to_string(), input, &context).await;
+        assert!(result.is_ok());
+
+        let tool_result = result.unwrap();
+        // The output should contain "..." indicating truncation
+        assert!(tool_result.output_text().contains("..."));
+    }
+
+    #[tokio::test]
+    async fn test_execute_no_related_files() {
+        let tool = FileChangeSetTool;
+        let context = ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+
+        let input = json!({
+            "id": "no-related",
+            "description": "No related files",
+            "operations": [
+                {"type": "read", "path": "test.txt"}
+            ]
+        });
+
+        let result = tool.execute("test".to_string(), input, &context).await;
+        assert!(result.is_ok());
+
+        let tool_result = result.unwrap();
+        // Should NOT contain "Related files" when empty
+        assert!(!tool_result.output_text().contains("Related files"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_related_files() {
+        let tool = FileChangeSetTool;
+        let context = ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+
+        let input = json!({
+            "id": "with-related",
+            "description": "With related files",
+            "operations": [
+                {"type": "read", "path": "main.rs"}
+            ],
+            "related_files": ["lib.rs", "mod.rs"]
+        });
+
+        let result = tool.execute("test".to_string(), input, &context).await;
+        assert!(result.is_ok());
+
+        let tool_result = result.unwrap();
+        assert!(tool_result.output_text().contains("Related files"));
+        assert!(tool_result.output_text().contains("lib.rs"));
+        assert!(tool_result.output_text().contains("mod.rs"));
+    }
+
+    // ===== Default Mode Tests =====
+
+    #[test]
+    fn test_default_mode() {
+        assert_eq!(default_mode(), ChangeSetMode::Atomic);
+    }
+
+    #[tokio::test]
+    async fn test_execute_uses_default_mode() {
+        let tool = FileChangeSetTool;
+        let context = ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+
+        // Don't specify mode - should default to atomic
+        let input = json!({
+            "id": "default-mode",
+            "description": "Test default mode",
+            "operations": [
+                {"type": "read", "path": "test.txt"}
+            ]
+        });
+
+        let result = tool.execute("test".to_string(), input, &context).await;
+        assert!(result.is_ok());
+
+        let tool_result = result.unwrap();
+        assert!(tool_result.output_text().contains("Atomic mode"));
+    }
+
+    // ===== FileChangeSetInput Deserialization Tests =====
+
+    #[test]
+    fn test_input_deserialization_minimal() {
+        let json = json!({
+            "id": "test",
+            "description": "Test",
+            "operations": []
+        });
+
+        let input: FileChangeSetInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.id, "test");
+        assert_eq!(input.description, "Test");
+        assert!(input.operations.is_empty());
+        assert!(input.related_files.is_empty());
+        assert_eq!(input.mode, ChangeSetMode::Atomic);
+    }
+
+    #[test]
+    fn test_input_deserialization_full() {
+        let json = json!({
+            "id": "full-test",
+            "description": "Full test",
+            "operations": [
+                {"type": "read", "path": "file.txt"}
+            ],
+            "related_files": ["related.txt"],
+            "mode": "incremental"
+        });
+
+        let input: FileChangeSetInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.id, "full-test");
+        assert_eq!(input.related_files.len(), 1);
+        assert_eq!(input.mode, ChangeSetMode::Incremental);
+    }
+
+    // ===== requires_permission Tests =====
+
+    #[test]
+    fn test_requires_permission() {
+        let tool = FileChangeSetTool;
+        assert!(tool.requires_permission());
+    }
 }

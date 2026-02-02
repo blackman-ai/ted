@@ -353,4 +353,151 @@ mod tests {
             sim_1_3
         );
     }
+
+    // ===== Additional EmbeddingConfig Tests =====
+
+    #[test]
+    fn test_embedding_config_clone() {
+        let config = EmbeddingConfig::default();
+        let cloned = config.clone();
+        assert_eq!(cloned.base_url, config.base_url);
+        assert_eq!(cloned.model, config.model);
+    }
+
+    #[test]
+    fn test_embedding_config_debug() {
+        let config = EmbeddingConfig::default();
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("EmbeddingConfig"));
+        assert!(debug.contains("localhost:11434"));
+    }
+
+    #[test]
+    fn test_embedding_config_custom() {
+        let config = EmbeddingConfig {
+            base_url: "http://custom:1234".to_string(),
+            model: "custom-model".to_string(),
+        };
+        assert_eq!(config.base_url, "http://custom:1234");
+        assert_eq!(config.model, "custom-model");
+    }
+
+    // ===== Additional EmbeddingGenerator Tests =====
+
+    #[test]
+    fn test_embedding_generator_new() {
+        let generator = EmbeddingGenerator::new();
+        assert_eq!(generator.config.base_url, "http://localhost:11434");
+        assert_eq!(generator.config.model, DEFAULT_EMBEDDING_MODEL);
+    }
+
+    #[test]
+    fn test_embedding_generator_default() {
+        let generator = EmbeddingGenerator::default();
+        assert_eq!(generator.config.model, DEFAULT_EMBEDDING_MODEL);
+    }
+
+    #[test]
+    fn test_embedding_generator_with_config() {
+        let config = EmbeddingConfig {
+            base_url: "http://custom:1234".to_string(),
+            model: "custom-model".to_string(),
+        };
+        let generator = EmbeddingGenerator::with_config(config.clone());
+        assert_eq!(generator.config.base_url, config.base_url);
+        assert_eq!(generator.config.model, config.model);
+    }
+
+    #[test]
+    fn test_embedding_generator_clone() {
+        let generator = EmbeddingGenerator::new();
+        let cloned = generator.clone();
+        assert_eq!(cloned.config.base_url, generator.config.base_url);
+        assert_eq!(cloned.config.model, generator.config.model);
+    }
+
+    // ===== Additional Cosine Similarity Tests =====
+
+    #[test]
+    fn test_cosine_similarity_empty_vectors() {
+        let a: Vec<f32> = vec![];
+        let b: Vec<f32> = vec![];
+        // Empty vectors have same length but both norms are 0
+        let sim = EmbeddingGenerator::cosine_similarity(&a, &b);
+        assert_eq!(sim, 0.0);
+    }
+
+    #[test]
+    fn test_cosine_similarity_single_element() {
+        let a = vec![5.0];
+        let b = vec![3.0];
+        let sim = EmbeddingGenerator::cosine_similarity(&a, &b);
+        // cos(0) = 1 for any positive scalars
+        assert!((sim - 1.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_cosine_similarity_negative_single() {
+        let a = vec![-5.0];
+        let b = vec![3.0];
+        let sim = EmbeddingGenerator::cosine_similarity(&a, &b);
+        // cos(180°) = -1 for opposite directions
+        assert!((sim + 1.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_cosine_similarity_large_vectors() {
+        let a: Vec<f32> = (0..768).map(|i| i as f32).collect();
+        let b: Vec<f32> = (0..768).map(|i| (i as f32) * 2.0).collect();
+        let sim = EmbeddingGenerator::cosine_similarity(&a, &b);
+        // Scaled vectors should have similarity of 1
+        assert!((sim - 1.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_cosine_similarity_normalized_vectors() {
+        // Pre-normalized vectors (unit vectors)
+        let a = vec![0.6, 0.8, 0.0]; // norm = 1
+        let b = vec![0.0, 0.8, 0.6]; // norm = 1
+        let sim = EmbeddingGenerator::cosine_similarity(&a, &b);
+        // Dot product = 0.64, should be similarity
+        assert!((sim - 0.64).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_cosine_similarity_both_zero() {
+        let a = vec![0.0, 0.0, 0.0];
+        let b = vec![0.0, 0.0, 0.0];
+        let sim = EmbeddingGenerator::cosine_similarity(&a, &b);
+        assert_eq!(sim, 0.0);
+    }
+
+    #[test]
+    fn test_cosine_similarity_range() {
+        // Test that similarity is always in [-1, 1]
+        let test_cases = vec![
+            (vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]),
+            (vec![-1.0, -2.0, -3.0], vec![4.0, 5.0, 6.0]),
+            (vec![0.1, 0.2, 0.3], vec![0.001, 0.002, 0.003]),
+            (vec![1000.0, 2000.0], vec![0.001, 0.002]),
+        ];
+
+        for (a, b) in test_cases {
+            let sim = EmbeddingGenerator::cosine_similarity(&a, &b);
+            assert!(
+                (-1.0..=1.0).contains(&sim),
+                "Similarity {} out of range for {:?} vs {:?}",
+                sim,
+                a,
+                b
+            );
+        }
+    }
+
+    // ===== Constant Tests =====
+
+    #[test]
+    fn test_default_embedding_model_constant() {
+        assert_eq!(DEFAULT_EMBEDDING_MODEL, "nomic-embed-text");
+    }
 }

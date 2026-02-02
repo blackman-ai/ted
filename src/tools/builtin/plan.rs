@@ -518,4 +518,471 @@ mod tests {
         assert!(result.is_error());
         assert!(result.output_text().contains("log_entry is required"));
     }
+
+    // ===== Additional permission_request tests =====
+
+    #[test]
+    fn test_permission_request_set_status() {
+        let tool = PlanUpdateTool;
+        let input = serde_json::json!({
+            "action": "set_status",
+            "plan_id": "123",
+            "status": "complete"
+        });
+        let request = tool.permission_request(&input).unwrap();
+        assert!(request.action_description.contains("status"));
+        assert!(!request.is_destructive);
+        assert!(request.affected_paths.is_empty());
+    }
+
+    #[test]
+    fn test_permission_request_add_log() {
+        let tool = PlanUpdateTool;
+        let input = serde_json::json!({
+            "action": "add_log",
+            "plan_id": "123",
+            "log_entry": "Made progress"
+        });
+        let request = tool.permission_request(&input).unwrap();
+        assert!(request.action_description.contains("log"));
+        assert_eq!(request.tool_name, "plan_update");
+    }
+
+    #[test]
+    fn test_permission_request_unknown_action() {
+        let tool = PlanUpdateTool;
+        let input = serde_json::json!({
+            "action": "foobar"
+        });
+        let request = tool.permission_request(&input).unwrap();
+        assert!(request.action_description.contains("foobar"));
+    }
+
+    #[test]
+    fn test_permission_request_missing_action() {
+        let tool = PlanUpdateTool;
+        let input = serde_json::json!({});
+        let request = tool.permission_request(&input).unwrap();
+        // Should default to "unknown"
+        assert!(request.action_description.contains("unknown"));
+    }
+
+    #[test]
+    fn test_permission_request_missing_title() {
+        let tool = PlanUpdateTool;
+        let input = serde_json::json!({
+            "action": "create"
+        });
+        let request = tool.permission_request(&input).unwrap();
+        // Should default to "plan"
+        assert!(request.action_description.contains("plan"));
+    }
+
+    // ===== Additional execute validation tests =====
+
+    #[tokio::test]
+    async fn test_update_plan_missing_content() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = PlanUpdateTool;
+        let context = create_test_context(&temp_dir);
+
+        let result = tool
+            .execute(
+                "test-id".to_string(),
+                serde_json::json!({
+                    "action": "update",
+                    "plan_id": "550e8400-e29b-41d4-a716-446655440000"
+                }),
+                &context,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error());
+        assert!(result.output_text().contains("content is required"));
+    }
+
+    #[tokio::test]
+    async fn test_set_status_missing_plan_id() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = PlanUpdateTool;
+        let context = create_test_context(&temp_dir);
+
+        let result = tool
+            .execute(
+                "test-id".to_string(),
+                serde_json::json!({
+                    "action": "set_status",
+                    "status": "complete"
+                }),
+                &context,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error());
+        assert!(result.output_text().contains("plan_id is required"));
+    }
+
+    #[tokio::test]
+    async fn test_set_status_missing_status() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = PlanUpdateTool;
+        let context = create_test_context(&temp_dir);
+
+        let result = tool
+            .execute(
+                "test-id".to_string(),
+                serde_json::json!({
+                    "action": "set_status",
+                    "plan_id": "550e8400-e29b-41d4-a716-446655440000"
+                }),
+                &context,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error());
+        assert!(result.output_text().contains("status is required"));
+    }
+
+    #[tokio::test]
+    async fn test_add_log_missing_plan_id() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = PlanUpdateTool;
+        let context = create_test_context(&temp_dir);
+
+        let result = tool
+            .execute(
+                "test-id".to_string(),
+                serde_json::json!({
+                    "action": "add_log",
+                    "log_entry": "Some progress"
+                }),
+                &context,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error());
+        assert!(result.output_text().contains("plan_id is required"));
+    }
+
+    #[tokio::test]
+    async fn test_add_log_empty_entry() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = PlanUpdateTool;
+        let context = create_test_context(&temp_dir);
+
+        let result = tool
+            .execute(
+                "test-id".to_string(),
+                serde_json::json!({
+                    "action": "add_log",
+                    "plan_id": "550e8400-e29b-41d4-a716-446655440000",
+                    "log_entry": ""
+                }),
+                &context,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error());
+        assert!(result.output_text().contains("log_entry is required"));
+    }
+
+    #[tokio::test]
+    async fn test_create_plan_empty_title() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = PlanUpdateTool;
+        let context = create_test_context(&temp_dir);
+
+        let result = tool
+            .execute(
+                "test-id".to_string(),
+                serde_json::json!({
+                    "action": "create",
+                    "title": ""
+                }),
+                &context,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error());
+        assert!(result.output_text().contains("title is required"));
+    }
+
+    #[tokio::test]
+    async fn test_update_plan_invalid_plan_id() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = PlanUpdateTool;
+        let context = create_test_context(&temp_dir);
+
+        // Invalid plan_id returns Err, not ToolResult::error
+        let result = tool
+            .execute(
+                "test-id".to_string(),
+                serde_json::json!({
+                    "action": "update",
+                    "plan_id": "not-a-valid-uuid",
+                    "content": "test content"
+                }),
+                &context,
+            )
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_set_status_invalid_plan_id() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = PlanUpdateTool;
+        let context = create_test_context(&temp_dir);
+
+        // Invalid plan_id returns Err, not ToolResult::error
+        let result = tool
+            .execute(
+                "test-id".to_string(),
+                serde_json::json!({
+                    "action": "set_status",
+                    "plan_id": "not-a-valid-uuid",
+                    "status": "complete"
+                }),
+                &context,
+            )
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_add_log_invalid_plan_id() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = PlanUpdateTool;
+        let context = create_test_context(&temp_dir);
+
+        // Invalid plan_id returns Err, not ToolResult::error
+        let result = tool
+            .execute(
+                "test-id".to_string(),
+                serde_json::json!({
+                    "action": "add_log",
+                    "plan_id": "not-a-valid-uuid",
+                    "log_entry": "some log"
+                }),
+                &context,
+            )
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    // ===== Status value tests =====
+
+    #[tokio::test]
+    async fn test_set_status_valid_statuses() {
+        // Test that all valid status strings are recognized as valid
+        // (plan not found is the expected error, not invalid status)
+        let temp_dir = TempDir::new().unwrap();
+        let tool = PlanUpdateTool;
+        let context = create_test_context(&temp_dir);
+        let valid_plan_id = "550e8400-e29b-41d4-a716-446655440000";
+
+        for status in &["active", "paused", "complete", "completed", "archived"] {
+            let result = tool
+                .execute(
+                    "test-id".to_string(),
+                    serde_json::json!({
+                        "action": "set_status",
+                        "plan_id": valid_plan_id,
+                        "status": status
+                    }),
+                    &context,
+                )
+                .await
+                .unwrap();
+
+            // Should fail with "Plan not found", not "Invalid status"
+            assert!(result.is_error());
+            assert!(
+                result.output_text().contains("Plan not found"),
+                "Status '{}' should be valid, got: {}",
+                status,
+                result.output_text()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_set_status_case_insensitive() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = PlanUpdateTool;
+        let context = create_test_context(&temp_dir);
+        let valid_plan_id = "550e8400-e29b-41d4-a716-446655440000";
+
+        for status in &[
+            "ACTIVE", "Active", "PAUSED", "Paused", "COMPLETE", "Complete",
+        ] {
+            let result = tool
+                .execute(
+                    "test-id".to_string(),
+                    serde_json::json!({
+                        "action": "set_status",
+                        "plan_id": valid_plan_id,
+                        "status": status
+                    }),
+                    &context,
+                )
+                .await
+                .unwrap();
+
+            // Should fail with "Plan not found", not "Invalid status"
+            assert!(result.is_error());
+            assert!(
+                result.output_text().contains("Plan not found"),
+                "Status '{}' should be valid (case insensitive), got: {}",
+                status,
+                result.output_text()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_update_plan_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = PlanUpdateTool;
+        let context = create_test_context(&temp_dir);
+
+        let result = tool
+            .execute(
+                "test-id".to_string(),
+                serde_json::json!({
+                    "action": "update",
+                    "plan_id": "550e8400-e29b-41d4-a716-446655440000",
+                    "content": "new content"
+                }),
+                &context,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error());
+        assert!(result.output_text().contains("Plan not found"));
+    }
+
+    #[tokio::test]
+    async fn test_add_log_plan_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = PlanUpdateTool;
+        let context = create_test_context(&temp_dir);
+
+        let result = tool
+            .execute(
+                "test-id".to_string(),
+                serde_json::json!({
+                    "action": "add_log",
+                    "plan_id": "550e8400-e29b-41d4-a716-446655440000",
+                    "log_entry": "some log entry"
+                }),
+                &context,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error());
+        assert!(result.output_text().contains("Plan not found"));
+    }
+
+    // ===== Tool definition tests =====
+
+    #[test]
+    fn test_definition_has_all_parameters() {
+        let tool = PlanUpdateTool;
+        let def = tool.definition();
+
+        // Check that the input schema contains expected properties
+        let schema = &def.input_schema;
+        let properties = schema.properties.as_object().unwrap();
+
+        assert!(properties.contains_key("action"));
+        assert!(properties.contains_key("title"));
+        assert!(properties.contains_key("content"));
+        assert!(properties.contains_key("plan_id"));
+        assert!(properties.contains_key("status"));
+        assert!(properties.contains_key("log_entry"));
+    }
+
+    #[test]
+    fn test_definition_action_is_required() {
+        let tool = PlanUpdateTool;
+        let def = tool.definition();
+
+        // required is a Vec<String> on ToolInputSchema
+        assert!(def.input_schema.required.contains(&"action".to_string()));
+    }
+
+    #[test]
+    fn test_definition_description_mentions_actions() {
+        let tool = PlanUpdateTool;
+        let def = tool.definition();
+
+        // The description should mention the different capabilities
+        // Check for case-insensitive matches since descriptions may vary
+        let desc_lower = def.description.to_lowercase();
+        assert!(
+            desc_lower.contains("create") || desc_lower.contains("new"),
+            "Description should mention creating: {}",
+            def.description
+        );
+        assert!(
+            desc_lower.contains("update") || desc_lower.contains("modify"),
+            "Description should mention updating: {}",
+            def.description
+        );
+    }
+
+    // ===== Edge case tests =====
+
+    #[tokio::test]
+    async fn test_action_with_extra_fields() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = PlanUpdateTool;
+        let context = create_test_context(&temp_dir);
+
+        // Extra fields should be ignored
+        let result = tool
+            .execute(
+                "test-id".to_string(),
+                serde_json::json!({
+                    "action": "create",
+                    "title": "",
+                    "extra_field": "should be ignored",
+                    "another_extra": 123
+                }),
+                &context,
+            )
+            .await
+            .unwrap();
+
+        // Should still fail for empty title, not for extra fields
+        assert!(result.is_error());
+        assert!(result.output_text().contains("title is required"));
+    }
+
+    #[test]
+    fn test_permission_request_fields() {
+        let tool = PlanUpdateTool;
+        let input = serde_json::json!({
+            "action": "create",
+            "title": "My Plan"
+        });
+        let request = tool.permission_request(&input).unwrap();
+
+        // Verify all fields are set correctly
+        assert_eq!(request.tool_name, "plan_update");
+        assert!(!request.is_destructive);
+        assert!(request.affected_paths.is_empty());
+    }
 }

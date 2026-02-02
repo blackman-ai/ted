@@ -308,4 +308,164 @@ mod tests {
 
         assert!(test_fn().is_err());
     }
+
+    // ===== Additional Error Type Tests =====
+
+    #[test]
+    fn test_ted_error_lsp() {
+        let err = TedError::Lsp("lsp error".to_string());
+        assert!(err.to_string().contains("LSP error"));
+        assert!(err.to_string().contains("lsp error"));
+    }
+
+    #[test]
+    fn test_ted_error_agent() {
+        let err = TedError::Agent("agent failed".to_string());
+        assert!(err.to_string().contains("Agent error"));
+        assert!(err.to_string().contains("agent failed"));
+    }
+
+    #[test]
+    fn test_ted_error_skill() {
+        let err = TedError::Skill("skill not found".to_string());
+        assert!(err.to_string().contains("Skill error"));
+        assert!(err.to_string().contains("skill not found"));
+    }
+
+    #[test]
+    fn test_ted_error_bead() {
+        let err = TedError::Bead("bead error".to_string());
+        assert!(err.to_string().contains("Bead error"));
+        assert!(err.to_string().contains("bead error"));
+    }
+
+    #[test]
+    fn test_ted_error_from_json() {
+        // Create a JSON error by trying to parse invalid JSON
+        let json_err: serde_json::Error = serde_json::from_str::<i32>("not json").unwrap_err();
+        let ted_err: TedError = json_err.into();
+        assert!(ted_err.to_string().contains("JSON error"));
+    }
+
+    #[test]
+    fn test_ted_error_from_toml_de() {
+        // Create a TOML deserialization error
+        let toml_err: toml::de::Error =
+            toml::from_str::<serde_json::Value>("invalid = ").unwrap_err();
+        let ted_err: TedError = toml_err.into();
+        assert!(ted_err.to_string().contains("TOML error"));
+    }
+
+    #[test]
+    fn test_ted_error_from_toml_ser() {
+        // toml serialization errors are harder to trigger, but we can test the From impl
+        // by checking that the error type is correctly constructed
+        let err = TedError::Toml("serialization failed".to_string());
+        assert!(err.to_string().contains("TOML error"));
+    }
+
+    #[test]
+    fn test_ted_error_from_anyhow() {
+        let anyhow_err = anyhow::anyhow!("anyhow error message");
+        let ted_err: TedError = anyhow_err.into();
+        // Should be converted to Lsp error
+        assert!(ted_err.to_string().contains("LSP error"));
+        assert!(ted_err.to_string().contains("anyhow error message"));
+    }
+
+    #[test]
+    fn test_all_error_variants_display() {
+        // Test that all error variants can be displayed without panicking
+        let errors: Vec<TedError> = vec![
+            TedError::Api(ApiError::Timeout),
+            TedError::ToolExecution("test".to_string()),
+            TedError::PermissionDenied("test".to_string()),
+            TedError::Context("test".to_string()),
+            TedError::Config("test".to_string()),
+            TedError::Toml("test".to_string()),
+            TedError::InvalidInput("test".to_string()),
+            TedError::Cap("test".to_string()),
+            TedError::Session("test".to_string()),
+            TedError::Plan("test".to_string()),
+            TedError::Lsp("test".to_string()),
+            TedError::Agent("test".to_string()),
+            TedError::Skill("test".to_string()),
+            TedError::Bead("test".to_string()),
+        ];
+
+        for err in errors {
+            let display = err.to_string();
+            assert!(!display.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_all_api_error_variants_display() {
+        let errors: Vec<ApiError> = vec![
+            ApiError::AuthenticationFailed,
+            ApiError::RateLimited(10),
+            ApiError::ModelNotFound("model".to_string()),
+            ApiError::ContextTooLong {
+                current: 1000,
+                limit: 500,
+            },
+            ApiError::Network("network".to_string()),
+            ApiError::InvalidResponse("invalid".to_string()),
+            ApiError::ServerError {
+                status: 500,
+                message: "error".to_string(),
+            },
+            ApiError::Timeout,
+            ApiError::StreamError("stream".to_string()),
+        ];
+
+        for err in errors {
+            let display = err.to_string();
+            assert!(!display.is_empty());
+
+            // Test debug as well
+            let debug = format!("{:?}", err);
+            assert!(!debug.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_ted_error_debug_all_variants() {
+        let errors: Vec<TedError> = vec![
+            TedError::Api(ApiError::Timeout),
+            TedError::ToolExecution("test".to_string()),
+            TedError::PermissionDenied("test".to_string()),
+            TedError::Context("test".to_string()),
+            TedError::Config("test".to_string()),
+            TedError::Toml("test".to_string()),
+            TedError::InvalidInput("test".to_string()),
+            TedError::Cap("test".to_string()),
+            TedError::Session("test".to_string()),
+            TedError::Plan("test".to_string()),
+            TedError::Lsp("test".to_string()),
+            TedError::Agent("test".to_string()),
+            TedError::Skill("test".to_string()),
+            TedError::Bead("test".to_string()),
+        ];
+
+        for err in errors {
+            let debug = format!("{:?}", err);
+            assert!(!debug.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_io_error_variants() {
+        let io_errors = vec![
+            std::io::Error::new(std::io::ErrorKind::NotFound, "not found"),
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied"),
+            std::io::Error::new(std::io::ErrorKind::AlreadyExists, "already exists"),
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid input"),
+        ];
+
+        for io_err in io_errors {
+            let ted_err: TedError = io_err.into();
+            assert!(ted_err.to_string().contains("IO error"));
+        }
+    }
 }

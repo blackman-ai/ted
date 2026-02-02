@@ -697,4 +697,197 @@ mod tests {
         let result = parse_slash_command("/");
         assert_eq!(result, Some(("", "")));
     }
+
+    // ==================== format_error context too long tests ====================
+
+    #[test]
+    fn test_format_error_context_too_long_with_limits() {
+        use crate::error::ApiError;
+        let error = TedError::Api(ApiError::ContextTooLong {
+            current: 150000,
+            limit: 100000,
+        });
+        let formatted = format_error(&error);
+        assert!(formatted.contains("Context too long"));
+        assert!(formatted.contains("150,000"));
+        assert!(formatted.contains("100,000"));
+        assert!(formatted.contains("/clear"));
+    }
+
+    #[test]
+    fn test_format_error_context_too_long_without_limits() {
+        use crate::error::ApiError;
+        let error = TedError::Api(ApiError::ContextTooLong {
+            current: 0,
+            limit: 0,
+        });
+        let formatted = format_error(&error);
+        assert!(formatted.contains("Context too long"));
+        assert!(formatted.contains("exceeds the model's context window"));
+    }
+
+    #[test]
+    fn test_format_error_context_too_long_current_zero() {
+        use crate::error::ApiError;
+        let error = TedError::Api(ApiError::ContextTooLong {
+            current: 0,
+            limit: 100000,
+        });
+        let formatted = format_error(&error);
+        // When current is 0, falls through to generic message
+        assert!(formatted.contains("exceeds the model's context window"));
+    }
+
+    #[test]
+    fn test_format_error_context_too_long_limit_zero() {
+        use crate::error::ApiError;
+        let error = TedError::Api(ApiError::ContextTooLong {
+            current: 100000,
+            limit: 0,
+        });
+        let formatted = format_error(&error);
+        // When limit is 0, falls through to generic message
+        assert!(formatted.contains("exceeds the model's context window"));
+    }
+
+    // ==================== format_number tests ====================
+
+    #[test]
+    fn test_format_number_small() {
+        assert_eq!(format_number(0), "0");
+        assert_eq!(format_number(1), "1");
+        assert_eq!(format_number(12), "12");
+        assert_eq!(format_number(123), "123");
+    }
+
+    #[test]
+    fn test_format_number_thousands() {
+        assert_eq!(format_number(1000), "1,000");
+        assert_eq!(format_number(1234), "1,234");
+        assert_eq!(format_number(12345), "12,345");
+        assert_eq!(format_number(123456), "123,456");
+    }
+
+    #[test]
+    fn test_format_number_millions() {
+        assert_eq!(format_number(1000000), "1,000,000");
+        assert_eq!(format_number(1234567), "1,234,567");
+        assert_eq!(format_number(12345678), "12,345,678");
+        assert_eq!(format_number(123456789), "123,456,789");
+    }
+
+    #[test]
+    fn test_format_number_exact_thousands() {
+        assert_eq!(format_number(999), "999");
+        assert_eq!(format_number(1000), "1,000");
+        assert_eq!(format_number(999999), "999,999");
+        assert_eq!(format_number(1000000), "1,000,000");
+    }
+
+    // ==================== find_project_root tests ====================
+
+    #[test]
+    fn test_find_project_root_from_current_crate() {
+        // This test runs from within the ted project, so it should find the root
+        let result = find_project_root();
+        assert!(result.is_some());
+        let root = result.unwrap();
+        // The root should contain Cargo.toml
+        assert!(root.join("Cargo.toml").exists());
+    }
+
+    // ==================== Additional format_error tests ====================
+
+    #[test]
+    fn test_format_error_generic_other_errors() {
+        let error = TedError::InvalidInput("bad input".to_string());
+        let formatted = format_error(&error);
+        assert!(formatted.starts_with("Error:"));
+        assert!(formatted.contains("bad input"));
+    }
+
+    // ==================== Additional parse_session_id edge cases ====================
+
+    #[test]
+    fn test_parse_session_id_exactly_8_chars() {
+        // 8 chars is still considered short form
+        let result = parse_session_id("abcd1234");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "abcd1234");
+    }
+
+    #[test]
+    fn test_parse_session_id_9_chars_invalid() {
+        // 9 chars is considered long form, must be valid UUID
+        let result = parse_session_id("abcd12345");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_session_id_uppercase_hex() {
+        let result = parse_session_id("ABCDEF");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_session_id_mixed_case_hex() {
+        let result = parse_session_id("aBcDeF");
+        assert!(result.is_ok());
+    }
+
+    // ==================== Additional is_slash_command edge cases ====================
+
+    #[test]
+    fn test_is_slash_command_only_whitespace() {
+        assert!(!is_slash_command("   "));
+    }
+
+    #[test]
+    fn test_is_slash_command_embedded_slash() {
+        // Slash in the middle, not at start
+        assert!(!is_slash_command("path/to/file"));
+    }
+
+    // ==================== Additional filter_display_caps tests ====================
+
+    #[test]
+    fn test_filter_display_caps_preserves_order() {
+        let caps = vec![
+            "rust-expert".to_string(),
+            "base".to_string(),
+            "security-analyst".to_string(),
+        ];
+        let filtered = filter_display_caps(&caps);
+        assert_eq!(*filtered[0], "rust-expert");
+        assert_eq!(*filtered[1], "security-analyst");
+    }
+
+    #[test]
+    fn test_filter_display_caps_multiple_base() {
+        // Even if "base" appears multiple times, all are filtered
+        let caps = vec![
+            "base".to_string(),
+            "rust-expert".to_string(),
+            "base".to_string(),
+        ];
+        let filtered = filter_display_caps(&caps);
+        assert_eq!(filtered.len(), 1);
+    }
+
+    // ==================== Additional get_cap_colors tests ====================
+
+    #[test]
+    fn test_get_cap_colors_case_sensitive() {
+        // Caps are case-sensitive
+        let (bg_lower, _) = get_cap_colors("base");
+        let (bg_upper, _) = get_cap_colors("BASE");
+        assert_ne!(bg_lower, bg_upper); // BASE returns default color
+    }
+
+    #[test]
+    fn test_get_cap_colors_with_special_chars() {
+        let (bg, fg) = get_cap_colors("my-cap-123");
+        assert_eq!(bg, Color::DarkGrey);
+        assert_eq!(fg, Color::White);
+    }
 }
