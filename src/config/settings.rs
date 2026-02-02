@@ -30,6 +30,14 @@ pub struct Settings {
     #[serde(default)]
     pub appearance: AppearanceConfig,
 
+    /// Conversation and token management settings
+    #[serde(default)]
+    pub conversation: ConversationConfig,
+
+    /// Retry and resilience settings for API calls
+    #[serde(default)]
+    pub resilience: ResilienceConfig,
+
     /// Hardware profile and tier information
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hardware: Option<HardwareConfig>,
@@ -241,6 +249,83 @@ pub struct HardwareConfig {
     pub last_detection: Option<String>,
 }
 
+/// Conversation and token management configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationConfig {
+    /// Buffer tokens reserved for LLM response
+    #[serde(default = "default_response_buffer_tokens")]
+    pub response_buffer_tokens: u32,
+
+    /// Estimated characters per token for calculations
+    #[serde(default = "default_chars_per_token")]
+    pub chars_per_token: u32,
+
+    /// Threshold (0.0-1.0) at which to start trimming conversation
+    #[serde(default = "default_trimming_threshold")]
+    pub trimming_threshold: f64,
+
+    /// Overhead tokens per message for metadata
+    #[serde(default = "default_message_overhead_tokens")]
+    pub message_overhead_tokens: u32,
+
+    /// Estimated tokens per image
+    #[serde(default = "default_image_token_estimate")]
+    pub image_token_estimate: u32,
+}
+
+impl Default for ConversationConfig {
+    fn default() -> Self {
+        Self {
+            response_buffer_tokens: default_response_buffer_tokens(),
+            chars_per_token: default_chars_per_token(),
+            trimming_threshold: default_trimming_threshold(),
+            message_overhead_tokens: default_message_overhead_tokens(),
+            image_token_estimate: default_image_token_estimate(),
+        }
+    }
+}
+
+/// Retry and resilience configuration for API calls
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResilienceConfig {
+    /// Maximum number of retry attempts
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+
+    /// Base delay in milliseconds for exponential backoff
+    #[serde(default = "default_base_delay_ms")]
+    pub base_delay_ms: u64,
+
+    /// Maximum delay in milliseconds (cap for backoff)
+    #[serde(default = "default_max_delay_ms")]
+    pub max_delay_ms: u64,
+
+    /// Jitter percentage (0.0 to 1.0) for randomizing delays
+    #[serde(default = "default_jitter")]
+    pub jitter: f64,
+
+    /// Circuit breaker: max consecutive failures before opening circuit
+    #[serde(default = "default_circuit_failure_threshold")]
+    pub circuit_failure_threshold: u32,
+
+    /// Circuit breaker: cooldown in seconds before half-open state
+    #[serde(default = "default_circuit_cooldown_secs")]
+    pub circuit_cooldown_secs: u64,
+}
+
+impl Default for ResilienceConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: default_max_retries(),
+            base_delay_ms: default_base_delay_ms(),
+            max_delay_ms: default_max_delay_ms(),
+            jitter: default_jitter(),
+            circuit_failure_threshold: default_circuit_failure_threshold(),
+            circuit_cooldown_secs: default_circuit_cooldown_secs(),
+        }
+    }
+}
+
 // Default value functions
 fn default_anthropic_api_key_env() -> String {
     "ANTHROPIC_API_KEY".to_string()
@@ -315,6 +400,52 @@ fn default_cold_retention_days() -> u32 {
 
 fn default_theme() -> String {
     "default".to_string()
+}
+
+// Conversation config defaults
+fn default_response_buffer_tokens() -> u32 {
+    4096
+}
+
+fn default_chars_per_token() -> u32 {
+    4
+}
+
+fn default_trimming_threshold() -> f64 {
+    0.8
+}
+
+fn default_message_overhead_tokens() -> u32 {
+    20
+}
+
+fn default_image_token_estimate() -> u32 {
+    1000
+}
+
+// Resilience config defaults
+fn default_max_retries() -> u32 {
+    5
+}
+
+fn default_base_delay_ms() -> u64 {
+    1000
+}
+
+fn default_max_delay_ms() -> u64 {
+    16000
+}
+
+fn default_jitter() -> f64 {
+    0.25
+}
+
+fn default_circuit_failure_threshold() -> u32 {
+    5
+}
+
+fn default_circuit_cooldown_secs() -> u64 {
+    10
 }
 
 impl Default for AnthropicConfig {
@@ -965,5 +1096,109 @@ mod tests {
 
         assert_eq!(parsed.providers.ollama.base_url, "http://custom:8080");
         assert_eq!(parsed.providers.ollama.default_model, "codellama:latest");
+    }
+
+    #[test]
+    fn test_conversation_config_default() {
+        let config = ConversationConfig::default();
+        assert_eq!(config.response_buffer_tokens, 4096);
+        assert_eq!(config.chars_per_token, 4);
+        assert!((config.trimming_threshold - 0.8).abs() < 0.001);
+        assert_eq!(config.message_overhead_tokens, 20);
+        assert_eq!(config.image_token_estimate, 1000);
+    }
+
+    #[test]
+    fn test_conversation_config_serialization() {
+        let config = ConversationConfig {
+            response_buffer_tokens: 8192,
+            chars_per_token: 3,
+            trimming_threshold: 0.9,
+            message_overhead_tokens: 25,
+            image_token_estimate: 1500,
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: ConversationConfig = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.response_buffer_tokens, 8192);
+        assert_eq!(parsed.chars_per_token, 3);
+        assert!((parsed.trimming_threshold - 0.9).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_resilience_config_default() {
+        let config = ResilienceConfig::default();
+        assert_eq!(config.max_retries, 5);
+        assert_eq!(config.base_delay_ms, 1000);
+        assert_eq!(config.max_delay_ms, 16000);
+        assert!((config.jitter - 0.25).abs() < 0.001);
+        assert_eq!(config.circuit_failure_threshold, 5);
+        assert_eq!(config.circuit_cooldown_secs, 10);
+    }
+
+    #[test]
+    fn test_resilience_config_serialization() {
+        let config = ResilienceConfig {
+            max_retries: 10,
+            base_delay_ms: 500,
+            max_delay_ms: 30000,
+            jitter: 0.5,
+            circuit_failure_threshold: 3,
+            circuit_cooldown_secs: 5,
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: ResilienceConfig = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.max_retries, 10);
+        assert_eq!(parsed.base_delay_ms, 500);
+        assert_eq!(parsed.max_delay_ms, 30000);
+        assert!((parsed.jitter - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_settings_with_conversation_config() {
+        let mut settings = Settings::default();
+        settings.conversation.response_buffer_tokens = 2048;
+        settings.conversation.trimming_threshold = 0.7;
+
+        let json = serde_json::to_string(&settings).unwrap();
+        let parsed: Settings = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.conversation.response_buffer_tokens, 2048);
+        assert!((parsed.conversation.trimming_threshold - 0.7).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_settings_with_resilience_config() {
+        let mut settings = Settings::default();
+        settings.resilience.max_retries = 3;
+        settings.resilience.base_delay_ms = 2000;
+
+        let json = serde_json::to_string(&settings).unwrap();
+        let parsed: Settings = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.resilience.max_retries, 3);
+        assert_eq!(parsed.resilience.base_delay_ms, 2000);
+    }
+
+    #[test]
+    fn test_conversation_config_default_functions() {
+        assert_eq!(default_response_buffer_tokens(), 4096);
+        assert_eq!(default_chars_per_token(), 4);
+        assert!((default_trimming_threshold() - 0.8).abs() < 0.001);
+        assert_eq!(default_message_overhead_tokens(), 20);
+        assert_eq!(default_image_token_estimate(), 1000);
+    }
+
+    #[test]
+    fn test_resilience_config_default_functions() {
+        assert_eq!(default_max_retries(), 5);
+        assert_eq!(default_base_delay_ms(), 1000);
+        assert_eq!(default_max_delay_ms(), 16000);
+        assert!((default_jitter() - 0.25).abs() < 0.001);
+        assert_eq!(default_circuit_failure_threshold(), 5);
+        assert_eq!(default_circuit_cooldown_secs(), 10);
     }
 }

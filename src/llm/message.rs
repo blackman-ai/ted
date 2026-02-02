@@ -5,6 +5,7 @@
 //!
 //! Defines the message structures used to communicate with LLMs.
 
+use crate::config::settings::ConversationConfig;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -246,6 +247,9 @@ pub struct Conversation {
 
     /// System prompt (if any)
     pub system_prompt: Option<String>,
+
+    /// Token estimation configuration
+    config: ConversationConfig,
 }
 
 impl Conversation {
@@ -254,12 +258,39 @@ impl Conversation {
         Self::default()
     }
 
+    /// Create a conversation with custom configuration
+    pub fn with_config(config: ConversationConfig) -> Self {
+        Self {
+            messages: Vec::new(),
+            system_prompt: None,
+            config,
+        }
+    }
+
     /// Create a conversation with a system prompt
     pub fn with_system(system_prompt: impl Into<String>) -> Self {
         Self {
             messages: vec![],
             system_prompt: Some(system_prompt.into()),
+            config: ConversationConfig::default(),
         }
+    }
+
+    /// Create a conversation with both a system prompt and config
+    pub fn with_system_and_config(
+        system_prompt: impl Into<String>,
+        config: ConversationConfig,
+    ) -> Self {
+        Self {
+            messages: vec![],
+            system_prompt: Some(system_prompt.into()),
+            config,
+        }
+    }
+
+    /// Get the conversation config
+    pub fn config(&self) -> &ConversationConfig {
+        &self.config
     }
 
     /// Set the system prompt
@@ -301,15 +332,20 @@ impl Conversation {
     }
 
     /// Estimate the total token count for the conversation
-    /// Uses a simple heuristic of ~4 characters per token
+    /// Uses a configurable heuristic of characters per token (default: 4)
     pub fn estimate_tokens(&self) -> u32 {
+        let chars_per_token = self.config.chars_per_token as usize;
         let system_tokens = self
             .system_prompt
             .as_ref()
-            .map(|s| (s.len() / 4) as u32)
+            .map(|s| (s.len() / chars_per_token) as u32)
             .unwrap_or(0);
 
-        let message_tokens: u32 = self.messages.iter().map(|m| m.estimate_tokens()).sum();
+        let message_tokens: u32 = self
+            .messages
+            .iter()
+            .map(|m| m.estimate_tokens_with_config(&self.config))
+            .sum();
 
         system_tokens + message_tokens
     }
@@ -318,17 +354,17 @@ impl Conversation {
     /// Keeps the system prompt and most recent messages, dropping older ones
     /// Returns (truncated_messages, was_truncated)
     pub fn truncate_to_fit(&self, max_tokens: u32) -> (Vec<Message>, bool) {
+        let chars_per_token = self.config.chars_per_token as usize;
         let system_tokens = self
             .system_prompt
             .as_ref()
-            .map(|s| (s.len() / 4) as u32)
+            .map(|s| (s.len() / chars_per_token) as u32)
             .unwrap_or(0);
 
-        // Reserve space for system prompt and some buffer for response
-        let response_buffer = 4096_u32; // Reserve tokens for the response
+        // Reserve space for system prompt and buffer for response
         let available_for_messages = max_tokens
             .saturating_sub(system_tokens)
-            .saturating_sub(response_buffer);
+            .saturating_sub(self.config.response_buffer_tokens);
 
         if available_for_messages == 0 {
             return (vec![], true);
@@ -339,7 +375,7 @@ impl Conversation {
         let mut total_tokens = 0_u32;
 
         for message in self.messages.iter().rev() {
-            let msg_tokens = message.estimate_tokens();
+            let msg_tokens = message.estimate_tokens_with_config(&self.config);
             if total_tokens + msg_tokens > available_for_messages {
                 break;
             }
@@ -357,17 +393,17 @@ impl Conversation {
     /// Trim the conversation in-place to fit within the token limit
     /// Returns the number of messages removed
     pub fn trim_to_fit(&mut self, max_tokens: u32) -> usize {
+        let chars_per_token = self.config.chars_per_token as usize;
         let system_tokens = self
             .system_prompt
             .as_ref()
-            .map(|s| (s.len() / 4) as u32)
+            .map(|s| (s.len() / chars_per_token) as u32)
             .unwrap_or(0);
 
         // Reserve space for system prompt and buffer for response
-        let response_buffer = 4096_u32;
         let available_for_messages = max_tokens
             .saturating_sub(system_tokens)
-            .saturating_sub(response_buffer);
+            .saturating_sub(self.config.response_buffer_tokens);
 
         if available_for_messages == 0 {
             let removed = self.messages.len();
@@ -380,7 +416,7 @@ impl Conversation {
         let mut keep_from_index = self.messages.len();
 
         for (i, message) in self.messages.iter().enumerate().rev() {
-            let msg_tokens = message.estimate_tokens();
+            let msg_tokens = message.estimate_tokens_with_config(&self.config);
             if total_tokens + msg_tokens > available_for_messages {
                 break;
             }
@@ -398,17 +434,22 @@ impl Conversation {
     }
 
     /// Check if the conversation needs trimming to fit within the token limit
-    /// Returns true if current token count exceeds the threshold (80% of max)
+    /// Returns true if current token count exceeds the configured threshold
     pub fn needs_trimming(&self, max_tokens: u32) -> bool {
-        let threshold = (max_tokens as f64 * 0.8) as u32;
+        let threshold = (max_tokens as f64 * self.config.trimming_threshold) as u32;
         self.estimate_tokens() > threshold
     }
 }
 
 impl Message {
-    /// Estimate token count for this message
+    /// Estimate token count for this message using default config
     /// Uses a simple heuristic of ~4 characters per token
     pub fn estimate_tokens(&self) -> u32 {
+        self.estimate_tokens_with_config(&ConversationConfig::default())
+    }
+
+    /// Estimate token count for this message with custom config
+    pub fn estimate_tokens_with_config(&self, config: &ConversationConfig) -> u32 {
         let content_len = match &self.content {
             MessageContent::Text(text) => text.len(),
             MessageContent::Blocks(blocks) => blocks
@@ -418,26 +459,30 @@ impl Message {
                     ContentBlock::ToolUse { name, input, .. } => {
                         name.len() + input.to_string().len()
                     }
-                    ContentBlock::ToolResult { content, .. } => content.estimate_tokens(),
+                    ContentBlock::ToolResult { content, .. } => {
+                        content.estimate_tokens_with_config(config)
+                    }
                 })
                 .sum(),
         };
 
         // Add overhead for role and structure
-        ((content_len + 20) / 4) as u32
+        let chars_per_token = config.chars_per_token as usize;
+        let overhead = config.message_overhead_tokens as usize;
+        ((content_len + overhead) / chars_per_token) as u32
     }
 }
 
 impl ToolResultContent {
-    /// Estimate token count for tool result content
-    fn estimate_tokens(&self) -> usize {
+    /// Estimate token count for tool result content with config
+    fn estimate_tokens_with_config(&self, config: &ConversationConfig) -> usize {
         match self {
             ToolResultContent::Text(text) => text.len(),
             ToolResultContent::Blocks(blocks) => blocks
                 .iter()
                 .map(|b| match b {
                     ToolResultBlock::Text { text } => text.len(),
-                    ToolResultBlock::Image { .. } => 1000, // Rough estimate for images
+                    ToolResultBlock::Image { .. } => config.image_token_estimate as usize,
                 })
                 .sum(),
         }

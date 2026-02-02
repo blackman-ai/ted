@@ -3,6 +3,7 @@
 
 //! Circuit breaker pattern for LLM provider resilience
 
+use crate::config::settings::ResilienceConfig;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -107,9 +108,25 @@ impl CircuitBreaker {
 }
 
 impl Default for CircuitBreaker {
-    /// Create with default settings (5 failures, 10 second cooldown)
+    /// Create with default settings from ResilienceConfig
     fn default() -> Self {
-        Self::new(5, 10)
+        let config = ResilienceConfig::default();
+        Self::from(&config)
+    }
+}
+
+impl From<&ResilienceConfig> for CircuitBreaker {
+    fn from(config: &ResilienceConfig) -> Self {
+        Self::new(
+            config.circuit_failure_threshold,
+            config.circuit_cooldown_secs,
+        )
+    }
+}
+
+impl From<ResilienceConfig> for CircuitBreaker {
+    fn from(config: ResilienceConfig) -> Self {
+        Self::from(&config)
     }
 }
 

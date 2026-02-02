@@ -608,16 +608,15 @@ mod tests {
 
     #[test]
     fn test_agent_config_with_token_budget() {
-        let config = AgentConfig::new("explore", "task", PathBuf::from("/"))
-            .with_token_budget(200_000);
+        let config =
+            AgentConfig::new("explore", "task", PathBuf::from("/")).with_token_budget(200_000);
         assert_eq!(config.token_budget, 200_000);
     }
 
     #[test]
     fn test_agent_config_with_parent() {
         let parent_id = Uuid::new_v4();
-        let config = AgentConfig::new("explore", "task", PathBuf::from("/"))
-            .with_parent(parent_id);
+        let config = AgentConfig::new("explore", "task", PathBuf::from("/")).with_parent(parent_id);
         assert_eq!(config.parent_id, Some(parent_id));
     }
 
@@ -667,7 +666,10 @@ mod tests {
 
         assert_eq!(config.caps.len(), 2);
         assert_eq!(config.skill, Some("rust".to_string()));
-        assert!(matches!(config.memory_strategy, MemoryStrategy::Windowed { .. }));
+        assert!(matches!(
+            config.memory_strategy,
+            MemoryStrategy::Windowed { .. }
+        ));
         assert_eq!(config.max_iterations, 100);
         assert_eq!(config.token_budget, 150_000);
         assert!(config.background);
@@ -698,8 +700,17 @@ mod tests {
     fn test_agent_result_with_files_changed() {
         let id = Uuid::new_v4();
         let started = Utc::now();
-        let result = AgentResult::success(id, "agent".to_string(), "output".to_string(), "summary".to_string(), started)
-            .with_files_changed(vec![PathBuf::from("/src/main.rs"), PathBuf::from("/src/lib.rs")]);
+        let result = AgentResult::success(
+            id,
+            "agent".to_string(),
+            "output".to_string(),
+            "summary".to_string(),
+            started,
+        )
+        .with_files_changed(vec![
+            PathBuf::from("/src/main.rs"),
+            PathBuf::from("/src/lib.rs"),
+        ]);
 
         assert_eq!(result.files_changed.len(), 2);
         assert_eq!(result.files_changed[0], PathBuf::from("/src/main.rs"));
@@ -709,8 +720,14 @@ mod tests {
     fn test_agent_result_with_files_read() {
         let id = Uuid::new_v4();
         let started = Utc::now();
-        let result = AgentResult::success(id, "agent".to_string(), "output".to_string(), "summary".to_string(), started)
-            .with_files_read(vec![PathBuf::from("/Cargo.toml")]);
+        let result = AgentResult::success(
+            id,
+            "agent".to_string(),
+            "output".to_string(),
+            "summary".to_string(),
+            started,
+        )
+        .with_files_read(vec![PathBuf::from("/Cargo.toml")]);
 
         assert_eq!(result.files_read.len(), 1);
     }
@@ -719,8 +736,14 @@ mod tests {
     fn test_agent_result_with_iterations() {
         let id = Uuid::new_v4();
         let started = Utc::now();
-        let result = AgentResult::success(id, "agent".to_string(), "output".to_string(), "summary".to_string(), started)
-            .with_iterations(15);
+        let result = AgentResult::success(
+            id,
+            "agent".to_string(),
+            "output".to_string(),
+            "summary".to_string(),
+            started,
+        )
+        .with_iterations(15);
 
         assert_eq!(result.iterations, 15);
     }
@@ -729,8 +752,14 @@ mod tests {
     fn test_agent_result_with_tokens_used() {
         let id = Uuid::new_v4();
         let started = Utc::now();
-        let result = AgentResult::success(id, "agent".to_string(), "output".to_string(), "summary".to_string(), started)
-            .with_tokens_used(50_000);
+        let result = AgentResult::success(
+            id,
+            "agent".to_string(),
+            "output".to_string(),
+            "summary".to_string(),
+            started,
+        )
+        .with_tokens_used(50_000);
 
         assert_eq!(result.tokens_used, 50_000);
     }
@@ -739,8 +768,14 @@ mod tests {
     fn test_agent_result_with_bead_id() {
         let id = Uuid::new_v4();
         let started = Utc::now();
-        let result = AgentResult::success(id, "agent".to_string(), "output".to_string(), "summary".to_string(), started)
-            .with_bead_id("task-456".to_string());
+        let result = AgentResult::success(
+            id,
+            "agent".to_string(),
+            "output".to_string(),
+            "summary".to_string(),
+            started,
+        )
+        .with_bead_id("task-456".to_string());
 
         assert_eq!(result.bead_id, Some("task-456".to_string()));
     }
@@ -749,7 +784,13 @@ mod tests {
     fn test_agent_result_duration() {
         let id = Uuid::new_v4();
         let started = Utc::now() - chrono::Duration::seconds(60);
-        let result = AgentResult::success(id, "agent".to_string(), "output".to_string(), "summary".to_string(), started);
+        let result = AgentResult::success(
+            id,
+            "agent".to_string(),
+            "output".to_string(),
+            "summary".to_string(),
+            started,
+        );
 
         let duration = result.duration();
         // Duration should be approximately 60 seconds (allow some tolerance)
@@ -808,8 +849,17 @@ mod tests {
     fn test_agent_result_format_for_parent_with_files_changed() {
         let id = Uuid::new_v4();
         let started = Utc::now();
-        let result = AgentResult::success(id, "agent".to_string(), "output".to_string(), "summary".to_string(), started)
-            .with_files_changed(vec![PathBuf::from("/src/lib.rs"), PathBuf::from("/src/main.rs")]);
+        let result = AgentResult::success(
+            id,
+            "agent".to_string(),
+            "output".to_string(),
+            "summary".to_string(),
+            started,
+        )
+        .with_files_changed(vec![
+            PathBuf::from("/src/lib.rs"),
+            PathBuf::from("/src/main.rs"),
+        ]);
 
         let formatted = result.format_for_parent();
 
@@ -822,7 +872,13 @@ mod tests {
     fn test_agent_result_format_for_parent_duration_minutes() {
         let id = Uuid::new_v4();
         let started = Utc::now() - chrono::Duration::minutes(2) - chrono::Duration::seconds(30);
-        let result = AgentResult::success(id, "agent".to_string(), "output".to_string(), "summary".to_string(), started);
+        let result = AgentResult::success(
+            id,
+            "agent".to_string(),
+            "output".to_string(),
+            "summary".to_string(),
+            started,
+        );
 
         let formatted = result.format_for_parent();
 
@@ -834,7 +890,13 @@ mod tests {
     fn test_agent_result_format_for_parent_duration_seconds_only() {
         let id = Uuid::new_v4();
         let started = Utc::now() - chrono::Duration::seconds(45);
-        let result = AgentResult::success(id, "agent".to_string(), "output".to_string(), "summary".to_string(), started);
+        let result = AgentResult::success(
+            id,
+            "agent".to_string(),
+            "output".to_string(),
+            "summary".to_string(),
+            started,
+        );
 
         let formatted = result.format_for_parent();
 
@@ -863,7 +925,13 @@ mod tests {
     fn test_agent_result_serialize() {
         let id = Uuid::new_v4();
         let started = Utc::now();
-        let result = AgentResult::success(id, "agent".to_string(), "output".to_string(), "summary".to_string(), started);
+        let result = AgentResult::success(
+            id,
+            "agent".to_string(),
+            "output".to_string(),
+            "summary".to_string(),
+            started,
+        );
 
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains("success"));

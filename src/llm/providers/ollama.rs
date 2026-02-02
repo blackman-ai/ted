@@ -2018,12 +2018,9 @@ Let me see what files exist."#;
         assert!(!events.is_empty());
 
         // Should have a MessageStart
-        let has_start = events.iter().any(|e| {
-            matches!(
-                e,
-                Ok(StreamEvent::MessageStart { .. })
-            )
-        });
+        let has_start = events
+            .iter()
+            .any(|e| matches!(e, Ok(StreamEvent::MessageStart { .. })));
         assert!(has_start);
 
         // Should have a MessageStop
@@ -2052,7 +2049,8 @@ Let me see what files exist."#;
             .await;
 
         let provider = OllamaProvider::with_base_url(mock_server.uri());
-        let request = CompletionRequest::new("qwen2.5-coder:14b", vec![Message::user("List files")]);
+        let request =
+            CompletionRequest::new("qwen2.5-coder:14b", vec![Message::user("List files")]);
 
         let result = provider.complete_stream(request).await;
         assert!(result.is_ok());

@@ -14,6 +14,29 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use uuid::Uuid;
 
+/// Parse a UUID from a database string, converting errors to rusqlite errors
+fn parse_uuid_from_db(id: &str, column: usize) -> std::result::Result<Uuid, rusqlite::Error> {
+    Uuid::parse_str(id).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(column, rusqlite::types::Type::Text, Box::new(e))
+    })
+}
+
+/// Parse a DateTime from a database RFC3339 string, converting errors to rusqlite errors
+fn parse_datetime_from_db(
+    timestamp: &str,
+    column: usize,
+) -> std::result::Result<DateTime<Utc>, rusqlite::Error> {
+    DateTime::parse_from_rfc3339(timestamp)
+        .map(|dt| dt.with_timezone(&Utc))
+        .map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                column,
+                rusqlite::types::Type::Text,
+                Box::new(e),
+            )
+        })
+}
+
 /// A stored conversation with metadata and embedding
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationMemory {
@@ -186,10 +209,8 @@ impl MemoryStore {
                 let embedding_str: String = row.get(6)?;
 
                 Ok(ConversationMemory {
-                    id: Uuid::parse_str(&id).unwrap(),
-                    timestamp: DateTime::parse_from_rfc3339(&timestamp)
-                        .unwrap()
-                        .with_timezone(&Utc),
+                    id: parse_uuid_from_db(&id, 0)?,
+                    timestamp: parse_datetime_from_db(&timestamp, 1)?,
                     summary,
                     files_changed: serde_json::from_str(&files_changed_str).unwrap_or_default(),
                     tags: serde_json::from_str(&tags_str).unwrap_or_default(),
@@ -227,10 +248,8 @@ impl MemoryStore {
                 let embedding_str: String = row.get(6)?;
 
                 Ok(ConversationMemory {
-                    id: Uuid::parse_str(&id).unwrap(),
-                    timestamp: DateTime::parse_from_rfc3339(&timestamp)
-                        .unwrap()
-                        .with_timezone(&Utc),
+                    id: parse_uuid_from_db(&id, 0)?,
+                    timestamp: parse_datetime_from_db(&timestamp, 1)?,
                     summary,
                     files_changed: serde_json::from_str(&files_changed_str).unwrap_or_default(),
                     tags: serde_json::from_str(&tags_str).unwrap_or_default(),
@@ -266,10 +285,8 @@ impl MemoryStore {
                 let embedding_str: String = row.get(6)?;
 
                 Ok(ConversationMemory {
-                    id: Uuid::parse_str(&id).unwrap(),
-                    timestamp: DateTime::parse_from_rfc3339(&timestamp)
-                        .unwrap()
-                        .with_timezone(&Utc),
+                    id: parse_uuid_from_db(&id, 0)?,
+                    timestamp: parse_datetime_from_db(&timestamp, 1)?,
                     summary,
                     files_changed: serde_json::from_str(&files_changed_str).unwrap_or_default(),
                     tags: serde_json::from_str(&tags_str).unwrap_or_default(),
@@ -308,10 +325,8 @@ impl MemoryStore {
                 let embedding_str: String = row.get(6)?;
 
                 Ok(ConversationMemory {
-                    id: Uuid::parse_str(&id).unwrap(),
-                    timestamp: DateTime::parse_from_rfc3339(&timestamp)
-                        .unwrap()
-                        .with_timezone(&Utc),
+                    id: parse_uuid_from_db(&id, 0)?,
+                    timestamp: parse_datetime_from_db(&timestamp, 1)?,
                     summary,
                     files_changed: serde_json::from_str(&files_changed_str).unwrap_or_default(),
                     tags: serde_json::from_str(&tags_str).unwrap_or_default(),

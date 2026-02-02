@@ -195,7 +195,9 @@ fn handle_editor_normal_mode(
     key: KeyCode,
     modifiers: KeyModifiers,
 ) -> Result<AppResult> {
-    let editor = app.editor.as_mut().unwrap();
+    let Some(editor) = app.editor.as_mut() else {
+        return Ok(AppResult::Continue);
+    };
 
     match key {
         // Movement
@@ -270,7 +272,9 @@ fn handle_editor_normal_mode(
 
 /// Handle vim insert mode input
 fn handle_editor_insert_mode(app: &mut App, key: KeyCode) -> Result<AppResult> {
-    let editor = app.editor.as_mut().unwrap();
+    let Some(editor) = app.editor.as_mut() else {
+        return Ok(AppResult::Continue);
+    };
 
     match key {
         KeyCode::Esc => editor.exit_to_normal(),
@@ -289,7 +293,9 @@ fn handle_editor_insert_mode(app: &mut App, key: KeyCode) -> Result<AppResult> {
 
 /// Handle vim command mode input
 fn handle_editor_command_mode(app: &mut App, key: KeyCode) -> Result<AppResult> {
-    let editor = app.editor.as_mut().unwrap();
+    let Some(editor) = app.editor.as_mut() else {
+        return Ok(AppResult::Continue);
+    };
 
     match key {
         KeyCode::Esc => {

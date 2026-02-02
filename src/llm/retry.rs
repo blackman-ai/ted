@@ -3,6 +3,7 @@
 
 //! Retry logic for LLM API calls with exponential backoff
 
+use crate::config::settings::ResilienceConfig;
 use crate::error::{ApiError, Result, TedError};
 use rand::Rng;
 use std::future::Future;
@@ -24,11 +25,30 @@ pub struct RetryConfig {
 
 impl Default for RetryConfig {
     fn default() -> Self {
+        // Use ResilienceConfig defaults for consistency
+        let resilience = ResilienceConfig::default();
+        Self::from(resilience)
+    }
+}
+
+impl From<ResilienceConfig> for RetryConfig {
+    fn from(config: ResilienceConfig) -> Self {
         Self {
-            max_retries: 5,
-            base_delay_ms: 1000, // Start at 1 second
-            max_delay_ms: 16000, // Cap at 16 seconds
-            jitter: 0.25,        // ±25% randomization
+            max_retries: config.max_retries,
+            base_delay_ms: config.base_delay_ms,
+            max_delay_ms: config.max_delay_ms,
+            jitter: config.jitter,
+        }
+    }
+}
+
+impl From<&ResilienceConfig> for RetryConfig {
+    fn from(config: &ResilienceConfig) -> Self {
+        Self {
+            max_retries: config.max_retries,
+            base_delay_ms: config.base_delay_ms,
+            max_delay_ms: config.max_delay_ms,
+            jitter: config.jitter,
         }
     }
 }

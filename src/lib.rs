@@ -8,6 +8,7 @@
 pub mod agents;
 pub mod beads;
 pub mod caps;
+pub mod chat;
 pub mod cli;
 pub mod commands;
 pub mod config;

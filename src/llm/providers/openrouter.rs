@@ -1272,10 +1272,9 @@ mod tests {
         let response = result.unwrap();
         assert_eq!(response.stop_reason, Some(StopReason::ToolUse));
 
-        let has_tool_use = response
-            .content
-            .iter()
-            .any(|c| matches!(c, ContentBlockResponse::ToolUse { name, .. } if name == "file_read"));
+        let has_tool_use = response.content.iter().any(
+            |c| matches!(c, ContentBlockResponse::ToolUse { name, .. } if name == "file_read"),
+        );
         assert!(has_tool_use);
     }
 
@@ -1429,12 +1428,9 @@ data: [DONE]
         assert!(!events.is_empty());
 
         // Check for MessageStart
-        let has_start = events.iter().any(|e| {
-            matches!(
-                e,
-                Ok(StreamEvent::MessageStart { .. })
-            )
-        });
+        let has_start = events
+            .iter()
+            .any(|e| matches!(e, Ok(StreamEvent::MessageStart { .. })));
         assert!(has_start);
 
         // Check for text deltas

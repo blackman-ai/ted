@@ -14,11 +14,27 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::error::{Result, TedError};
 
 use super::schema::{Bead, BeadId, BeadLogEntry, BeadOperation, BeadPriority, BeadStatus};
+
+/// Acquire a read lock, converting poison errors to TedError
+fn read_index(
+    lock: &RwLock<HashMap<BeadId, Bead>>,
+) -> Result<RwLockReadGuard<'_, HashMap<BeadId, Bead>>> {
+    lock.read()
+        .map_err(|_| TedError::Bead("BeadStore index lock poisoned (read)".into()))
+}
+
+/// Acquire a write lock, converting poison errors to TedError
+fn write_index(
+    lock: &RwLock<HashMap<BeadId, Bead>>,
+) -> Result<RwLockWriteGuard<'_, HashMap<BeadId, Bead>>> {
+    lock.write()
+        .map_err(|_| TedError::Bead("BeadStore index lock poisoned (write)".into()))
+}
 
 /// Storage for beads with JSONL persistence and in-memory index
 pub struct BeadStore {
@@ -60,7 +76,7 @@ impl BeadStore {
         let file = std::fs::File::open(&path)?;
         let reader = BufReader::new(file);
 
-        let mut index = self.index.write().unwrap();
+        let mut index = write_index(&self.index)?;
 
         for line in reader.lines() {
             let line = line?;
@@ -104,7 +120,7 @@ impl BeadStore {
 
         // Check if ID already exists
         {
-            let index = self.index.read().unwrap();
+            let index = read_index(&self.index)?;
             if index.contains_key(&id) {
                 return Err(TedError::Config(format!(
                     "Bead with ID '{}' already exists",
@@ -119,7 +135,7 @@ impl BeadStore {
 
         // Update index
         {
-            let mut index = self.index.write().unwrap();
+            let mut index = write_index(&self.index)?;
             index.insert(id.clone(), bead);
         }
 
@@ -132,7 +148,7 @@ impl BeadStore {
 
         // Check if exists
         {
-            let index = self.index.read().unwrap();
+            let index = read_index(&self.index)?;
             if !index.contains_key(&id) {
                 return Err(TedError::Config(format!("Bead with ID '{}' not found", id)));
             }
@@ -144,7 +160,7 @@ impl BeadStore {
 
         // Update index
         {
-            let mut index = self.index.write().unwrap();
+            let mut index = write_index(&self.index)?;
             index.insert(id, bead);
         }
 
@@ -154,7 +170,7 @@ impl BeadStore {
     /// Delete a bead
     pub fn delete(&self, id: &BeadId) -> Result<()> {
         let bead = {
-            let index = self.index.read().unwrap();
+            let index = read_index(&self.index)?;
             index
                 .get(id)
                 .cloned()
@@ -167,7 +183,7 @@ impl BeadStore {
 
         // Update index
         {
-            let mut index = self.index.write().unwrap();
+            let mut index = write_index(&self.index)?;
             index.remove(id);
         }
 
@@ -176,19 +192,28 @@ impl BeadStore {
 
     /// Get a bead by ID
     pub fn get(&self, id: &BeadId) -> Option<Bead> {
-        let index = self.index.read().unwrap();
+        let index = self
+            .index
+            .read()
+            .expect("BeadStore index lock poisoned (get)");
         index.get(id).cloned()
     }
 
     /// Get all beads
     pub fn all(&self) -> Vec<Bead> {
-        let index = self.index.read().unwrap();
+        let index = self
+            .index
+            .read()
+            .expect("BeadStore index lock poisoned (all)");
         index.values().cloned().collect()
     }
 
     /// Get beads by status
     pub fn by_status(&self, status: &BeadStatus) -> Vec<Bead> {
-        let index = self.index.read().unwrap();
+        let index = self
+            .index
+            .read()
+            .expect("BeadStore index lock poisoned (by_status)");
         index
             .values()
             .filter(|b| &b.status == status)
@@ -223,7 +248,10 @@ impl BeadStore {
 
     /// Get beads whose dependencies are all satisfied
     pub fn get_actionable(&self) -> Vec<Bead> {
-        let index = self.index.read().unwrap();
+        let index = self
+            .index
+            .read()
+            .expect("BeadStore index lock poisoned (get_actionable)");
 
         // Get all completed bead IDs
         let completed: Vec<BeadId> = index
@@ -258,7 +286,10 @@ impl BeadStore {
 
     /// Get beads by tag
     pub fn by_tag(&self, tag: &str) -> Vec<Bead> {
-        let index = self.index.read().unwrap();
+        let index = self
+            .index
+            .read()
+            .expect("BeadStore index lock poisoned (by_tag)");
         index
             .values()
             .filter(|b| b.tags.contains(&tag.to_string()))
@@ -268,7 +299,10 @@ impl BeadStore {
 
     /// Get beads by priority
     pub fn by_priority(&self, priority: BeadPriority) -> Vec<Bead> {
-        let index = self.index.read().unwrap();
+        let index = self
+            .index
+            .read()
+            .expect("BeadStore index lock poisoned (by_priority)");
         index
             .values()
             .filter(|b| b.priority == priority)
@@ -278,7 +312,10 @@ impl BeadStore {
 
     /// Get child beads of a parent
     pub fn children_of(&self, parent_id: &BeadId) -> Vec<Bead> {
-        let index = self.index.read().unwrap();
+        let index = self
+            .index
+            .read()
+            .expect("BeadStore index lock poisoned (children_of)");
         let prefix = format!("{}.", parent_id);
 
         index
@@ -290,13 +327,19 @@ impl BeadStore {
 
     /// Get the count of beads
     pub fn count(&self) -> usize {
-        let index = self.index.read().unwrap();
+        let index = self
+            .index
+            .read()
+            .expect("BeadStore index lock poisoned (count)");
         index.len()
     }
 
     /// Get statistics about beads
     pub fn stats(&self) -> BeadStats {
-        let index = self.index.read().unwrap();
+        let index = self
+            .index
+            .read()
+            .expect("BeadStore index lock poisoned (stats)");
 
         let mut stats = BeadStats {
             total: index.len(),
@@ -329,7 +372,7 @@ impl BeadStore {
             let file = std::fs::File::create(&temp_path)?;
             let mut writer = std::io::BufWriter::new(file);
 
-            let index = self.index.read().unwrap();
+            let index = read_index(&self.index)?;
             for bead in index.values() {
                 let entry = BeadLogEntry::create(bead.clone());
                 let line = serde_json::to_string(&entry)?;

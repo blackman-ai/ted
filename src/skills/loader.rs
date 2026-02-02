@@ -146,7 +146,10 @@ impl SkillRegistry {
     pub fn load(&self, name: &str) -> Result<Skill> {
         // Check cache first
         {
-            let loaded = self.loaded.read().unwrap();
+            let loaded = self
+                .loaded
+                .read()
+                .map_err(|_| TedError::Skill("SkillRegistry cache lock poisoned (read)".into()))?;
             if let Some(skill) = loaded.get(name) {
                 return Ok(skill.clone());
             }
@@ -163,7 +166,10 @@ impl SkillRegistry {
 
         // Cache it
         {
-            let mut loaded = self.loaded.write().unwrap();
+            let mut loaded = self
+                .loaded
+                .write()
+                .map_err(|_| TedError::Skill("SkillRegistry cache lock poisoned (write)".into()))?;
             loaded.insert(name.to_string(), skill.clone());
         }
 
@@ -241,7 +247,10 @@ impl SkillRegistry {
 
     /// Clear the loaded skill cache
     pub fn clear_cache(&self) {
-        let mut loaded = self.loaded.write().unwrap();
+        let mut loaded = self
+            .loaded
+            .write()
+            .expect("SkillRegistry cache lock poisoned (clear_cache)");
         loaded.clear();
     }
 
