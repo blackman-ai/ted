@@ -6,8 +6,11 @@
 //! Manages the TUI application state including current screen,
 //! selection state, and settings modifications.
 
+use std::sync::mpsc;
+
 use crate::caps::loader::CapLoader;
 use crate::config::Settings;
+use crate::llm::providers::OllamaProvider;
 use crate::models::{ModelInfo, ModelRegistry, Provider};
 use crate::plans::{PlanInfo, PlanStatus, PlanStore};
 use crate::tui::editor::{CommandResult, Editor, EditorMode};
@@ -258,6 +261,14 @@ pub struct App {
     pub model_selection_target: Option<ModelSelectionTarget>,
     /// Scroll offset for the model picker
     pub model_picker_scroll: usize,
+    /// Whether we're currently loading models from Ollama
+    pub loading_ollama_models: bool,
+    /// Receiver for async Ollama model fetch results
+    model_fetch_rx: Option<mpsc::Receiver<Result<Vec<String>, String>>>,
+    /// Whether we're currently testing a connection
+    pub testing_connection: bool,
+    /// Receiver for async connection test results
+    connection_test_rx: Option<mpsc::Receiver<Result<String, String>>>,
 }
 
 impl App {
@@ -293,6 +304,10 @@ impl App {
             model_picker_index: 0,
             model_selection_target: None,
             model_picker_scroll: 0,
+            loading_ollama_models: false,
+            model_fetch_rx: None,
+            testing_connection: false,
+            connection_test_rx: None,
         }
     }
 
@@ -492,9 +507,41 @@ impl App {
             ModelSelectionTarget::Blackman => Provider::Blackman,
         };
 
-        // Load models for this provider
-        let models = self.model_registry.models_for_provider(&provider);
-        self.available_models = models.into_iter().map(ModelDisplayInfo::from).collect();
+        // For Ollama, spawn an async task to fetch live models
+        if target == ModelSelectionTarget::Ollama {
+            // Check if we're in a tokio runtime context
+            if tokio::runtime::Handle::try_current().is_ok() {
+                self.loading_ollama_models = true;
+                self.set_status("Fetching models from Ollama...", false);
+
+                // Create channel for receiving results
+                let (tx, rx) = mpsc::channel();
+                self.model_fetch_rx = Some(rx);
+
+                // Spawn async task to fetch models
+                let base_url = self.settings.providers.ollama.base_url.clone();
+                tokio::spawn(async move {
+                    let ollama = OllamaProvider::with_base_url(&base_url);
+                    let result = ollama
+                        .list_local_models()
+                        .await
+                        .map_err(|e| format!("Failed to fetch Ollama models: {}", e));
+                    // Send result through channel (ignore error if receiver dropped)
+                    let _ = tx.send(result);
+                });
+
+                // Show empty list while loading - will be populated when results arrive
+                self.available_models = Vec::new();
+            } else {
+                // No runtime available (e.g., in tests) - use registry models directly
+                let models = self.model_registry.models_for_provider(&provider);
+                self.available_models = models.into_iter().map(ModelDisplayInfo::from).collect();
+            }
+        } else {
+            // For other providers, use registry models
+            let models = self.model_registry.models_for_provider(&provider);
+            self.available_models = models.into_iter().map(ModelDisplayInfo::from).collect();
+        }
 
         // Find current model in list and set selection
         let current_model = match target {
@@ -522,7 +569,148 @@ impl App {
         self.model_selection_target = None;
         self.model_picker_index = 0;
         self.model_picker_scroll = 0;
+        self.loading_ollama_models = false;
+        self.model_fetch_rx = None;
         self.input_mode = InputMode::Normal;
+    }
+
+    /// Check for async model fetch results (non-blocking)
+    /// Call this from the event loop to update state when models arrive
+    pub fn check_model_fetch_results(&mut self) {
+        if let Some(ref rx) = self.model_fetch_rx {
+            // Non-blocking check for results
+            match rx.try_recv() {
+                Ok(Ok(live_models)) => {
+                    // Success - populate with live models
+                    self.available_models = live_models
+                        .iter()
+                        .map(|name| self.create_live_model_info(name))
+                        .collect();
+                    self.loading_ollama_models = false;
+                    self.model_fetch_rx = None;
+                    self.set_status(&format!("Found {} models", live_models.len()), false);
+
+                    // Find current model in the new list
+                    if let Some(ModelSelectionTarget::Ollama) = self.model_selection_target {
+                        let current_model = &self.settings.providers.ollama.default_model;
+                        self.model_picker_index = self
+                            .available_models
+                            .iter()
+                            .position(|m| &m.id == current_model)
+                            .unwrap_or(0);
+                    }
+                }
+                Ok(Err(err)) => {
+                    // Fetch failed - fall back to registry models
+                    self.loading_ollama_models = false;
+                    self.model_fetch_rx = None;
+                    self.set_status(&format!("Using registry: {}", err), true);
+
+                    // Fall back to registry models
+                    let models = self.model_registry.models_for_provider(&Provider::Ollama);
+                    self.available_models =
+                        models.into_iter().map(ModelDisplayInfo::from).collect();
+
+                    // Find current model in the fallback list
+                    let current_model = &self.settings.providers.ollama.default_model;
+                    self.model_picker_index = self
+                        .available_models
+                        .iter()
+                        .position(|m| &m.id == current_model)
+                        .unwrap_or(0);
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    // Still loading, do nothing
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    // Channel closed unexpectedly - fall back to registry
+                    self.loading_ollama_models = false;
+                    self.model_fetch_rx = None;
+                    self.set_status("Model fetch interrupted", true);
+
+                    let models = self.model_registry.models_for_provider(&Provider::Ollama);
+                    self.available_models =
+                        models.into_iter().map(ModelDisplayInfo::from).collect();
+                }
+            }
+        }
+    }
+
+    /// Start an async connection test for the current provider
+    pub fn start_connection_test(&mut self) {
+        let provider = &self.settings.defaults.provider;
+
+        if provider == "ollama" {
+            // Check if we're in a tokio runtime context
+            if tokio::runtime::Handle::try_current().is_ok() {
+                self.testing_connection = true;
+                self.set_status("Testing Ollama connection...", false);
+
+                // Create channel for receiving results
+                let (tx, rx) = mpsc::channel();
+                self.connection_test_rx = Some(rx);
+
+                // Spawn async task to test connection
+                let base_url = self.settings.providers.ollama.base_url.clone();
+                tokio::spawn(async move {
+                    let ollama = OllamaProvider::with_base_url(&base_url);
+                    match ollama.list_local_models().await {
+                        Ok(models) => {
+                            let msg = format!(
+                                "Ollama connected! Found {} model{}",
+                                models.len(),
+                                if models.len() == 1 { "" } else { "s" }
+                            );
+                            let _ = tx.send(Ok(msg));
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Err(format!("Ollama connection failed: {}", e)));
+                        }
+                    }
+                });
+            } else {
+                // No runtime available (e.g., in tests)
+                self.set_status("Connection test requires async runtime", true);
+            }
+        } else if provider == "anthropic" {
+            // For Anthropic, just check if the API key is set
+            if self.settings.get_anthropic_api_key().is_some() {
+                self.set_status("Anthropic API key is configured", false);
+            } else {
+                self.set_status("No Anthropic API key configured", true);
+            }
+        } else {
+            self.set_status(
+                &format!("Connection test not available for {}", provider),
+                true,
+            );
+        }
+    }
+
+    /// Check for async connection test results (non-blocking)
+    pub fn check_connection_test_results(&mut self) {
+        if let Some(ref rx) = self.connection_test_rx {
+            match rx.try_recv() {
+                Ok(Ok(msg)) => {
+                    self.testing_connection = false;
+                    self.connection_test_rx = None;
+                    self.set_status(&msg, false);
+                }
+                Ok(Err(err)) => {
+                    self.testing_connection = false;
+                    self.connection_test_rx = None;
+                    self.set_status(&err, true);
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    // Still testing, do nothing
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.testing_connection = false;
+                    self.connection_test_rx = None;
+                    self.set_status("Connection test interrupted", true);
+                }
+            }
+        }
     }
 
     /// Confirm model selection
@@ -750,17 +938,7 @@ impl App {
                     }
                     ProviderItem::TestConnection => {
                         // Test connection based on current provider
-                        let provider = &self.settings.defaults.provider;
-                        if provider == "ollama" {
-                            self.set_status(
-                                "Ollama connection test not yet implemented. Ensure 'ollama serve' is running.",
-                                false,
-                            );
-                        } else if self.settings.get_anthropic_api_key().is_some() {
-                            self.set_status("Anthropic API key is configured", false);
-                        } else {
-                            self.set_status("No Anthropic API key configured", true);
-                        }
+                        self.start_connection_test();
                     }
                     ProviderItem::Back => self.go_back(),
                 }
@@ -916,7 +1094,26 @@ impl App {
         }
     }
 
-    /// Create a new cap file with default template
+    /// Create ModelDisplayInfo from a live Ollama model name
+    fn create_live_model_info(&self, model_name: &str) -> ModelDisplayInfo {
+        // Check if we have this model in our registry for metadata
+        if let Some(registry_model) = self
+            .model_registry
+            .find_model_for_provider(&Provider::Ollama, model_name)
+        {
+            // Use registry metadata
+            ModelDisplayInfo::from(registry_model)
+        } else {
+            // Create basic info for unknown models
+            ModelDisplayInfo {
+                id: model_name.to_string(),
+                name: model_name.to_string(),
+                tier: "Unknown".to_string(),
+                description: "Live model from Ollama".to_string(),
+                recommended: false,
+            }
+        }
+    }
     pub fn create_new_cap(&mut self, name: &str) -> Result<(), String> {
         use crate::config::Settings;
 
@@ -1205,6 +1402,7 @@ mod tests {
         assert!(app.status_message.is_none());
         assert!(!app.status_is_error);
         assert!(!app.settings_modified);
+        assert!(!app.loading_ollama_models);
     }
 
     #[test]
@@ -1542,6 +1740,8 @@ mod tests {
             app.model_selection_target,
             Some(ModelSelectionTarget::Ollama)
         );
+        // In test context (no tokio runtime), falls back to registry models
+        // In production (with runtime), models load asynchronously
         assert!(!app.available_models.is_empty());
     }
 
@@ -1891,5 +2091,1045 @@ mod tests {
         app.caps_index = app.caps_total_items() - 1;
         app.move_down();
         assert_eq!(app.caps_index, 0);
+    }
+
+    // ===== Async Model Fetch Tests =====
+
+    #[test]
+    fn test_model_fetch_rx_initialized_none() {
+        let settings = Settings::default();
+        let app = App::new(settings);
+        assert!(app.model_fetch_rx.is_none());
+    }
+
+    #[test]
+    fn test_check_model_fetch_results_no_receiver() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.model_fetch_rx = None;
+
+        // Should not panic and do nothing
+        app.check_model_fetch_results();
+        assert!(app.model_fetch_rx.is_none());
+    }
+
+    #[test]
+    fn test_check_model_fetch_results_success() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.model_selection_target = Some(ModelSelectionTarget::Ollama);
+        app.loading_ollama_models = true;
+
+        // Create a channel and send success result
+        let (tx, rx) = mpsc::channel();
+        app.model_fetch_rx = Some(rx);
+        tx.send(Ok(vec![
+            "model1:latest".to_string(),
+            "model2:7b".to_string(),
+        ]))
+        .unwrap();
+
+        // Check for results
+        app.check_model_fetch_results();
+
+        // Should have populated models
+        assert_eq!(app.available_models.len(), 2);
+        assert!(!app.loading_ollama_models);
+        assert!(app.model_fetch_rx.is_none());
+        assert!(app.status_message.is_some());
+        assert!(app.status_message.as_ref().unwrap().contains("2 models"));
+    }
+
+    #[test]
+    fn test_check_model_fetch_results_error() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.model_selection_target = Some(ModelSelectionTarget::Ollama);
+        app.loading_ollama_models = true;
+
+        // Create a channel and send error result
+        let (tx, rx) = mpsc::channel();
+        app.model_fetch_rx = Some(rx);
+        tx.send(Err("Connection refused".to_string())).unwrap();
+
+        // Check for results
+        app.check_model_fetch_results();
+
+        // Should have fallen back to registry models
+        assert!(!app.available_models.is_empty()); // Registry has Ollama models
+        assert!(!app.loading_ollama_models);
+        assert!(app.model_fetch_rx.is_none());
+        assert!(app.status_is_error);
+        assert!(app
+            .status_message
+            .as_ref()
+            .unwrap()
+            .contains("Connection refused"));
+    }
+
+    #[test]
+    fn test_check_model_fetch_results_empty_still_loading() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.model_selection_target = Some(ModelSelectionTarget::Ollama);
+        app.loading_ollama_models = true;
+
+        // Create a channel but don't send anything
+        let (_tx, rx) = mpsc::channel::<Result<Vec<String>, String>>();
+        app.model_fetch_rx = Some(rx);
+
+        // Check for results
+        app.check_model_fetch_results();
+
+        // Should still be loading
+        assert!(app.loading_ollama_models);
+        assert!(app.model_fetch_rx.is_some());
+        assert!(app.available_models.is_empty());
+    }
+
+    #[test]
+    fn test_check_model_fetch_results_disconnected() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.model_selection_target = Some(ModelSelectionTarget::Ollama);
+        app.loading_ollama_models = true;
+
+        // Create a channel and drop the sender immediately
+        let (tx, rx) = mpsc::channel::<Result<Vec<String>, String>>();
+        app.model_fetch_rx = Some(rx);
+        drop(tx); // Disconnect the channel
+
+        // Check for results
+        app.check_model_fetch_results();
+
+        // Should have fallen back to registry models
+        assert!(!app.available_models.is_empty());
+        assert!(!app.loading_ollama_models);
+        assert!(app.model_fetch_rx.is_none());
+        assert!(app.status_is_error);
+        assert!(app.status_message.as_ref().unwrap().contains("interrupted"));
+    }
+
+    #[test]
+    fn test_cancel_model_selection_clears_receiver() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+
+        // Set up as if we're in the middle of loading
+        let (_tx, rx) = mpsc::channel::<Result<Vec<String>, String>>();
+        app.model_fetch_rx = Some(rx);
+        app.loading_ollama_models = true;
+        app.model_selection_target = Some(ModelSelectionTarget::Ollama);
+        app.input_mode = InputMode::SelectingModel;
+
+        // Cancel
+        app.cancel_model_selection();
+
+        // Should have cleared everything
+        assert!(app.model_fetch_rx.is_none());
+        assert!(!app.loading_ollama_models);
+        assert!(app.model_selection_target.is_none());
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_check_model_fetch_results_updates_picker_index() {
+        let mut settings = Settings::default();
+        settings.providers.ollama.default_model = "model2:7b".to_string();
+        let mut app = App::new(settings);
+        app.model_selection_target = Some(ModelSelectionTarget::Ollama);
+        app.loading_ollama_models = true;
+        app.model_picker_index = 0;
+
+        // Create a channel and send success result
+        let (tx, rx) = mpsc::channel();
+        app.model_fetch_rx = Some(rx);
+        tx.send(Ok(vec![
+            "model1:latest".to_string(),
+            "model2:7b".to_string(),
+            "model3:13b".to_string(),
+        ]))
+        .unwrap();
+
+        // Check for results
+        app.check_model_fetch_results();
+
+        // Should have found the current model in the list
+        assert_eq!(app.model_picker_index, 1); // model2:7b is at index 1
+    }
+
+    #[test]
+    fn test_check_model_fetch_results_model_not_found_defaults_to_zero() {
+        let mut settings = Settings::default();
+        settings.providers.ollama.default_model = "nonexistent:model".to_string();
+        let mut app = App::new(settings);
+        app.model_selection_target = Some(ModelSelectionTarget::Ollama);
+        app.loading_ollama_models = true;
+        app.model_picker_index = 5; // Some arbitrary value
+
+        // Create a channel and send success result
+        let (tx, rx) = mpsc::channel();
+        app.model_fetch_rx = Some(rx);
+        tx.send(Ok(vec![
+            "model1:latest".to_string(),
+            "model2:7b".to_string(),
+        ]))
+        .unwrap();
+
+        // Check for results
+        app.check_model_fetch_results();
+
+        // Should default to 0 since current model not found
+        assert_eq!(app.model_picker_index, 0);
+    }
+
+    #[test]
+    fn test_start_model_selection_ollama_no_runtime_uses_registry() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+
+        // In test context, there's no tokio runtime
+        app.start_model_selection(ModelSelectionTarget::Ollama);
+
+        // Should have used registry models directly
+        assert!(!app.available_models.is_empty());
+        assert!(!app.loading_ollama_models);
+        assert!(app.model_fetch_rx.is_none());
+        assert_eq!(app.input_mode, InputMode::SelectingModel);
+    }
+
+    #[test]
+    fn test_start_model_selection_anthropic_uses_registry() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+
+        app.start_model_selection(ModelSelectionTarget::Anthropic);
+
+        // Should have used registry models
+        assert!(!app.available_models.is_empty());
+        assert!(!app.loading_ollama_models);
+        assert!(app.model_fetch_rx.is_none());
+        assert_eq!(app.input_mode, InputMode::SelectingModel);
+        assert_eq!(
+            app.model_selection_target,
+            Some(ModelSelectionTarget::Anthropic)
+        );
+    }
+
+    #[test]
+    fn test_start_model_selection_finds_current_model() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+
+        // First, see what models are available and pick one
+        app.start_model_selection(ModelSelectionTarget::Anthropic);
+        let available_model = app.available_models[1].id.clone(); // Pick the second model
+        app.cancel_model_selection();
+
+        // Now set that model as the default
+        app.settings.providers.anthropic.default_model = available_model.clone();
+
+        // Start selection again
+        app.start_model_selection(ModelSelectionTarget::Anthropic);
+
+        // Should have found the current model at index 1
+        let selected_model = &app.available_models[app.model_picker_index];
+        assert_eq!(selected_model.id, available_model);
+        assert_eq!(app.model_picker_index, 1);
+    }
+
+    #[test]
+    fn test_check_model_fetch_error_updates_picker_index() {
+        let mut settings = Settings::default();
+        // Set a model that exists in the registry
+        settings.providers.ollama.default_model = "qwen2.5-coder:14b".to_string();
+        let mut app = App::new(settings);
+        app.model_selection_target = Some(ModelSelectionTarget::Ollama);
+        app.loading_ollama_models = true;
+
+        // Create a channel and send error
+        let (tx, rx) = mpsc::channel();
+        app.model_fetch_rx = Some(rx);
+        tx.send(Err("Connection failed".to_string())).unwrap();
+
+        // Check for results
+        app.check_model_fetch_results();
+
+        // Should have found the model in registry fallback
+        let found_model = app
+            .available_models
+            .iter()
+            .position(|m| m.id == "qwen2.5-coder:14b");
+        if let Some(idx) = found_model {
+            assert_eq!(app.model_picker_index, idx);
+        }
+    }
+
+    // ===== Plan Management Tests =====
+
+    #[test]
+    fn test_plans_total_items() {
+        let settings = Settings::default();
+        let app = App::new(settings);
+        // Total = plans count + 1 (Back button)
+        assert_eq!(app.plans_total_items(), app.available_plans.len() + 1);
+    }
+
+    #[test]
+    fn test_refresh_plans() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        // Should not panic
+        app.refresh_plans();
+    }
+
+    #[test]
+    fn test_view_plan_nonexistent() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        let fake_id = uuid::Uuid::new_v4();
+
+        // Should not panic, should stay on current screen
+        let original_screen = app.screen;
+        app.view_plan(fake_id);
+        // If plan doesn't exist, screen should not change
+        assert_eq!(app.screen, original_screen);
+    }
+
+    #[test]
+    fn test_set_plan_status_nonexistent() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        let fake_id = uuid::Uuid::new_v4();
+
+        // Should not panic
+        app.set_plan_status(fake_id, PlanStatus::Active);
+    }
+
+    #[test]
+    fn test_delete_plan_nonexistent() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        let fake_id = uuid::Uuid::new_v4();
+
+        // Should not panic
+        app.delete_plan(fake_id);
+    }
+
+    #[test]
+    fn test_edit_plan_nonexistent() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        let fake_id = uuid::Uuid::new_v4();
+
+        let original_screen = app.screen;
+        app.edit_plan(fake_id);
+        // If plan doesn't exist, screen should not change
+        assert_eq!(app.screen, original_screen);
+    }
+
+    // ===== Editor Tests =====
+
+    #[test]
+    fn test_editor_mode_none() {
+        let settings = Settings::default();
+        let app = App::new(settings);
+        assert!(app.editor_mode().is_none());
+    }
+
+    #[test]
+    fn test_editor_mode_some() {
+        use crate::tui::editor::Editor;
+
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.editor = Some(Editor::new("test content"));
+
+        assert!(app.editor_mode().is_some());
+        assert_eq!(app.editor_mode().unwrap(), EditorMode::Normal);
+    }
+
+    #[test]
+    fn test_editor_modified_no_editor() {
+        let settings = Settings::default();
+        let app = App::new(settings);
+        assert!(!app.editor_modified());
+    }
+
+    #[test]
+    fn test_editor_modified_unmodified() {
+        use crate::tui::editor::Editor;
+
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.editor = Some(Editor::new("test content"));
+
+        assert!(!app.editor_modified());
+    }
+
+    #[test]
+    fn test_save_editor_no_plan_id() {
+        use crate::tui::editor::Editor;
+
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.editor = Some(Editor::new("test content"));
+        app.current_plan_id = None;
+
+        // Should fail and set error status
+        let result = app.save_editor();
+        assert!(!result);
+        assert!(app.status_is_error);
+    }
+
+    #[test]
+    fn test_save_editor_no_editor() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.current_plan_id = Some(uuid::Uuid::new_v4());
+        app.editor = None;
+
+        // Should fail and set error status
+        let result = app.save_editor();
+        assert!(!result);
+        assert!(app.status_is_error);
+    }
+
+    #[test]
+    fn test_handle_editor_command_continue() {
+        use crate::tui::editor::CommandResult;
+
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+
+        let result = app.handle_editor_command(CommandResult::Continue);
+        assert!(matches!(result, AppResult::Continue));
+    }
+
+    #[test]
+    fn test_handle_editor_command_quit() {
+        use crate::tui::editor::CommandResult;
+
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanEdit;
+
+        let result = app.handle_editor_command(CommandResult::Quit);
+        assert!(matches!(result, AppResult::Continue));
+        assert!(app.editor.is_none());
+        assert_eq!(app.screen, Screen::Plans);
+    }
+
+    #[test]
+    fn test_handle_editor_command_invalid() {
+        use crate::tui::editor::CommandResult;
+
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+
+        let result =
+            app.handle_editor_command(CommandResult::Invalid("Unknown command".to_string()));
+        assert!(matches!(result, AppResult::Continue));
+        assert!(app.status_is_error);
+        assert!(app
+            .status_message
+            .as_ref()
+            .unwrap()
+            .contains("Unknown command"));
+    }
+
+    // ===== Plan View Navigation Tests =====
+
+    #[test]
+    fn test_move_up_plan_view_scrolls() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanView;
+        app.plan_scroll = 5;
+
+        app.move_up();
+        assert_eq!(app.plan_scroll, 4);
+    }
+
+    #[test]
+    fn test_move_up_plan_view_at_top() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanView;
+        app.plan_scroll = 0;
+
+        app.move_up();
+        assert_eq!(app.plan_scroll, 0); // Should not go negative
+    }
+
+    #[test]
+    fn test_move_down_plan_view_scrolls() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanView;
+        app.plan_scroll = 0;
+
+        app.move_down();
+        assert_eq!(app.plan_scroll, 1);
+    }
+
+    #[test]
+    fn test_move_up_plans() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::Plans;
+        app.plans_index = 0;
+
+        app.move_up();
+        // Should wrap to last item
+        assert_eq!(app.plans_index, app.plans_total_items() - 1);
+    }
+
+    #[test]
+    fn test_move_down_plans() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::Plans;
+        app.plans_index = 0;
+
+        app.move_down();
+        if app.plans_total_items() > 1 {
+            assert_eq!(app.plans_index, 1);
+        }
+    }
+
+    #[test]
+    fn test_move_down_plans_wraps() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::Plans;
+        app.plans_index = app.plans_total_items() - 1;
+
+        app.move_down();
+        assert_eq!(app.plans_index, 0);
+    }
+
+    #[test]
+    fn test_select_plan_view_goes_back() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanView;
+
+        app.select();
+        assert_eq!(app.screen, Screen::Plans);
+    }
+
+    #[test]
+    fn test_select_plans_back() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::Plans;
+        // Select "Back" which is at the end
+        app.plans_index = app.available_plans.len();
+
+        app.select();
+        assert_eq!(app.screen, Screen::MainMenu);
+    }
+
+    // ===== create_live_model_info Tests =====
+
+    #[test]
+    fn test_create_live_model_info_unknown_model() {
+        let settings = Settings::default();
+        let app = App::new(settings);
+
+        let info = app.create_live_model_info("totally-unknown-model:latest");
+
+        assert_eq!(info.id, "totally-unknown-model:latest");
+        assert_eq!(info.name, "totally-unknown-model:latest");
+        assert_eq!(info.tier, "Unknown");
+        assert!(!info.recommended);
+    }
+
+    #[test]
+    fn test_create_live_model_info_known_model() {
+        let settings = Settings::default();
+        let app = App::new(settings);
+
+        // qwen2.5-coder:14b should be in the registry
+        let info = app.create_live_model_info("qwen2.5-coder:14b");
+
+        assert_eq!(info.id, "qwen2.5-coder:14b");
+        // Should have metadata from registry
+        assert!(!info.description.is_empty() || info.tier != "Unknown");
+    }
+
+    // ===== Model Selection Confirmation Tests =====
+
+    #[test]
+    fn test_confirm_model_selection_anthropic() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+
+        app.start_model_selection(ModelSelectionTarget::Anthropic);
+        assert!(!app.available_models.is_empty());
+
+        // Select a model
+        app.model_picker_index = 0;
+        let expected_model = app.available_models[0].id.clone();
+
+        app.confirm_model_selection();
+
+        assert_eq!(
+            app.settings.providers.anthropic.default_model,
+            expected_model
+        );
+        assert!(app.settings_modified);
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_confirm_model_selection_ollama() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+
+        // In test context, falls back to registry
+        app.start_model_selection(ModelSelectionTarget::Ollama);
+        assert!(!app.available_models.is_empty());
+
+        app.model_picker_index = 0;
+        let expected_model = app.available_models[0].id.clone();
+
+        app.confirm_model_selection();
+
+        assert_eq!(app.settings.providers.ollama.default_model, expected_model);
+        assert!(app.settings_modified);
+    }
+
+    #[test]
+    fn test_confirm_model_selection_openrouter() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+
+        app.start_model_selection(ModelSelectionTarget::OpenRouter);
+        if !app.available_models.is_empty() {
+            app.model_picker_index = 0;
+            let expected_model = app.available_models[0].id.clone();
+
+            app.confirm_model_selection();
+
+            assert_eq!(
+                app.settings.providers.openrouter.default_model,
+                expected_model
+            );
+        }
+    }
+
+    #[test]
+    fn test_confirm_model_selection_blackman() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+
+        app.start_model_selection(ModelSelectionTarget::Blackman);
+        if !app.available_models.is_empty() {
+            app.model_picker_index = 0;
+            let expected_model = app.available_models[0].id.clone();
+
+            app.confirm_model_selection();
+
+            assert_eq!(
+                app.settings.providers.blackman.default_model,
+                expected_model
+            );
+        }
+    }
+
+    #[test]
+    fn test_confirm_model_selection_no_target() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+
+        app.model_selection_target = None;
+        app.available_models = vec![ModelDisplayInfo {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            tier: "Standard".to_string(),
+            description: "".to_string(),
+            recommended: false,
+        }];
+
+        // Should not panic
+        app.confirm_model_selection();
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_confirm_model_selection_empty_models() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+
+        app.model_selection_target = Some(ModelSelectionTarget::Anthropic);
+        app.available_models = vec![];
+
+        // Should not panic
+        app.confirm_model_selection();
+    }
+
+    // ===== Model Picker Navigation Tests =====
+
+    #[test]
+    fn test_model_picker_up_not_at_top() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+
+        app.available_models = vec![
+            ModelDisplayInfo {
+                id: "m1".to_string(),
+                name: "M1".to_string(),
+                tier: "S".to_string(),
+                description: "".to_string(),
+                recommended: false,
+            },
+            ModelDisplayInfo {
+                id: "m2".to_string(),
+                name: "M2".to_string(),
+                tier: "S".to_string(),
+                description: "".to_string(),
+                recommended: false,
+            },
+        ];
+        app.model_picker_index = 1;
+
+        app.model_picker_up();
+        assert_eq!(app.model_picker_index, 0);
+    }
+
+    #[test]
+    fn test_model_picker_up_at_top_wraps() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+
+        app.available_models = vec![
+            ModelDisplayInfo {
+                id: "m1".to_string(),
+                name: "M1".to_string(),
+                tier: "S".to_string(),
+                description: "".to_string(),
+                recommended: false,
+            },
+            ModelDisplayInfo {
+                id: "m2".to_string(),
+                name: "M2".to_string(),
+                tier: "S".to_string(),
+                description: "".to_string(),
+                recommended: false,
+            },
+        ];
+        app.model_picker_index = 0;
+
+        app.model_picker_up();
+        assert_eq!(app.model_picker_index, 1); // Wraps to last
+    }
+
+    #[test]
+    fn test_model_picker_up_empty() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+
+        app.available_models = vec![];
+        app.model_picker_index = 0;
+
+        app.model_picker_up();
+        assert_eq!(app.model_picker_index, 0); // No change
+    }
+
+    #[test]
+    fn test_model_picker_down_not_at_bottom() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+
+        app.available_models = vec![
+            ModelDisplayInfo {
+                id: "m1".to_string(),
+                name: "M1".to_string(),
+                tier: "S".to_string(),
+                description: "".to_string(),
+                recommended: false,
+            },
+            ModelDisplayInfo {
+                id: "m2".to_string(),
+                name: "M2".to_string(),
+                tier: "S".to_string(),
+                description: "".to_string(),
+                recommended: false,
+            },
+        ];
+        app.model_picker_index = 0;
+
+        app.model_picker_down();
+        assert_eq!(app.model_picker_index, 1);
+    }
+
+    #[test]
+    fn test_model_picker_down_at_bottom_wraps() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+
+        app.available_models = vec![
+            ModelDisplayInfo {
+                id: "m1".to_string(),
+                name: "M1".to_string(),
+                tier: "S".to_string(),
+                description: "".to_string(),
+                recommended: false,
+            },
+            ModelDisplayInfo {
+                id: "m2".to_string(),
+                name: "M2".to_string(),
+                tier: "S".to_string(),
+                description: "".to_string(),
+                recommended: false,
+            },
+        ];
+        app.model_picker_index = 1;
+
+        app.model_picker_down();
+        assert_eq!(app.model_picker_index, 0); // Wraps to first
+    }
+
+    #[test]
+    fn test_model_picker_down_empty() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+
+        app.available_models = vec![];
+        app.model_picker_index = 0;
+
+        app.model_picker_down();
+        assert_eq!(app.model_picker_index, 0); // No change
+    }
+
+    // ===== Provider Navigation Edge Cases =====
+
+    #[test]
+    fn test_move_up_providers_not_at_top() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::Providers;
+        app.provider_index = 2;
+
+        app.move_up();
+        assert_eq!(app.provider_index, 1);
+    }
+
+    // ===== PlanEdit Navigation =====
+
+    #[test]
+    fn test_move_up_plan_edit_does_nothing() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanEdit;
+
+        // Should not panic - handled by editor
+        app.move_up();
+    }
+
+    #[test]
+    fn test_move_down_plan_edit_does_nothing() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanEdit;
+
+        // Should not panic - handled by editor
+        app.move_down();
+    }
+
+    #[test]
+    fn test_select_plan_edit_does_nothing() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanEdit;
+
+        // Should not panic - handled by editor (insert newline)
+        app.select();
+        assert_eq!(app.screen, Screen::PlanEdit);
+    }
+
+    // ===== Connection Test Tests =====
+
+    #[test]
+    fn test_connection_test_fields_initialized() {
+        let settings = Settings::default();
+        let app = App::new(settings);
+        assert!(!app.testing_connection);
+        assert!(app.connection_test_rx.is_none());
+    }
+
+    #[test]
+    fn test_start_connection_test_ollama_no_runtime() {
+        let mut settings = Settings::default();
+        settings.defaults.provider = "ollama".to_string();
+        let mut app = App::new(settings);
+
+        // In test context, there's no tokio runtime
+        app.start_connection_test();
+
+        // Should set error status since no runtime
+        assert!(app.status_is_error);
+        assert!(app
+            .status_message
+            .as_ref()
+            .unwrap()
+            .contains("async runtime"));
+    }
+
+    #[test]
+    fn test_start_connection_test_anthropic_with_key() {
+        let mut settings = Settings::default();
+        settings.defaults.provider = "anthropic".to_string();
+        settings.providers.anthropic.api_key = Some("sk-test-key".to_string());
+        let mut app = App::new(settings);
+
+        app.start_connection_test();
+
+        assert!(!app.status_is_error);
+        assert!(app.status_message.as_ref().unwrap().contains("configured"));
+    }
+
+    #[test]
+    fn test_start_connection_test_anthropic_no_key() {
+        let mut settings = Settings::default();
+        settings.defaults.provider = "anthropic".to_string();
+        settings.providers.anthropic.api_key = None;
+        let mut app = App::new(settings);
+
+        app.start_connection_test();
+
+        assert!(app.status_is_error);
+        assert!(app
+            .status_message
+            .as_ref()
+            .unwrap()
+            .contains("No Anthropic API key"));
+    }
+
+    #[test]
+    fn test_start_connection_test_unknown_provider() {
+        let mut settings = Settings::default();
+        settings.defaults.provider = "unknown".to_string();
+        let mut app = App::new(settings);
+
+        app.start_connection_test();
+
+        assert!(app.status_is_error);
+        assert!(app
+            .status_message
+            .as_ref()
+            .unwrap()
+            .contains("not available"));
+    }
+
+    #[test]
+    fn test_check_connection_test_results_no_receiver() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.connection_test_rx = None;
+
+        // Should not panic
+        app.check_connection_test_results();
+    }
+
+    #[test]
+    fn test_check_connection_test_results_success() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.testing_connection = true;
+
+        // Create a channel and send success
+        let (tx, rx) = mpsc::channel();
+        app.connection_test_rx = Some(rx);
+        tx.send(Ok("Connected successfully!".to_string())).unwrap();
+
+        app.check_connection_test_results();
+
+        assert!(!app.testing_connection);
+        assert!(app.connection_test_rx.is_none());
+        assert!(!app.status_is_error);
+        assert!(app.status_message.as_ref().unwrap().contains("Connected"));
+    }
+
+    #[test]
+    fn test_check_connection_test_results_error() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.testing_connection = true;
+
+        // Create a channel and send error
+        let (tx, rx) = mpsc::channel();
+        app.connection_test_rx = Some(rx);
+        tx.send(Err("Connection refused".to_string())).unwrap();
+
+        app.check_connection_test_results();
+
+        assert!(!app.testing_connection);
+        assert!(app.connection_test_rx.is_none());
+        assert!(app.status_is_error);
+        assert!(app
+            .status_message
+            .as_ref()
+            .unwrap()
+            .contains("Connection refused"));
+    }
+
+    #[test]
+    fn test_check_connection_test_results_empty() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.testing_connection = true;
+
+        // Create a channel but don't send anything
+        let (_tx, rx) = mpsc::channel::<Result<String, String>>();
+        app.connection_test_rx = Some(rx);
+
+        app.check_connection_test_results();
+
+        // Should still be testing
+        assert!(app.testing_connection);
+        assert!(app.connection_test_rx.is_some());
+    }
+
+    #[test]
+    fn test_check_connection_test_results_disconnected() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.testing_connection = true;
+
+        // Create a channel and drop sender
+        let (tx, rx) = mpsc::channel::<Result<String, String>>();
+        app.connection_test_rx = Some(rx);
+        drop(tx);
+
+        app.check_connection_test_results();
+
+        assert!(!app.testing_connection);
+        assert!(app.connection_test_rx.is_none());
+        assert!(app.status_is_error);
+        assert!(app.status_message.as_ref().unwrap().contains("interrupted"));
+    }
+
+    #[test]
+    fn test_select_providers_test_connection_calls_method() {
+        let mut settings = Settings::default();
+        settings.defaults.provider = "anthropic".to_string();
+        settings.providers.anthropic.api_key = Some("test-key".to_string());
+        let mut app = App::new(settings);
+        app.screen = Screen::Providers;
+
+        // Find TestConnection index
+        let test_conn_index = ProviderItem::all()
+            .iter()
+            .position(|&p| p == ProviderItem::TestConnection)
+            .unwrap();
+        app.provider_index = test_conn_index;
+
+        app.select();
+
+        // Should have set a status message
+        assert!(app.status_message.is_some());
     }
 }

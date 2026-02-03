@@ -228,7 +228,7 @@ impl ChatSessionBuilder {
         let skill_registry = Arc::new(skill_registry);
         tool_executor
             .registry_mut()
-            .register_spawn_agent(provider.clone(), skill_registry.clone());
+            .register_spawn_agent(provider.clone(), skill_registry.clone(), model.clone());
 
         Ok(ChatSession {
             session_id,
@@ -318,10 +318,10 @@ impl ChatSession {
         self.provider = provider.clone();
         self.provider_name = name.to_string();
 
-        // Re-register spawn_agent with new provider
+        // Re-register spawn_agent with new provider (use current model)
         self.tool_executor
             .registry_mut()
-            .register_spawn_agent(provider, self.skill_registry.clone());
+            .register_spawn_agent(provider, self.skill_registry.clone(), self.model.clone());
     }
 
     /// Change the model

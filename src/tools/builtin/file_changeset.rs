@@ -153,7 +153,7 @@ impl Tool for FileChangeSetTool {
 
     async fn execute(
         &self,
-        _tool_use_id: String,
+        tool_use_id: String,
         input: serde_json::Value,
         context: &ToolContext,
     ) -> Result<ToolResult> {
@@ -190,7 +190,7 @@ impl Tool for FileChangeSetTool {
                 if let Some(project_root) = &context.project_root {
                     if !full_path.starts_with(project_root) {
                         return Ok(ToolResult::error(
-                            &parsed.id,
+                            &tool_use_id,
                             format!("Path outside project: {}", path),
                         ));
                     }
@@ -252,7 +252,7 @@ impl Tool for FileChangeSetTool {
             preview.push_str("\n📝 Incremental mode: Changes can be approved individually.\n");
         }
 
-        Ok(ToolResult::success(&parsed.id, preview))
+        Ok(ToolResult::success(&tool_use_id, preview))
     }
 }
 

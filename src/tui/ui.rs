@@ -726,6 +726,14 @@ fn draw_model_picker_popup(frame: &mut Frame, app: &App) {
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
+    // Show loading indicator for Ollama
+    if app.loading_ollama_models {
+        let loading_msg = Paragraph::new("Loading models from Ollama...")
+            .style(Style::default().fg(Color::Yellow));
+        frame.render_widget(loading_msg, inner);
+        return;
+    }
+
     if app.available_models.is_empty() {
         let empty_msg = Paragraph::new("No models available for this provider")
             .style(Style::default().fg(Color::DarkGray));

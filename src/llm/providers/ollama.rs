@@ -186,6 +186,9 @@ fn try_parse_json_tool_call(text: &str) -> Option<(String, serde_json::Value)> {
 pub struct OllamaProvider {
     client: Client,
     base_url: String,
+    /// Use OpenAI-compatible API (/v1/chat/completions) instead of native Ollama API
+    /// This can improve tool calling reliability for some models
+    use_openai_api: bool,
 }
 
 impl OllamaProvider {
@@ -194,6 +197,7 @@ impl OllamaProvider {
         Self {
             client: Client::new(),
             base_url: DEFAULT_OLLAMA_URL.to_string(),
+            use_openai_api: false,
         }
     }
 
@@ -202,6 +206,17 @@ impl OllamaProvider {
         Self {
             client: Client::new(),
             base_url: base_url.into(),
+            use_openai_api: false,
+        }
+    }
+
+    /// Create with OpenAI-compatible API mode
+    /// When enabled, uses /v1/chat/completions endpoint with OpenAI-style tool calling
+    pub fn with_openai_api(base_url: impl Into<String>, use_openai_api: bool) -> Self {
+        Self {
+            client: Client::new(),
+            base_url: base_url.into(),
+            use_openai_api,
         }
     }
 
@@ -248,97 +263,101 @@ impl OllamaProvider {
     }
 
     /// Convert internal messages to Ollama format
-    fn convert_messages(&self, messages: &[Message]) -> Vec<OllamaMessage> {
-        messages
-            .iter()
-            .filter(|m| m.role != Role::System)
-            .map(|m| {
-                let role = match m.role {
-                    Role::User => "user",
-                    Role::Assistant => "assistant",
-                    Role::System => "system", // Should be filtered, but handle anyway
-                };
+    fn convert_messages(&self, messages: &[Message], system: Option<&str>) -> Vec<OllamaMessage> {
+        let mut result = Vec::new();
 
-                match &m.content {
-                    MessageContent::Text(text) => OllamaMessage {
-                        role: role.to_string(),
-                        content: text.clone(),
-                        tool_calls: None,
-                    },
-                    MessageContent::Blocks(blocks) => {
-                        // Collect text content
-                        let mut text_parts: Vec<String> = Vec::new();
-                        let mut tool_calls: Vec<OllamaToolCall> = Vec::new();
+        // Add system message first if provided (many models don't read the system field)
+        if let Some(sys) = system {
+            result.push(OllamaMessage {
+                role: "system".to_string(),
+                content: sys.to_string(),
+                tool_calls: None,
+            });
+        }
 
-                        for block in blocks {
-                            match block {
-                                ContentBlock::Text { text } => {
-                                    text_parts.push(text.clone());
-                                }
-                                ContentBlock::ToolUse { id, name, input } => {
-                                    tool_calls.push(OllamaToolCall {
-                                        function: OllamaFunctionCall {
-                                            name: name.clone(),
-                                            arguments: input.clone(),
-                                        },
-                                    });
-                                    // Store the ID in the text for reference (Ollama doesn't have IDs)
-                                    let _ = id; // Ollama doesn't use tool call IDs like Anthropic
-                                }
-                                ContentBlock::ToolResult {
-                                    tool_use_id: _,
-                                    content,
-                                    is_error,
-                                } => {
-                                    // For tool results, format clearly so the model understands
-                                    // this is the result of its tool call
-                                    let content_str = match content {
-                                        ToolResultContent::Text(t) => t.clone(),
-                                        ToolResultContent::Blocks(blocks) => blocks
-                                            .iter()
-                                            .filter_map(|b| {
-                                                if let crate::llm::message::ToolResultBlock::Text {
-                                                    text,
-                                                } = b
-                                                {
-                                                    Some(text.clone())
-                                                } else {
-                                                    None
-                                                }
-                                            })
-                                            .collect::<Vec<_>>()
-                                            .join("\n"),
-                                    };
-                                    // Format tool result clearly for Ollama models
-                                    let is_err = is_error.unwrap_or(false);
-                                    if is_err {
-                                        text_parts.push(format!(
-                                            "[TOOL RESULT - ERROR]\nThe tool call FAILED.\nError: {}\n\nYou should try a DIFFERENT approach.",
-                                            content_str
-                                        ));
-                                    } else {
-                                        text_parts.push(format!(
-                                            "[TOOL RESULT - SUCCESS]\nResult: {}\n\nNow either continue with another tool call if more work is needed, or respond with your final answer in plain text.",
-                                            content_str
-                                        ));
-                                    }
+        result.extend(messages.iter().filter(|m| m.role != Role::System).map(|m| {
+            let role = match m.role {
+                Role::User => "user",
+                Role::Assistant => "assistant",
+                Role::System => "system", // Should be filtered, but handle anyway
+            };
+
+            match &m.content {
+                MessageContent::Text(text) => OllamaMessage {
+                    role: role.to_string(),
+                    content: text.clone(),
+                    tool_calls: None,
+                },
+                MessageContent::Blocks(blocks) => {
+                    // Collect text content
+                    let mut text_parts: Vec<String> = Vec::new();
+                    let mut tool_calls: Vec<OllamaToolCall> = Vec::new();
+
+                    for block in blocks {
+                        match block {
+                            ContentBlock::Text { text } => {
+                                text_parts.push(text.clone());
+                            }
+                            ContentBlock::ToolUse { id, name, input } => {
+                                tool_calls.push(OllamaToolCall {
+                                    function: OllamaFunctionCall {
+                                        name: name.clone(),
+                                        arguments: input.clone(),
+                                    },
+                                });
+                                // Store the ID in the text for reference (Ollama doesn't have IDs)
+                                let _ = id; // Ollama doesn't use tool call IDs like Anthropic
+                            }
+                            ContentBlock::ToolResult {
+                                tool_use_id: _,
+                                content,
+                                is_error,
+                            } => {
+                                // For tool results, format clearly so the model understands
+                                // this is the result of its tool call
+                                let content_str = match content {
+                                    ToolResultContent::Text(t) => t.clone(),
+                                    ToolResultContent::Blocks(blocks) => blocks
+                                        .iter()
+                                        .filter_map(|b| {
+                                            if let crate::llm::message::ToolResultBlock::Text {
+                                                text,
+                                            } = b
+                                            {
+                                                Some(text.clone())
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join("\n"),
+                                };
+                                // Format tool result clearly for Ollama models
+                                // Keep it simple - verbose reminders can interfere with tool calling
+                                let is_err = is_error.unwrap_or(false);
+                                if is_err {
+                                    text_parts.push(format!("[TOOL ERROR]\n{}", content_str));
+                                } else {
+                                    text_parts.push(format!("[TOOL RESULT]\n{}", content_str));
                                 }
                             }
                         }
+                    }
 
-                        OllamaMessage {
-                            role: role.to_string(),
-                            content: text_parts.join("\n"),
-                            tool_calls: if tool_calls.is_empty() {
-                                None
-                            } else {
-                                Some(tool_calls)
-                            },
-                        }
+                    OllamaMessage {
+                        role: role.to_string(),
+                        content: text_parts.join("\n"),
+                        tool_calls: if tool_calls.is_empty() {
+                            None
+                        } else {
+                            Some(tool_calls)
+                        },
                     }
                 }
-            })
-            .collect()
+            }
+        }));
+
+        result
     }
 
     /// Convert tools to Ollama format
@@ -368,89 +387,54 @@ impl OllamaProvider {
             Some(self.convert_tools(&request.tools))
         };
 
-        // Enhance system prompt with tool usage guidance for Ollama models
-        // Structure: PERSONA first (most important), then tools, then persona reminder
-        let enhanced_system = if !request.tools.is_empty() {
-            let tool_guidance = r#"
-You are a helpful AI coding assistant with access to tools for working with code and files.
+        // Direct guidance for Ollama models - critical rules first
+        let system_content = if !request.tools.is_empty() {
+            // Build tool list dynamically from actual available tools
+            let tool_names: Vec<&str> = request.tools.iter().map(|t| t.name.as_str()).collect();
+            let tool_list = tool_names.join(", ");
 
-**WHEN TO USE TOOLS:**
-- Use tools ONLY when the user asks you to work with code, files, or run commands
-- For simple questions, greetings, or conversations, just respond with plain text - NO tools needed
-- NEVER use the shell tool with "echo" to communicate - just output your response directly
+            let tool_hint = format!(
+                r#"
+TOOLS: {}
 
-**RULES FOR CODING TASKS:**
+CRITICAL RULES:
 
-1. IF FILE CONTENTS ARE PROVIDED IN [PROJECT CONTEXT]: Use file_edit DIRECTLY - do NOT read files first!
-2. FOR NEW PROJECTS: Ask 1-2 quick clarifying questions, then BUILD with file_write
-3. AFTER ANY TOOL RESULT: Continue with more edits if needed, or give your final answer in plain text
-4. For coding tasks, YOU do the work using tools - don't just describe what to do
-5. NEVER suggest external platforms (WordPress.com, Wix, etc.) - you CREATE it yourself
+1. NEVER use shell with "find" or "ls" to list files. Use glob instead.
+   - BAD: shell "find . -name *.rs"
+   - GOOD: glob "src/**/*.rs"
+   glob respects .gitignore and won't return build artifacts.
 
-AVAILABLE TOOLS:
-- file_write: Create new files with {"name": "file_write", "arguments": {"path": "file.html", "content": "..."}}
-- file_edit: Edit existing files with {"name": "file_edit", "arguments": {"path": "file.js", "old_string": "exact old code", "new_string": "new code"}}
-- file_read: Read files with {"name": "file_read", "arguments": {"path": "file.js"}}
-- shell: Run commands with {"name": "shell", "arguments": {"command": "npm install"}}
+2. For complex tasks, use spawn_agent IMMEDIATELY:
+   - "look at the project" → spawn_agent(agent_type="explore", task="...")
+   - "analyze the code" → spawn_agent(agent_type="explore", task="...")
+   - "what needs improvement" → spawn_agent(agent_type="explore", task="...")
+   - "review the code" → spawn_agent(agent_type="explore", task="...")
 
-WORKFLOW WHEN FILES ARE ALREADY PROVIDED:
-If you see "=== filename ===" sections with file contents in the [PROJECT CONTEXT], you already have the code!
-1. Find ALL the places that need changes (may be in multiple files)
-2. Use file_edit for EACH change needed - you can make multiple edits
-3. After each edit succeeds, continue with the next edit if more are needed
-4. When all edits are done, explain what you fixed
+3. For simple tasks (editing one file, quick question):
+   - Use glob to find files
+   - Use file_read to read them
+   - Make your changes
 
-FOR MULTI-FILE FIXES:
-If the bug requires changes in multiple files, make them one at a time:
-- First file_edit for file1.js
-- After success, file_edit for file2.js
-- Continue until all files are fixed
-- Then give your summary
+DO NOT ask the user what they want to explore. Just use spawn_agent."#,
+                tool_list
+            );
 
-MULTIPLE EDITS TO SAME FILE:
-If you need to change multiple parts of ONE file, include ALL changes in a single file_edit.
-Use a larger old_string that contains all the code you need to change, and new_string with all fixes.
-This is important because after you edit a file, the old content no longer exists.
-
-HOW TO FIX CODE - EXAMPLE:
-If the provided index.html contains:
-  <button id="click-me">Click</button>
-And it's not working, you would output:
-```json
-{"name": "file_edit", "arguments": {"path": "index.html", "old_string": "<button id=\"click-me\">Click</button>", "new_string": "<button id=\"click-me\" onclick=\"handleClick()\">Click</button>"}}
-```
-
-IMPORTANT: The old_string must be EXACTLY copied from the file. Do not paraphrase or guess.
-"#;
+            // Add model-specific guidance for models that need extra help
+            let model_guidance = self.get_model_specific_guidance(&request.model);
 
             match &request.system {
-                Some(sys) => {
-                    // Extract persona/personality from the cap prompt
-                    // Put persona FIRST (critical for smaller models), tools in middle, persona reminder at end
-                    #[cfg(debug_assertions)]
-                    eprintln!("[DEBUG] Cap system prompt length: {} chars", sys.len());
-
-                    // Format: Full persona -> Brief tools -> Persona reminder
-                    Some(format!(
-                        "IMPORTANT - YOUR PERSONALITY AND ROLE:\n{}\n\n{}\n\nREMEMBER: Stay in character as described above. Your personality should come through in ALL your responses.",
-                        sys,
-                        tool_guidance
-                    ))
-                }
-                None => Some(tool_guidance.trim_start().to_string()),
+                Some(sys) => Some(format!("{}\n\n{}{}", sys, tool_hint, model_guidance)),
+                None => Some(format!("{}{}", tool_hint, model_guidance)),
             }
         } else {
-            // No tools - just use the system prompt with persona emphasis
-            request.system.as_ref().map(|sys| format!(
-                "IMPORTANT - YOUR PERSONALITY AND ROLE:\n{}\n\nREMEMBER: Stay in character as described above. Your personality should come through in ALL your responses.",
-                sys
-            ))
+            request.system.clone()
         };
 
+        // Pass system as first message (many models don't read the separate system field)
         OllamaRequest {
             model: request.model.clone(),
-            messages: self.convert_messages(&request.messages),
-            system: enhanced_system,
+            messages: self.convert_messages(&request.messages, system_content.as_deref()),
+            system: None, // System is now in messages array for better model compatibility
             stream,
             options: Some(OllamaOptions {
                 temperature: Some(request.temperature),
@@ -458,6 +442,132 @@ IMPORTANT: The old_string must be EXACTLY copied from the file. Do not paraphras
             }),
             tools,
         }
+    }
+
+    /// Get model-specific guidance for models that need extra help with tool usage
+    /// Smaller models and certain model families benefit from more explicit instructions
+    fn get_model_specific_guidance(&self, model: &str) -> String {
+        let model_lower = model.to_lowercase();
+
+        // Qwen models have known issues with tool calling format (see QwenLM/Qwen3-Coder#475)
+        // They frequently omit <tool_call> tags and need explicit format reminders
+        if model_lower.contains("qwen") {
+            return r#"
+
+<IMPORTANT>
+When calling tools, you MUST use this EXACT format:
+<tool_call>
+<function=TOOL_NAME><parameter=PARAM_NAME>value</parameter></function>
+</tool_call>
+
+CRITICAL RULES:
+- Do NOT omit the <tool_call> tags
+- Do NOT mix text and tool calls in the same response
+- If calling a tool, ONLY output the tool call with NO other text
+- Answer the user's ACTUAL question, not topics from examples
+- Only report results you actually received from tools
+</IMPORTANT>"#
+                .to_string();
+        }
+
+        // Smaller models (7B and under) need more hand-holding
+        if model_lower.contains(":7b")
+            || model_lower.contains(":3b")
+            || model_lower.contains(":1b")
+            || model_lower.contains("-7b")
+            || model_lower.contains("-3b")
+        {
+            return r#"
+
+## Important for Smaller Models:
+- Always use tools to explore - don't guess about the codebase
+- One tool call at a time, wait for results before proceeding
+- If a search finds nothing, try different search terms
+- Stay focused on the user's specific request"#
+                .to_string();
+        }
+
+        // CodeLlama and similar may need explicit coding focus
+        if model_lower.contains("codellama") || model_lower.contains("code-llama") {
+            return r#"
+
+## Code Assistant Reminders:
+- Search the codebase before making assumptions
+- Read existing files to understand patterns before suggesting changes
+- Use grep to find code patterns and implementations"#
+                .to_string();
+        }
+
+        // DeepSeek models
+        if model_lower.contains("deepseek") {
+            return r#"
+
+## DeepSeek Reminders:
+- Use grep for content search, glob for file name patterns
+- Explore first, then respond with findings
+- Keep responses focused and actionable"#
+                .to_string();
+        }
+
+        // Llama 3.x models - generally capable but benefit from structure
+        if model_lower.contains("llama3")
+            || model_lower.contains("llama-3")
+            || model_lower.contains("llama:3")
+        {
+            return r#"
+
+## Llama 3 Reminders:
+- Use grep("topic") to find files about the topic the user asked about
+- Read the files you find before answering
+- Base your answer on actual code from this project
+- Stay focused on answering the user's specific question"#
+                .to_string();
+        }
+
+        // Mistral/Mixtral models
+        if model_lower.contains("mistral") || model_lower.contains("mixtral") {
+            return r#"
+
+## Mistral Reminders:
+- Search first with grep, then read files
+- Answer based on code you actually read
+- Stay on topic - don't drift to unrelated searches"#
+                .to_string();
+        }
+
+        // Phi models (Microsoft)
+        if model_lower.contains("phi") {
+            return r#"
+
+## Phi Model Reminders:
+- Use grep to search file contents for the topic
+- Read relevant files before responding
+- Keep answers grounded in actual code from this project"#
+                .to_string();
+        }
+
+        // Gemma models (Google)
+        if model_lower.contains("gemma") {
+            return r#"
+
+## Gemma Reminders:
+- Search with grep first to find relevant files
+- Read those files to understand the code
+- Answer based on what you actually found"#
+                .to_string();
+        }
+
+        // Default for any other local model - provide basic guidance
+        // since most local models benefit from explicit instructions
+        r#"
+
+## Local Model Guidance:
+- Use grep("topic") to find files related to what the user asked
+- Read the files you find with file_read
+- Answer based on actual code you read from this project
+- Stay focused on the user's question - don't go off-topic
+- Only report what you actually found - never invent results"#
+            .to_string()
     }
 
     /// Parse an error response
@@ -557,6 +667,326 @@ IMPORTANT: The old_string must be EXACTLY copied from the file. Do not paraphras
         }
         serde_json::from_str(line).ok()
     }
+
+    // ==================== OpenAI-Compatible Mode ====================
+
+    /// Build an OpenAI-compatible request
+    fn build_openai_request(&self, request: &CompletionRequest, stream: bool) -> OpenAIRequest {
+        let tools = if request.tools.is_empty() {
+            None
+        } else {
+            Some(self.convert_tools_openai(&request.tools))
+        };
+
+        // Build tool hint dynamically from actual available tools
+        let system_content = if !request.tools.is_empty() {
+            let tool_names: Vec<&str> = request.tools.iter().map(|t| t.name.as_str()).collect();
+            let tool_list = tool_names.join(", ");
+
+            let tool_hint = format!(
+                r#"
+TOOLS: {}
+
+CRITICAL RULES:
+
+1. NEVER use shell with "find" or "ls" to list files. Use glob instead.
+   - BAD: shell "find . -name *.rs"
+   - GOOD: glob "src/**/*.rs"
+   glob respects .gitignore and won't return build artifacts.
+
+2. For complex tasks, use spawn_agent IMMEDIATELY:
+   - "look at the project" → spawn_agent(agent_type="explore", task="...")
+   - "analyze the code" → spawn_agent(agent_type="explore", task="...")
+   - "what needs improvement" → spawn_agent(agent_type="explore", task="...")
+   - "review the code" → spawn_agent(agent_type="explore", task="...")
+
+3. For simple tasks (editing one file, quick question):
+   - Use glob to find files
+   - Use file_read to read them
+   - Make your changes
+
+DO NOT ask the user what they want to explore. Just use spawn_agent."#,
+                tool_list
+            );
+
+            match &request.system {
+                Some(sys) => Some(format!("{}\n\n{}", sys, tool_hint)),
+                None => Some(tool_hint),
+            }
+        } else {
+            request.system.clone()
+        };
+
+        OpenAIRequest {
+            model: request.model.clone(),
+            messages: self.convert_messages_openai(&request.messages, system_content.as_deref()),
+            max_tokens: Some(request.max_tokens),
+            temperature: Some(request.temperature),
+            tools,
+            stream: Some(stream),
+        }
+    }
+
+    /// Convert messages to OpenAI format
+    fn convert_messages_openai(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+    ) -> Vec<OpenAIMessage> {
+        let mut result = Vec::new();
+
+        // Add system message first if provided
+        if let Some(sys) = system {
+            result.push(OpenAIMessage {
+                role: "system".to_string(),
+                content: Some(sys.to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+
+        for m in messages.iter().filter(|m| m.role != Role::System) {
+            let role = match m.role {
+                Role::User => "user",
+                Role::Assistant => "assistant",
+                Role::System => continue,
+            };
+
+            match &m.content {
+                MessageContent::Text(text) => {
+                    result.push(OpenAIMessage {
+                        role: role.to_string(),
+                        content: Some(text.clone()),
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
+                }
+                MessageContent::Blocks(blocks) => {
+                    let mut text_parts = Vec::new();
+                    let mut tool_calls = Vec::new();
+                    let mut tool_results: Vec<(String, String)> = Vec::new();
+
+                    for block in blocks {
+                        match block {
+                            ContentBlock::Text { text } => {
+                                text_parts.push(text.clone());
+                            }
+                            ContentBlock::ToolUse { id, name, input } => {
+                                tool_calls.push(OpenAIToolCall {
+                                    id: id.clone(),
+                                    r#type: "function".to_string(),
+                                    function: OpenAIFunctionCall {
+                                        name: name.clone(),
+                                        arguments: serde_json::to_string(input).unwrap_or_default(),
+                                    },
+                                });
+                            }
+                            ContentBlock::ToolResult {
+                                tool_use_id,
+                                content,
+                                is_error,
+                            } => {
+                                let content_str = match content {
+                                    ToolResultContent::Text(t) => t.clone(),
+                                    ToolResultContent::Blocks(blocks) => blocks
+                                        .iter()
+                                        .filter_map(|b| {
+                                            if let crate::llm::message::ToolResultBlock::Text {
+                                                text,
+                                            } = b
+                                            {
+                                                Some(text.clone())
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join("\n"),
+                                };
+                                let result_content = if is_error.unwrap_or(false) {
+                                    format!("[TOOL ERROR]\n{}", content_str)
+                                } else {
+                                    format!("[TOOL RESULT]\n{}", content_str)
+                                };
+                                tool_results.push((tool_use_id.clone(), result_content));
+                            }
+                        }
+                    }
+
+                    // Add assistant message with text and/or tool calls
+                    if role == "assistant" && (!text_parts.is_empty() || !tool_calls.is_empty()) {
+                        result.push(OpenAIMessage {
+                            role: "assistant".to_string(),
+                            content: if text_parts.is_empty() {
+                                None
+                            } else {
+                                Some(text_parts.join("\n"))
+                            },
+                            tool_calls: if tool_calls.is_empty() {
+                                None
+                            } else {
+                                Some(tool_calls)
+                            },
+                            tool_call_id: None,
+                        });
+                    }
+
+                    // Add tool results as separate messages
+                    for (tool_id, result_content) in tool_results {
+                        result.push(OpenAIMessage {
+                            role: "tool".to_string(),
+                            content: Some(result_content),
+                            tool_calls: None,
+                            tool_call_id: Some(tool_id),
+                        });
+                    }
+
+                    // Add user message with text
+                    if role == "user" && !text_parts.is_empty() {
+                        result.push(OpenAIMessage {
+                            role: "user".to_string(),
+                            content: Some(text_parts.join("\n")),
+                            tool_calls: None,
+                            tool_call_id: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Convert tools to OpenAI format
+    fn convert_tools_openai(&self, tools: &[ToolDefinition]) -> Vec<OpenAITool> {
+        tools
+            .iter()
+            .map(|t| OpenAITool {
+                r#type: "function".to_string(),
+                function: OpenAIFunction {
+                    name: t.name.clone(),
+                    description: t.description.clone(),
+                    parameters: serde_json::to_value(&t.input_schema).unwrap_or_default(),
+                },
+            })
+            .collect()
+    }
+
+    /// Complete using OpenAI-compatible endpoint
+    async fn complete_openai(&self, request: CompletionRequest) -> Result<CompletionResponse> {
+        let url = format!("{}/v1/chat/completions", self.base_url);
+        let body = self.build_openai_request(&request, false);
+
+        #[cfg(debug_assertions)]
+        eprintln!("[OLLAMA OPENAI] Using OpenAI-compatible endpoint: {}", url);
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_connect() {
+                    TedError::Api(ApiError::Network(
+                        "Ollama is not running. Start the Ollama app or run 'ollama serve'"
+                            .to_string(),
+                    ))
+                } else {
+                    TedError::Http(e)
+                }
+            })?;
+
+        let status = response.status().as_u16();
+
+        if !response.status().is_success() {
+            let body_text = response.text().await.unwrap_or_default();
+            return Err(self.parse_error(status, &body_text));
+        }
+
+        let response_text = response.text().await?;
+
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[OLLAMA OPENAI] Response: {}",
+            &response_text[..response_text.len().min(500)]
+        );
+
+        let api_response: OpenAIResponse = serde_json::from_str(&response_text).map_err(|e| {
+            TedError::Api(ApiError::ServerError {
+                status: 200,
+                message: format!("Failed to parse OpenAI response: {}", e),
+            })
+        })?;
+
+        // Convert response to our format
+        let choice = api_response.choices.into_iter().next().ok_or_else(|| {
+            TedError::Api(ApiError::InvalidResponse(
+                "No choices in OpenAI response".to_string(),
+            ))
+        })?;
+
+        let mut content: Vec<ContentBlockResponse> = Vec::new();
+
+        // Add text content
+        if let Some(text) = choice.message.content {
+            if !text.is_empty() {
+                content.push(ContentBlockResponse::Text { text });
+            }
+        }
+
+        // Add tool calls if present
+        if let Some(tool_calls) = choice.message.tool_calls {
+            for tc in tool_calls {
+                let input: serde_json::Value =
+                    serde_json::from_str(&tc.function.arguments).unwrap_or_default();
+                content.push(ContentBlockResponse::ToolUse {
+                    id: tc.id,
+                    name: tc.function.name,
+                    input,
+                });
+            }
+        }
+
+        // Determine stop reason
+        let stop_reason = match choice.finish_reason.as_deref() {
+            Some("tool_calls") => Some(StopReason::ToolUse),
+            Some("stop") => Some(StopReason::EndTurn),
+            Some("length") => Some(StopReason::MaxTokens),
+            _ => {
+                if content
+                    .iter()
+                    .any(|c| matches!(c, ContentBlockResponse::ToolUse { .. }))
+                {
+                    Some(StopReason::ToolUse)
+                } else {
+                    Some(StopReason::EndTurn)
+                }
+            }
+        };
+
+        Ok(CompletionResponse {
+            id: format!("ollama-openai-{}", uuid::Uuid::new_v4()),
+            model: request.model,
+            content,
+            stop_reason,
+            usage: api_response.usage.map_or(
+                Usage {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 0,
+                },
+                |u| Usage {
+                    input_tokens: u.prompt_tokens,
+                    output_tokens: u.completion_tokens,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 0,
+                },
+            ),
+        })
+    }
 }
 
 impl Default for OllamaProvider {
@@ -644,6 +1074,11 @@ impl LlmProvider for OllamaProvider {
     }
 
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
+        // Use OpenAI-compatible endpoint if enabled
+        if self.use_openai_api {
+            return self.complete_openai(request).await;
+        }
+
         let url = format!("{}/api/chat", self.base_url);
         let body = self.build_request(&request, false);
 
@@ -774,42 +1209,101 @@ impl LlmProvider for OllamaProvider {
         &self,
         request: CompletionRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
+        // For OpenAI-compatible mode, convert to non-streaming call and emit events
+        // This ensures tool calling works reliably even though we lose true streaming
+        if self.use_openai_api {
+            let response = self.complete_openai(request).await?;
+
+            // Convert the response to a stream of events
+            let mut events: Vec<Result<StreamEvent>> = Vec::new();
+
+            events.push(Ok(StreamEvent::MessageStart {
+                id: response.id.clone(),
+                model: response.model.clone(),
+            }));
+
+            for (idx, block) in response.content.iter().enumerate() {
+                match block {
+                    ContentBlockResponse::Text { text } => {
+                        events.push(Ok(StreamEvent::ContentBlockStart {
+                            index: idx,
+                            content_block: ContentBlockResponse::Text {
+                                text: String::new(),
+                            },
+                        }));
+                        events.push(Ok(StreamEvent::ContentBlockDelta {
+                            index: idx,
+                            delta: ContentBlockDelta::TextDelta { text: text.clone() },
+                        }));
+                        events.push(Ok(StreamEvent::ContentBlockStop { index: idx }));
+                    }
+                    ContentBlockResponse::ToolUse { id, name, input } => {
+                        events.push(Ok(StreamEvent::ContentBlockStart {
+                            index: idx,
+                            content_block: ContentBlockResponse::ToolUse {
+                                id: id.clone(),
+                                name: name.clone(),
+                                input: serde_json::Value::Object(serde_json::Map::new()),
+                            },
+                        }));
+                        events.push(Ok(StreamEvent::ContentBlockDelta {
+                            index: idx,
+                            delta: ContentBlockDelta::InputJsonDelta {
+                                partial_json: serde_json::to_string(input).unwrap_or_default(),
+                            },
+                        }));
+                        events.push(Ok(StreamEvent::ContentBlockStop { index: idx }));
+                    }
+                }
+            }
+
+            events.push(Ok(StreamEvent::MessageDelta {
+                stop_reason: response.stop_reason,
+                usage: Some(response.usage),
+            }));
+
+            return Ok(Box::pin(futures::stream::iter(events)));
+        }
+
         let url = format!("{}/api/chat", self.base_url);
         let body = self.build_request(&request, true);
         let model = request.model.clone();
 
         // Debug: Log what we're sending to Ollama
-        eprintln!(
-            "[OLLAMA DEBUG] Sending {} messages to Ollama",
-            body.messages.len()
-        );
-        for (i, msg) in body.messages.iter().enumerate() {
-            // Use char_indices to safely truncate at character boundary
-            let content_preview = if msg.content.chars().count() > 200 {
-                let end_idx = msg
-                    .content
-                    .char_indices()
-                    .nth(200)
-                    .map(|(i, _)| i)
-                    .unwrap_or(msg.content.len());
-                format!(
-                    "{}... ({} chars total)",
-                    &msg.content[..end_idx],
-                    msg.content.len()
-                )
-            } else {
-                msg.content.clone()
-            };
+        #[cfg(debug_assertions)]
+        {
             eprintln!(
-                "[OLLAMA DEBUG] Message {}: role={}, content={}",
-                i, msg.role, content_preview
+                "[OLLAMA DEBUG] Sending {} messages to Ollama",
+                body.messages.len()
             );
-            if let Some(ref tools) = msg.tool_calls {
-                eprintln!("[OLLAMA DEBUG]   tool_calls: {:?}", tools.len());
+            for (i, msg) in body.messages.iter().enumerate() {
+                // Use char_indices to safely truncate at character boundary
+                let content_preview = if msg.content.chars().count() > 200 {
+                    let end_idx = msg
+                        .content
+                        .char_indices()
+                        .nth(200)
+                        .map(|(i, _)| i)
+                        .unwrap_or(msg.content.len());
+                    format!(
+                        "{}... ({} chars total)",
+                        &msg.content[..end_idx],
+                        msg.content.len()
+                    )
+                } else {
+                    msg.content.clone()
+                };
+                eprintln!(
+                    "[OLLAMA DEBUG] Message {}: role={}, content={}",
+                    i, msg.role, content_preview
+                );
+                if let Some(ref tools) = msg.tool_calls {
+                    eprintln!("[OLLAMA DEBUG]   tool_calls: {:?}", tools.len());
+                }
             }
-        }
-        if let Some(ref system) = body.system {
-            eprintln!("[OLLAMA DEBUG] System prompt: {} chars", system.len());
+            if let Some(ref system) = body.system {
+                eprintln!("[OLLAMA DEBUG] System prompt: {} chars", system.len());
+            }
         }
 
         let response = self
@@ -1208,6 +1702,86 @@ struct OllamaModel {
     name: String,
 }
 
+// OpenAI-compatible API types (for /v1/chat/completions endpoint)
+// These provide better tool calling reliability for some models
+
+#[derive(Debug, Serialize)]
+struct OpenAIRequest {
+    model: String,
+    messages: Vec<OpenAIMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<OpenAITool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAIMessage {
+    role: String,
+    content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<OpenAIToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct OpenAIToolCall {
+    id: String,
+    #[serde(rename = "type")]
+    r#type: String,
+    function: OpenAIFunctionCall,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct OpenAIFunctionCall {
+    name: String,
+    arguments: String,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAITool {
+    #[serde(rename = "type")]
+    r#type: String,
+    function: OpenAIFunction,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAIFunction {
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIResponse {
+    choices: Vec<OpenAIChoice>,
+    #[serde(default)]
+    usage: Option<OpenAIUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIChoice {
+    message: OpenAIResponseMessage,
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIResponseMessage {
+    content: Option<String>,
+    tool_calls: Option<Vec<OpenAIToolCall>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIUsage {
+    prompt_tokens: u32,
+    completion_tokens: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1478,7 +2052,7 @@ Let me see what files exist."#;
         let provider = OllamaProvider::new();
         let messages = vec![Message::user("Hello"), Message::assistant("Hi there!")];
 
-        let converted = provider.convert_messages(&messages);
+        let converted = provider.convert_messages(&messages, None);
 
         assert_eq!(converted.len(), 2);
         assert_eq!(converted[0].role, "user");
@@ -1492,7 +2066,7 @@ Let me see what files exist."#;
         let provider = OllamaProvider::new();
         let messages = vec![Message::system("System prompt"), Message::user("Hello")];
 
-        let converted = provider.convert_messages(&messages);
+        let converted = provider.convert_messages(&messages, None);
 
         // System message should be filtered out
         assert_eq!(converted.len(), 1);
@@ -1573,12 +2147,11 @@ Let me see what files exist."#;
 
         let built = provider.build_request(&request, false);
 
-        // System prompt is wrapped with persona emphasis (no tools = simpler format)
-        assert!(built.system.is_some());
-        let system = built.system.unwrap();
-        assert!(system.contains("You are helpful"));
-        assert!(system.contains("IMPORTANT"));
-        assert!(system.contains("Stay in character"));
+        // System is now in messages array (first message) for better model compatibility
+        assert!(built.system.is_none());
+        assert!(!built.messages.is_empty());
+        assert_eq!(built.messages[0].role, "system");
+        assert!(built.messages[0].content.contains("You are helpful"));
     }
 
     #[test]
@@ -1693,7 +2266,7 @@ Let me see what files exist."#;
         let provider = OllamaProvider::new();
         let messages: Vec<Message> = vec![];
 
-        let converted = provider.convert_messages(&messages);
+        let converted = provider.convert_messages(&messages, None);
         assert!(converted.is_empty());
     }
 
@@ -1702,7 +2275,7 @@ Let me see what files exist."#;
         let provider = OllamaProvider::new();
         let messages = vec![Message::system("You are helpful")];
 
-        let converted = provider.convert_messages(&messages);
+        let converted = provider.convert_messages(&messages, None);
         // System messages are filtered out
         assert!(converted.is_empty());
     }

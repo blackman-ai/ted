@@ -189,19 +189,16 @@ impl Tool for ShellTool {
         };
 
         // Run with timeout
-        eprintln!("[SHELL DEBUG] Running with {}s timeout", timeout_secs);
         let result = timeout(Duration::from_secs(timeout_secs), async {
             // Read stdout and stderr concurrently
             let (stdout_result, stderr_result) = tokio::join!(stdout_task, stderr_task);
             stdout_output = stdout_result;
             stderr_output = stderr_result;
 
-            eprintln!("[SHELL DEBUG] Output reading complete, waiting for process");
             // Wait for the process to exit
             child.wait().await
         })
         .await;
-        eprintln!("[SHELL DEBUG] Command finished or timed out");
 
         match result {
             Ok(Ok(status)) => {

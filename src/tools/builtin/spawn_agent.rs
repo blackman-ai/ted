@@ -27,15 +27,22 @@ pub struct SpawnAgentTool {
     skill_registry: Arc<SkillRegistry>,
     /// Rate coordinator for budget allocation (optional)
     rate_coordinator: Option<Arc<TokenRateCoordinator>>,
+    /// Model name to use for subagents (inherited from parent)
+    model: String,
 }
 
 impl SpawnAgentTool {
     /// Create a new spawn agent tool
-    pub fn new(provider: Arc<dyn LlmProvider>, skill_registry: Arc<SkillRegistry>) -> Self {
+    pub fn new(
+        provider: Arc<dyn LlmProvider>,
+        skill_registry: Arc<SkillRegistry>,
+        model: String,
+    ) -> Self {
         Self {
             provider,
             skill_registry,
             rate_coordinator: None,
+            model,
         }
     }
 
@@ -44,11 +51,13 @@ impl SpawnAgentTool {
         provider: Arc<dyn LlmProvider>,
         skill_registry: Arc<SkillRegistry>,
         rate_coordinator: Arc<TokenRateCoordinator>,
+        model: String,
     ) -> Self {
         Self {
             provider,
             skill_registry,
             rate_coordinator: Some(rate_coordinator),
+            model,
         }
     }
 }
@@ -155,7 +164,9 @@ impl Tool for SpawnAgentTool {
             .clone()
             .unwrap_or_else(|| context.working_directory.clone());
 
-        let mut config = AgentConfig::new(agent_type, task, working_dir);
+        // Inherit the parent's model for subagents
+        let mut config = AgentConfig::new(agent_type, task, working_dir)
+            .with_model(self.model.clone());
 
         // Parse optional caps
         if let Some(caps) = input["caps"].as_array() {

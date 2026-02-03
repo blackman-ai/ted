@@ -106,6 +106,11 @@ pub struct OllamaConfig {
     /// Default model to use with Ollama
     #[serde(default = "default_ollama_model")]
     pub default_model: String,
+
+    /// Use OpenAI-compatible API endpoint (/v1/chat/completions) instead of native Ollama API
+    /// This can improve tool calling reliability for some models (see QwenLM/Qwen3-Coder#475)
+    #[serde(default)]
+    pub use_openai_api: bool,
 }
 
 /// OpenRouter configuration (100+ models via single API)
@@ -554,6 +559,7 @@ impl Default for OllamaConfig {
         Self {
             base_url: default_ollama_base_url(),
             default_model: default_ollama_model(),
+            use_openai_api: false,
         }
     }
 }
@@ -1153,6 +1159,7 @@ mod tests {
         let config = OllamaConfig::default();
         assert_eq!(config.base_url, "http://localhost:11434");
         assert_eq!(config.default_model, "qwen2.5-coder:14b");
+        assert!(!config.use_openai_api);
     }
 
     #[test]
@@ -1160,6 +1167,7 @@ mod tests {
         let config = OllamaConfig {
             base_url: "http://custom:8080".to_string(),
             default_model: "llama3.2:latest".to_string(),
+            use_openai_api: true,
         };
 
         let json = serde_json::to_string(&config).unwrap();
@@ -1167,6 +1175,7 @@ mod tests {
 
         assert_eq!(parsed.base_url, "http://custom:8080");
         assert_eq!(parsed.default_model, "llama3.2:latest");
+        assert!(parsed.use_openai_api);
     }
 
     #[test]

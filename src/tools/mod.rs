@@ -184,22 +184,13 @@ impl ToolContext {
         done: bool,
         exit_code: Option<i32>,
     ) {
-        eprintln!(
-            "[EMIT DEBUG] emit_shell_output called, has_sender={}",
-            self.shell_output_sender.is_some()
-        );
         if let Some(sender) = &self.shell_output_sender {
-            let result = sender.send(ShellOutputEvent {
+            let _ = sender.send(ShellOutputEvent {
                 stream: stream.to_string(),
-                text: text.clone(),
+                text,
                 done,
                 exit_code,
             });
-            eprintln!(
-                "[EMIT DEBUG] send result: {:?}, text_len={}",
-                result.is_ok(),
-                text.len()
-            );
         }
     }
 
@@ -408,15 +399,17 @@ impl ToolRegistry {
     /// Register the spawn_agent tool with its required dependencies
     ///
     /// This must be called separately from `with_builtins()` because the spawn_agent
-    /// tool requires an LLM provider and skill registry to function.
+    /// tool requires an LLM provider, skill registry, and model name to function.
     pub fn register_spawn_agent(
         &mut self,
         provider: Arc<dyn LlmProvider>,
         skill_registry: Arc<SkillRegistry>,
+        model: String,
     ) {
         self.register(Arc::new(builtin::SpawnAgentTool::new(
             provider,
             skill_registry,
+            model,
         )));
     }
 
@@ -428,11 +421,13 @@ impl ToolRegistry {
         provider: Arc<dyn LlmProvider>,
         skill_registry: Arc<SkillRegistry>,
         rate_coordinator: Arc<crate::llm::rate_budget::TokenRateCoordinator>,
+        model: String,
     ) {
         self.register(Arc::new(builtin::SpawnAgentTool::with_rate_coordinator(
             provider,
             skill_registry,
             rate_coordinator,
+            model,
         )));
     }
 

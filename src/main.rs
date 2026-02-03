@@ -274,8 +274,10 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
     // Create the appropriate provider (mutable so it can be changed via /settings)
     let mut provider: Arc<dyn LlmProvider> = match provider_name.as_str() {
         "ollama" => {
-            let ollama_provider =
-                OllamaProvider::with_base_url(&settings.providers.ollama.base_url);
+            let ollama_provider = OllamaProvider::with_openai_api(
+                &settings.providers.ollama.base_url,
+                settings.providers.ollama.use_openai_api,
+            );
             // Perform health check
             if let Err(e) = ollama_provider.health_check().await {
                 let mut stdout = io::stdout();
@@ -401,11 +403,22 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
 
     // Set project root and generate file tree for awareness
     if let Some(ref root) = project_root {
+        if verbose > 0 {
+            eprintln!("[verbose] Setting project root: {}", root.display());
+        }
         context_manager.set_project_root(root.clone(), true).await?;
+    } else if verbose > 0 {
+        eprintln!("[verbose] No project root found");
     }
 
     // Append file tree to system prompt for LLM awareness
     if let Some(file_tree_context) = context_manager.file_tree_context().await {
+        if verbose > 0 {
+            eprintln!(
+                "[verbose] File tree context: {} chars",
+                file_tree_context.len()
+            );
+        }
         let current_system = conversation.system_prompt.clone().unwrap_or_default();
         let enhanced_system = if current_system.is_empty() {
             file_tree_context
@@ -413,6 +426,14 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
             format!("{}\n\n{}", current_system, file_tree_context)
         };
         conversation.set_system(&enhanced_system);
+        if verbose > 0 {
+            eprintln!(
+                "[verbose] System prompt total: {} chars",
+                enhanced_system.len()
+            );
+        }
+    } else if verbose > 0 {
+        eprintln!("[verbose] No file tree context available");
     }
 
     // Start background compaction (every 5 minutes)
@@ -459,6 +480,7 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
     };
 
     // Register spawn_agent tool (with or without rate coordinator)
+    // Pass the current model so subagents inherit it
     if let Some(ref coordinator) = rate_coordinator {
         tool_executor
             .registry_mut()
@@ -466,11 +488,12 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
                 provider.clone(),
                 skill_registry,
                 Arc::clone(coordinator),
+                model.to_string(),
             );
     } else {
         tool_executor
             .registry_mut()
-            .register_spawn_agent(provider.clone(), skill_registry);
+            .register_spawn_agent(provider.clone(), skill_registry, model.to_string());
     }
 
     // Update session info
@@ -545,7 +568,7 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
                     let mut stdout = io::stdout();
                     stdout.execute(SetForegroundColor(Color::DarkGrey))?;
                     print!("  ╰─ ");
-                    
+
                     if exit_code == 0 {
                         stdout.execute(SetForegroundColor(Color::Green))?;
                         print!("✓ ");
@@ -560,9 +583,10 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
                         if stdout_text.trim().is_empty() && stderr_text.trim().is_empty() {
                             println!("Command completed (no output)");
                         } else {
-                            let output_lines: Vec<_> = stdout_text.lines().chain(stderr_text.lines()).collect();
+                            let output_lines: Vec<_> =
+                                stdout_text.lines().chain(stderr_text.lines()).collect();
                             let total_lines = output_lines.len();
-                            
+
                             if total_lines <= 15 {
                                 println!("Command completed ({} lines):", total_lines);
                                 for line in &output_lines {
@@ -609,7 +633,7 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
                         } else {
                             stdout_text.trim()
                         };
-                        
+
                         for line in error_output.lines().take(10) {
                             stdout.execute(SetForegroundColor(Color::DarkGrey))?;
                             let display = if line.len() > 120 {
@@ -628,7 +652,7 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
                     stdout.execute(ResetColor)?;
                 }
             }
-            
+
             println!(); // Add spacing after command output
             continue;
         }
@@ -690,6 +714,20 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
                 }
                 println!();
             }
+            println!();
+            println!(
+                "  System prompt:   {} chars",
+                conversation
+                    .system_prompt
+                    .as_ref()
+                    .map(|s| s.len())
+                    .unwrap_or(0)
+            );
+            if context_manager.has_file_tree().await {
+                println!("  File tree:       ✓ loaded");
+            } else {
+                println!("  File tree:       ✗ not loaded");
+            }
             println!("─────────────────────────────────────\n");
             continue;
         }
@@ -726,8 +764,9 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
                             // Recreate the provider for the new backend
                             match provider_name.as_str() {
                                 "ollama" => {
-                                    let ollama_provider = OllamaProvider::with_base_url(
+                                    let ollama_provider = OllamaProvider::with_openai_api(
                                         &new_settings.providers.ollama.base_url,
+                                        new_settings.providers.ollama.use_openai_api,
                                     );
                                     // Perform health check
                                     if let Err(e) = ollama_provider.health_check().await {
@@ -1887,8 +1926,10 @@ async fn run_ask(args: ted::cli::AskArgs, settings: Settings, verbose: u8) -> Re
     // Create the appropriate provider
     let provider: Box<dyn LlmProvider> = match provider_name.as_str() {
         "ollama" => {
-            let ollama_provider =
-                OllamaProvider::with_base_url(&settings.providers.ollama.base_url);
+            let ollama_provider = OllamaProvider::with_openai_api(
+                &settings.providers.ollama.base_url,
+                settings.providers.ollama.use_openai_api,
+            );
             // Perform health check
             ollama_provider.health_check().await?;
             Box::new(ollama_provider)
