@@ -10,11 +10,12 @@
 //! - Result generation
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use uuid::Uuid;
 
-use crate::error::{Result, TedError};
+use crate::error::{ApiError, Result, TedError};
 use crate::llm::message::{ContentBlock, Message, MessageContent};
 use crate::llm::provider::{
     CompletionRequest, ContentBlockResponse, LlmProvider, StopReason, ToolChoice, ToolDefinition,
@@ -34,6 +35,10 @@ pub struct RunnerConfig {
     pub temperature: f32,
     /// Whether to print progress
     pub verbose: bool,
+    /// Maximum retries for rate-limited requests
+    pub max_rate_limit_retries: u32,
+    /// Base delay for exponential backoff (when no Retry-After header)
+    pub base_retry_delay_secs: u64,
 }
 
 impl Default for RunnerConfig {
@@ -42,6 +47,8 @@ impl Default for RunnerConfig {
             max_response_tokens: 4096,
             temperature: 0.7,
             verbose: false,
+            max_rate_limit_retries: 3,
+            base_retry_delay_secs: 2,
         }
     }
 }
@@ -86,10 +93,15 @@ impl AgentRunner {
             .clone()
             .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
 
+        // Always log agent start for visibility
+        eprintln!(
+            "  [{}] Starting ({}, max {} iters)",
+            agent_name, context.config.agent_type, context.config.max_iterations
+        );
+
         if self.config.verbose {
-            println!("=== Starting agent '{}' ===", agent_name);
-            println!("  Type: {}", context.config.agent_type);
-            println!("  Task: {}", context.config.task);
+            eprintln!("  [{}] Task: {}", agent_name, context.config.task);
+            eprintln!("  [{}] Model: {}", agent_name, model);
         }
 
         // Get filtered tool definitions based on agent permissions
@@ -111,8 +123,9 @@ impl AgentRunner {
             context.increment_iteration();
 
             if self.config.verbose {
-                println!(
-                    "\n--- Iteration {} / {} ---",
+                eprintln!(
+                    "  [{}] Iteration {}/{}",
+                    agent_name,
                     context.iterations(),
                     context.config.max_iterations
                 );
@@ -120,6 +133,10 @@ impl AgentRunner {
 
             // Check limits
             if context.exceeded_iterations() {
+                eprintln!(
+                    "  [{}] Exceeded max iterations ({})",
+                    agent_name, context.config.max_iterations
+                );
                 errors.push(format!(
                     "Exceeded maximum iterations ({})",
                     context.config.max_iterations
@@ -128,6 +145,10 @@ impl AgentRunner {
             }
 
             if context.exceeded_token_budget() {
+                eprintln!(
+                    "  [{}] Exceeded token budget ({} tokens)",
+                    agent_name, context.config.token_budget
+                );
                 errors.push(format!(
                     "Exceeded token budget ({} tokens)",
                     context.config.token_budget
@@ -140,15 +161,16 @@ impl AgentRunner {
             match apply_memory_strategy(context.conversation_mut(), &memory_strategy)? {
                 MemoryAction::Trimmed { count } => {
                     if self.config.verbose {
-                        println!("  Memory: Trimmed {} old messages", count);
+                        eprintln!("  [{}] Memory: Trimmed {} old messages", agent_name, count);
                     }
                 }
                 MemoryAction::NeedsSummarization { messages } => {
                     // For now, we'll just note this - full summarization would
                     // require another LLM call which we might want to add later
                     if self.config.verbose {
-                        println!(
-                            "  Memory: {} messages need summarization (skipping)",
+                        eprintln!(
+                            "  [{}] Memory: {} messages need summarization (skipping)",
+                            agent_name,
                             messages.len()
                         );
                     }
@@ -165,7 +187,10 @@ impl AgentRunner {
                     token_budget * 80 / 100, // Target 80% of budget
                 );
                 if self.config.verbose && removed > 0 {
-                    println!("  Memory: Compacted {} messages to fit budget", removed);
+                    eprintln!(
+                        "  [{}] Memory: Compacted {} messages to fit budget",
+                        agent_name, removed
+                    );
                 }
             }
 
@@ -180,17 +205,43 @@ impl AgentRunner {
                 tool_choice: ToolChoice::Auto,
             };
 
-            // Make LLM call
-            let response = match self.provider.complete(request).await {
+            // Check rate budget before making request (proactive rate limiting)
+            if let Some(allocation) = context.rate_allocation() {
+                // Estimate tokens for this request (rough estimate based on conversation size)
+                let estimated_tokens = self.estimate_request_tokens(&request);
+                let wait_time = allocation.wait_for_budget(estimated_tokens).await;
+                if wait_time > Duration::from_millis(100) {
+                    eprintln!(
+                        "  [{}] Rate budget: waited {:.1}s for {} tokens",
+                        agent_name,
+                        wait_time.as_secs_f64(),
+                        estimated_tokens
+                    );
+                }
+            }
+
+            // Make LLM call with rate limit retry logic
+            let current_iter = context.iterations();
+            let response = match self
+                .complete_with_retry(&request, &agent_name, current_iter, self.config.verbose)
+                .await
+            {
                 Ok(resp) => resp,
                 Err(e) => {
+                    eprintln!(
+                        "  [{}] Failed at iteration {}: {}",
+                        agent_name, current_iter, e
+                    );
                     errors.push(format!("LLM API error: {}", e));
                     break;
                 }
             };
 
-            // Track token usage
-            let _tokens_this_turn = response.usage.input_tokens + response.usage.output_tokens;
+            // Track token usage and record in rate budget allocation
+            let tokens_this_turn = response.usage.input_tokens + response.usage.output_tokens;
+            if let Some(allocation) = context.rate_allocation() {
+                allocation.record_usage(tokens_this_turn as u64);
+            }
 
             // Process response content
             let mut has_tool_use = false;
@@ -234,20 +285,20 @@ impl AgentRunner {
                 Some(StopReason::EndTurn) if !has_tool_use => {
                     // Agent is done
                     if self.config.verbose {
-                        println!("  Agent completed (end_turn)");
+                        eprintln!("  [{}] End turn (completing)", agent_name);
                     }
                     break;
                 }
                 Some(StopReason::MaxTokens) => {
                     // Continue, the agent might have more to say
                     if self.config.verbose {
-                        println!("  Hit max tokens, continuing...");
+                        eprintln!("  [{}] Hit response token limit, continuing...", agent_name);
                     }
                 }
                 Some(StopReason::ToolUse) => {
                     // Continue after tool execution
                     if self.config.verbose {
-                        println!("  Tool use completed, continuing...");
+                        eprintln!("  [{}] Tool use completed, continuing...", agent_name);
                     }
                 }
                 _ => {
@@ -263,6 +314,24 @@ impl AgentRunner {
         } else {
             format!("Agent failed: {}", errors.join("; "))
         };
+
+        // Log completion status
+        let final_iter = context.iterations();
+        if success {
+            eprintln!(
+                "  [{}] Completed successfully ({} iters, {} tokens)",
+                agent_name,
+                final_iter,
+                context.tokens_used()
+            );
+        } else {
+            eprintln!(
+                "  [{}] Failed after {} iters: {}",
+                agent_name,
+                final_iter,
+                errors.join("; ")
+            );
+        }
 
         // Finalize context (store completion marker)
         context.finalize(success, &summary).await?;
@@ -287,10 +356,6 @@ impl AgentRunner {
             result
         };
 
-        if self.config.verbose {
-            println!("\n{}", result.format_for_parent());
-        }
-
         Ok(result)
     }
 
@@ -301,6 +366,90 @@ impl AgentRunner {
             .into_iter()
             .filter(|def| context.is_tool_allowed(&def.name))
             .collect()
+    }
+
+    /// Make an LLM completion request with retry logic for rate limits
+    ///
+    /// This method handles rate limit errors by waiting and retrying, using either
+    /// the Retry-After value from the API or exponential backoff.
+    ///
+    /// # Arguments
+    /// * `request` - The completion request to send
+    /// * `agent_name` - Name of the agent (for logging)
+    /// * `iteration` - Current iteration number (for logging context)
+    /// * `verbose` - Whether to print verbose output
+    async fn complete_with_retry(
+        &self,
+        request: &CompletionRequest,
+        agent_name: &str,
+        iteration: u32,
+        verbose: bool,
+    ) -> Result<crate::llm::provider::CompletionResponse> {
+        let mut attempt = 0;
+
+        loop {
+            attempt += 1;
+
+            if verbose && attempt == 1 {
+                eprintln!("  [{}] Making LLM request (iter {})", agent_name, iteration);
+            }
+
+            match self.provider.complete(request.clone()).await {
+                Ok(response) => {
+                    if attempt > 1 {
+                        eprintln!(
+                            "  [{}] Rate limit resolved after {} retries (iter {})",
+                            agent_name,
+                            attempt - 1,
+                            iteration
+                        );
+                    }
+                    return Ok(response);
+                }
+                Err(TedError::Api(ApiError::RateLimited(retry_after))) => {
+                    if attempt > self.config.max_rate_limit_retries {
+                        eprintln!(
+                            "  [{}] Rate limit: exhausted all {} retries (iter {})",
+                            agent_name, self.config.max_rate_limit_retries, iteration
+                        );
+                        return Err(TedError::Api(ApiError::RateLimited(retry_after)));
+                    }
+
+                    // Use retry_after from API if available, otherwise use exponential backoff
+                    let delay_secs = if retry_after > 0 {
+                        retry_after as u64
+                    } else {
+                        self.config.base_retry_delay_secs.pow(attempt)
+                    };
+
+                    // Provide more context about the rate limit
+                    let source_hint = if retry_after > 0 {
+                        format!("API requested {}s wait", retry_after)
+                    } else {
+                        "using backoff".to_string()
+                    };
+
+                    eprintln!(
+                        "  [{}] Rate limited (iter {}, retry {}/{}) - {} - waiting {}s",
+                        agent_name,
+                        iteration,
+                        attempt,
+                        self.config.max_rate_limit_retries,
+                        source_hint,
+                        delay_secs
+                    );
+
+                    tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+                }
+                Err(e) => {
+                    // Non-rate-limit errors are not retried
+                    if verbose {
+                        eprintln!("  [{}] LLM error (iter {}): {}", agent_name, iteration, e);
+                    }
+                    return Err(e);
+                }
+            }
+        }
     }
 
     /// Convert response content blocks to a Message
@@ -357,19 +506,20 @@ impl AgentRunner {
 
                 // Execute the tool
                 if self.config.verbose {
-                    println!("  → Using tool: {}", name);
+                    eprintln!("  [{}] → Tool: {}", agent_context.config.name, name);
                 }
 
                 match tool.execute(id.clone(), input.clone(), tool_context).await {
                     Ok(result) => {
                         if self.config.verbose {
                             if result.is_error() {
-                                println!(
-                                    "    ✗ Error: {}",
+                                eprintln!(
+                                    "  [{}]   ✗ Error: {}",
+                                    agent_context.config.name,
                                     truncate_str(result.output_text(), 100)
                                 );
                             } else {
-                                println!("    ✓ Success");
+                                eprintln!("  [{}]   ✓ Success", agent_context.config.name);
                             }
                         }
                         results.push(result);
@@ -435,6 +585,33 @@ impl AgentRunner {
         } else {
             summary.trim().to_string()
         }
+    }
+
+    /// Estimate the number of tokens for a request
+    ///
+    /// This is a rough estimate used for proactive rate limiting.
+    /// It counts characters and applies a multiplier, plus adds expected output tokens.
+    fn estimate_request_tokens(&self, request: &CompletionRequest) -> u64 {
+        // Estimate input tokens (roughly 4 chars per token for English text)
+        let mut char_count: usize = 0;
+
+        // System prompt
+        if let Some(system) = &request.system {
+            char_count += system.len();
+        }
+
+        // Messages
+        for msg in &request.messages {
+            char_count += msg.estimate_chars();
+        }
+
+        // Convert chars to tokens (approximately 4 chars per token)
+        let input_tokens = (char_count / 4) as u64;
+
+        // Add expected output tokens (use max_tokens as upper bound, but estimate ~50%)
+        let expected_output = (request.max_tokens as u64) / 2;
+
+        input_tokens + expected_output
     }
 }
 
@@ -631,6 +808,8 @@ mod tests {
         assert_eq!(config.max_response_tokens, 4096);
         assert_eq!(config.temperature, 0.7);
         assert!(!config.verbose);
+        assert_eq!(config.max_rate_limit_retries, 3);
+        assert_eq!(config.base_retry_delay_secs, 2);
     }
 
     #[test]
@@ -639,10 +818,14 @@ mod tests {
             max_response_tokens: 8192,
             temperature: 0.5,
             verbose: true,
+            max_rate_limit_retries: 5,
+            base_retry_delay_secs: 3,
         };
         assert_eq!(config.max_response_tokens, 8192);
         assert_eq!(config.temperature, 0.5);
         assert!(config.verbose);
+        assert_eq!(config.max_rate_limit_retries, 5);
+        assert_eq!(config.base_retry_delay_secs, 3);
     }
 
     #[test]
@@ -977,6 +1160,7 @@ mod tests {
             max_response_tokens: 8192,
             temperature: 0.9,
             verbose: true,
+            ..Default::default()
         };
         let runner = AgentRunner::with_config(Arc::new(MockProvider), config);
         assert_eq!(runner.config.max_response_tokens, 8192);
@@ -1006,6 +1190,7 @@ mod tests {
             max_response_tokens: u32::MAX,
             temperature: 0.0,
             verbose: false,
+            ..Default::default()
         };
         assert_eq!(config.max_response_tokens, u32::MAX);
         assert_eq!(config.temperature, 0.0);
@@ -1017,6 +1202,7 @@ mod tests {
             max_response_tokens: 4096,
             temperature: 2.0, // Some APIs allow up to 2.0
             verbose: true,
+            ..Default::default()
         };
         assert_eq!(config.temperature, 2.0);
     }
@@ -1027,6 +1213,7 @@ mod tests {
             max_response_tokens: 0,
             temperature: 0.7,
             verbose: false,
+            ..Default::default()
         };
         assert_eq!(config.max_response_tokens, 0);
     }
@@ -1275,12 +1462,16 @@ mod tests {
             max_response_tokens: 16384,
             temperature: 0.5,
             verbose: true,
+            max_rate_limit_retries: 5,
+            base_retry_delay_secs: 4,
         };
 
         let runner = AgentRunner::with_config(Arc::new(MockProvider), config.clone());
         assert_eq!(runner.config.max_response_tokens, 16384);
         assert_eq!(runner.config.temperature, 0.5);
         assert!(runner.config.verbose);
+        assert_eq!(runner.config.max_rate_limit_retries, 5);
+        assert_eq!(runner.config.base_retry_delay_secs, 4);
     }
 
     #[test]
@@ -1662,6 +1853,131 @@ mod tests {
         assert!(result.errors.iter().any(|e| e.contains("LLM API error")));
     }
 
+    /// Mock provider that returns rate limit errors for first N calls, then succeeds
+    struct RateLimitMockProvider {
+        /// Number of calls to complete()
+        call_count: AtomicUsize,
+        /// Number of rate limit errors before success
+        rate_limit_count: usize,
+        /// Retry-after value to return
+        retry_after_secs: u32,
+    }
+
+    impl RateLimitMockProvider {
+        fn new(rate_limit_count: usize, retry_after_secs: u32) -> Self {
+            Self {
+                call_count: AtomicUsize::new(0),
+                rate_limit_count,
+                retry_after_secs,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for RateLimitMockProvider {
+        fn name(&self) -> &str {
+            "rate-limit-mock"
+        }
+
+        fn available_models(&self) -> Vec<ModelInfo> {
+            vec![ModelInfo {
+                id: "test-model".to_string(),
+                display_name: "Test Model".to_string(),
+                context_window: 4096,
+                max_output_tokens: 4096,
+                supports_tools: true,
+                supports_vision: false,
+                input_cost_per_1k: 0.0,
+                output_cost_per_1k: 0.0,
+            }]
+        }
+
+        fn supports_model(&self, _model: &str) -> bool {
+            true
+        }
+
+        async fn complete(
+            &self,
+            _request: CompletionRequest,
+        ) -> crate::error::Result<crate::llm::provider::CompletionResponse> {
+            let count = self.call_count.fetch_add(1, Ordering::SeqCst);
+
+            if count < self.rate_limit_count {
+                return Err(TedError::Api(ApiError::RateLimited(self.retry_after_secs)));
+            }
+
+            Ok(crate::llm::provider::CompletionResponse {
+                id: format!("response-{}", count),
+                model: "test-model".to_string(),
+                content: vec![ContentBlockResponse::Text {
+                    text: "Success after rate limit".to_string(),
+                }],
+                usage: crate::llm::provider::Usage {
+                    input_tokens: 100,
+                    output_tokens: 50,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 0,
+                },
+                stop_reason: Some(StopReason::EndTurn),
+            })
+        }
+
+        async fn complete_stream(
+            &self,
+            _request: CompletionRequest,
+        ) -> crate::error::Result<
+            Pin<Box<dyn futures::Stream<Item = crate::error::Result<StreamEvent>> + Send>>,
+        > {
+            Ok(Box::pin(stream::empty()))
+        }
+
+        fn count_tokens(&self, _text: &str, _model: &str) -> crate::error::Result<u32> {
+            Ok(10)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_run_with_rate_limit_retry_success() {
+        // Provider returns 2 rate limit errors, then succeeds
+        let provider = Arc::new(RateLimitMockProvider::new(2, 1)); // 1 second retry
+        let config_runner = RunnerConfig {
+            max_rate_limit_retries: 3, // Allow up to 3 retries
+            base_retry_delay_secs: 1,
+            ..Default::default()
+        };
+        let runner = AgentRunner::with_config(provider, config_runner);
+
+        let config = AgentConfig::new("explore", "Find files", PathBuf::from("/tmp"));
+        let context = AgentContext::new(config);
+
+        let result = runner.run(context).await.unwrap();
+
+        // Should succeed after retries
+        assert!(result.success);
+        assert!(result.output.contains("Success after rate limit"));
+    }
+
+    #[tokio::test]
+    async fn test_run_with_rate_limit_exhaust_retries() {
+        // Provider returns more rate limits than allowed retries
+        let provider = Arc::new(RateLimitMockProvider::new(10, 1)); // 10 rate limits
+        let config_runner = RunnerConfig {
+            max_rate_limit_retries: 2, // Only allow 2 retries
+            base_retry_delay_secs: 1,
+            ..Default::default()
+        };
+        let runner = AgentRunner::with_config(provider, config_runner);
+
+        let config = AgentConfig::new("explore", "Find files", PathBuf::from("/tmp"));
+        let context = AgentContext::new(config);
+
+        let result = runner.run(context).await.unwrap();
+
+        // Should fail after exhausting retries
+        assert!(!result.success);
+        assert!(result.errors.iter().any(|e| e.contains("LLM API error")));
+    }
+
     #[tokio::test]
     async fn test_run_with_tool_use() {
         let provider = Arc::new(ConfigurableMockProvider::new().with_tool_use());
@@ -1685,6 +2001,7 @@ mod tests {
             max_response_tokens: 4096,
             temperature: 0.7,
             verbose: true,
+            ..Default::default()
         };
         let runner = AgentRunner::with_config(provider, config_runner);
 

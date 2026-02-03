@@ -380,7 +380,32 @@ impl MemoryStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::embeddings::EmbeddingConfig;
     use tempfile::NamedTempFile;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Create an EmbeddingGenerator configured to use a mock server
+    async fn create_mock_embedding_generator() -> (MockServer, EmbeddingGenerator) {
+        let mock_server = MockServer::start().await;
+
+        // Set up mock to return a fixed embedding for any request
+        Mock::given(method("POST"))
+            .and(path("/api/embed"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "embeddings": [[0.1, 0.2, 0.3, 0.4, 0.5]]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let config = EmbeddingConfig {
+            base_url: mock_server.uri(),
+            model: "test-model".to_string(),
+        };
+        let generator = EmbeddingGenerator::with_config(config);
+
+        (mock_server, generator)
+    }
 
     fn create_test_memory() -> ConversationMemory {
         ConversationMemory {
@@ -804,11 +829,12 @@ mod tests {
     }
 
     // ===== Semantic Search Tests =====
+    // These tests use a mock embedding server
 
     #[tokio::test]
     async fn test_semantic_search() {
         let temp_file = NamedTempFile::new().unwrap();
-        let generator = EmbeddingGenerator::new();
+        let (_mock_server, generator) = create_mock_embedding_generator().await;
         let store = MemoryStore::open(temp_file.path(), generator).unwrap();
 
         // Store a memory
@@ -826,7 +852,7 @@ mod tests {
     #[tokio::test]
     async fn test_semantic_search_empty_store() {
         let temp_file = NamedTempFile::new().unwrap();
-        let generator = EmbeddingGenerator::new();
+        let (_mock_server, generator) = create_mock_embedding_generator().await;
         let store = MemoryStore::open(temp_file.path(), generator).unwrap();
 
         // Search on empty store
@@ -837,7 +863,7 @@ mod tests {
     #[tokio::test]
     async fn test_semantic_search_multiple_memories() {
         let temp_file = NamedTempFile::new().unwrap();
-        let generator = EmbeddingGenerator::new();
+        let (_mock_server, generator) = create_mock_embedding_generator().await;
         let store = MemoryStore::open(temp_file.path(), generator).unwrap();
 
         // Store multiple memories
@@ -855,7 +881,7 @@ mod tests {
     #[tokio::test]
     async fn test_semantic_search_result_format() {
         let temp_file = NamedTempFile::new().unwrap();
-        let generator = EmbeddingGenerator::new();
+        let (_mock_server, generator) = create_mock_embedding_generator().await;
         let store = MemoryStore::open(temp_file.path(), generator).unwrap();
 
         let mut memory = create_test_memory();
@@ -878,7 +904,7 @@ mod tests {
     #[tokio::test]
     async fn test_semantic_search_top_k_limit() {
         let temp_file = NamedTempFile::new().unwrap();
-        let generator = EmbeddingGenerator::new();
+        let (_mock_server, generator) = create_mock_embedding_generator().await;
         let store = MemoryStore::open(temp_file.path(), generator).unwrap();
 
         // Store 10 memories
@@ -898,7 +924,7 @@ mod tests {
     #[tokio::test]
     async fn test_load_all_via_search() {
         let temp_file = NamedTempFile::new().unwrap();
-        let generator = EmbeddingGenerator::new();
+        let (_mock_server, generator) = create_mock_embedding_generator().await;
         let store = MemoryStore::open(temp_file.path(), generator).unwrap();
 
         // Store memories with different content

@@ -448,6 +448,32 @@ impl Message {
         self.estimate_tokens_with_config(&ConversationConfig::default())
     }
 
+    /// Estimate character count for this message (for rate budget calculations)
+    pub fn estimate_chars(&self) -> usize {
+        match &self.content {
+            MessageContent::Text(text) => text.len(),
+            MessageContent::Blocks(blocks) => blocks
+                .iter()
+                .map(|b| match b {
+                    ContentBlock::Text { text } => text.len(),
+                    ContentBlock::ToolUse { name, input, .. } => {
+                        name.len() + input.to_string().len()
+                    }
+                    ContentBlock::ToolResult { content, .. } => match content {
+                        ToolResultContent::Text(text) => text.len(),
+                        ToolResultContent::Blocks(blocks) => blocks
+                            .iter()
+                            .map(|b| match b {
+                                ToolResultBlock::Text { text } => text.len(),
+                                ToolResultBlock::Image { .. } => 1000, // Rough estimate for images
+                            })
+                            .sum(),
+                    },
+                })
+                .sum(),
+        }
+    }
+
     /// Estimate token count for this message with custom config
     pub fn estimate_tokens_with_config(&self, config: &ConversationConfig) -> u32 {
         let content_len = match &self.content {

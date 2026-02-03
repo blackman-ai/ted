@@ -15,6 +15,7 @@ use crate::agents::{
 };
 use crate::error::{Result, TedError};
 use crate::llm::provider::{LlmProvider, ToolDefinition};
+use crate::llm::rate_budget::TokenRateCoordinator;
 use crate::skills::SkillRegistry;
 use crate::tools::{PermissionRequest, SchemaBuilder, Tool, ToolContext, ToolResult};
 
@@ -24,6 +25,8 @@ pub struct SpawnAgentTool {
     provider: Arc<dyn LlmProvider>,
     /// Skill registry for loading skills
     skill_registry: Arc<SkillRegistry>,
+    /// Rate coordinator for budget allocation (optional)
+    rate_coordinator: Option<Arc<TokenRateCoordinator>>,
 }
 
 impl SpawnAgentTool {
@@ -32,6 +35,20 @@ impl SpawnAgentTool {
         Self {
             provider,
             skill_registry,
+            rate_coordinator: None,
+        }
+    }
+
+    /// Create a new spawn agent tool with rate coordinator
+    pub fn with_rate_coordinator(
+        provider: Arc<dyn LlmProvider>,
+        skill_registry: Arc<SkillRegistry>,
+        rate_coordinator: Arc<TokenRateCoordinator>,
+    ) -> Self {
+        Self {
+            provider,
+            skill_registry,
+            rate_coordinator: Some(rate_coordinator),
         }
     }
 }
@@ -189,6 +206,22 @@ impl Tool for SpawnAgentTool {
 
         // Create agent context
         let mut agent_context = AgentContext::new(config.clone());
+
+        // Allocate rate budget if coordinator is available
+        if let Some(coordinator) = &self.rate_coordinator {
+            let priority = config.rate_priority();
+            let allocation = coordinator.request_allocation(priority, config.name.clone());
+
+            // Log the allocation
+            eprintln!(
+                "  [{}] Rate budget: {}K tokens/min ({})",
+                config.name,
+                allocation.budget() / 1000,
+                format!("{:?}", priority).to_lowercase()
+            );
+
+            agent_context.set_rate_allocation(Arc::new(allocation));
+        }
 
         // Load skill if specified
         if let Some(skill_name) = &config.skill {

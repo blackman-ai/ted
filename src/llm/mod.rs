@@ -10,6 +10,7 @@ pub mod factory;
 pub mod message;
 pub mod provider;
 pub mod providers;
+pub mod rate_budget;
 pub mod retry;
 
 #[cfg(test)]
@@ -19,6 +20,7 @@ pub use circuit_breaker::*;
 pub use factory::ProviderFactory;
 pub use message::*;
 pub use provider::*;
+pub use rate_budget::*;
 pub use retry::*;
 
 #[cfg(test)]

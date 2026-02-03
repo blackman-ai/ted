@@ -23,7 +23,7 @@ use crossterm::{
 use ratatui::prelude::*;
 
 use crate::config::Settings;
-use crate::error::Result;
+use crate::error::{Result, TedError};
 use app::{App, AppResult};
 
 /// Run the TUI settings interface
@@ -111,7 +111,9 @@ pub fn run_tui_interactive(settings: Settings) -> Result<(Settings, bool)> {
 /// Main application loop
 fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
     loop {
-        terminal.draw(|f| ui::draw(f, app))?;
+        terminal
+            .draw(|f| ui::draw(f, app))
+            .map_err(|e| TedError::Tui(e.to_string()))?;
 
         match input::handle_input(app)? {
             AppResult::Continue => {}
@@ -126,7 +128,9 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
 /// Returns Ok(true) if the app should quit, Ok(false) otherwise
 #[cfg(test)]
 fn run_app_iteration<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<bool> {
-    terminal.draw(|f| ui::draw(f, app))?;
+    terminal
+        .draw(|f| ui::draw(f, app))
+        .map_err(|e| TedError::Tui(e.to_string()))?;
     Ok(false) // In test mode, we don't poll for events
 }
 

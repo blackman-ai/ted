@@ -1,0 +1,151 @@
+name: Security Scan
+
+on:
+  # Run weekly security scans
+  schedule:
+    - cron: '0 2 * * 1'  # Every Monday at 2 AM UTC
+  # Allow manual trigger
+  workflow_dispatch:
+  # Run on security-related file changes
+  push:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/security.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  security-audit:
+    name: Comprehensive Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: security-${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            security-${{ runner.os }}-cargo-
+
+      - name: Install security tools
+        run: |
+          cargo install cargo-audit
+          cargo install cargo-deny
+
+      - name: Run cargo audit
+        run: |
+          echo "🔍 Running cargo audit..."
+          cargo audit --json > audit-results.json
+          cargo audit  # Also show human-readable output
+
+      - name: Run cargo deny
+        run: |
+          echo "🔍 Running cargo deny..."
+          cargo deny check advisories
+
+      - name: Check for unmaintained dependencies
+        run: |
+          echo "🔍 Checking for unmaintained dependencies..."
+          if cargo audit --json | jq -e '.warnings.unmaintained[]?' > /dev/null 2>&1; then
+            echo "⚠️ Unmaintained dependencies found:"
+            cargo audit --json | jq -r '.warnings.unmaintained[] | "- \(.package.name) v\(.package.version): \(.advisory.title)"'
+          else
+            echo "✅ No unmaintained dependencies found"
+          fi
+
+      - name: Check for yanked crates
+        run: |
+          echo "🔍 Checking for yanked crates..."
+          if cargo audit --json | jq -e '.warnings.yanked[]?' > /dev/null 2>&1; then
+            echo "⚠️ Yanked crates found:"
+            cargo audit --json | jq -r '.warnings.yanked[] | "- \(.package.name) v\(.package.version)"'
+          else
+            echo "✅ No yanked crates found"
+          fi
+
+      - name: Analyze vulnerability severity
+        run: |
+          echo "🔍 Analyzing vulnerability severity..."
+          CRITICAL=$(cargo audit --json | jq '.vulnerabilities.list[] | select(.advisory.severity == "critical") | .advisory.id' | wc -l)
+          HIGH=$(cargo audit --json | jq '.vulnerabilities.list[] | select(.advisory.severity == "high") | .advisory.id' | wc -l)
+          MEDIUM=$(cargo audit --json | jq '.vulnerabilities.list[] | select(.advisory.severity == "medium") | .advisory.id' | wc -l)
+          LOW=$(cargo audit --json | jq '.vulnerabilities.list[] | select(.advisory.severity == "low") | .advisory.id' | wc -l)
+          
+          echo "📊 Vulnerability Summary:"
+          echo "- Critical: $CRITICAL"
+          echo "- High: $HIGH"
+          echo "- Medium: $MEDIUM"
+          echo "- Low: $LOW"
+          
+          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
+            echo "❌ Critical or High severity vulnerabilities found!"
+            echo "Please address these immediately."
+            exit 1
+          fi
+
+      - name: Generate security report
+        run: |
+          echo "📄 Generating security report..."
+          cat > security-report.md << EOF
+          # Security Audit Report
+          
+          **Date**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          **Repository**: ${{ github.repository }}
+          **Commit**: ${{ github.sha }}
+          
+          ## Summary
+          
+          EOF
+          
+          # Add vulnerability summary
+          TOTAL_VULNS=$(cargo audit --json | jq '.vulnerabilities.list | length')
+          echo "- **Total vulnerabilities**: $TOTAL_VULNS" >> security-report.md
+          echo "- **Critical**: $(cargo audit --json | jq '.vulnerabilities.list[] | select(.advisory.severity == "critical") | .advisory.id' | wc -l)" >> security-report.md
+          echo "- **High**: $(cargo audit --json | jq '.vulnerabilities.list[] | select(.advisory.severity == "high") | .advisory.id' | wc -l)" >> security-report.md
+          echo "- **Medium**: $(cargo audit --json | jq '.vulnerabilities.list[] | select(.advisory.severity == "medium") | .advisory.id' | wc -l)" >> security-report.md
+          echo "- **Low**: $(cargo audit --json | jq '.vulnerabilities.list[] | select(.advisory.severity == "low") | .advisory.id' | wc -l)" >> security-report.md
+          
+          echo "" >> security-report.md
+          echo "## Details" >> security-report.md
+          echo "" >> security-report.md
+          echo '```' >> security-report.md
+          cargo audit >> security-report.md
+          echo '```' >> security-report.md
+
+      - name: Upload security artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-audit-${{ github.run_number }}
+          path: |
+            audit-results.json
+            security-report.md
+          retention-days: 90
+
+      - name: Comment on PR (if applicable)
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            if (fs.existsSync('security-report.md')) {
+              const report = fs.readFileSync('security-report.md', 'utf8');
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: `## 🔒 Security Audit Report\n\n${report}`
+              });
+            }

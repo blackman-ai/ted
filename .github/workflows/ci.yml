@@ -117,11 +117,54 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
   # Security audit
-  audit:
+  security:
     name: Security Audit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-security-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-security-
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Security audit
+        run: cargo audit --json > audit-results.json || true
+
+      - name: Upload audit results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-audit-results
+          path: audit-results.json
+          retention-days: 30
+
+      - name: Dependency vulnerability check
+        uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Check for high severity vulnerabilities
+        run: |
+          if cargo audit --json | jq -e '.vulnerabilities.list[] | select(.advisory.severity == "high" or .advisory.severity == "critical")' > /dev/null 2>&1; then
+            echo "❌ High/Critical severity vulnerabilities found!"
+            cargo audit
+            exit 1
+          else
+            echo "✅ No high/critical severity vulnerabilities found"
+            cargo audit
+          fi

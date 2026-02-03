@@ -6,6 +6,7 @@
 //! Handles loading and saving settings from ~/.ted/settings.json
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::error::Result;
@@ -37,6 +38,10 @@ pub struct Settings {
     /// Retry and resilience settings for API calls
     #[serde(default)]
     pub resilience: ResilienceConfig,
+
+    /// Rate limiting settings for token budget allocation
+    #[serde(default)]
+    pub rate_limits: RateLimitsConfig,
 
     /// Hardware profile and tier information
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -323,6 +328,91 @@ impl Default for ResilienceConfig {
             circuit_failure_threshold: default_circuit_failure_threshold(),
             circuit_cooldown_secs: default_circuit_cooldown_secs(),
         }
+    }
+}
+
+/// Rate limiting configuration for token budget allocation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitsConfig {
+    /// Model-specific rate limits (prefix matching, e.g., "claude-sonnet-4")
+    #[serde(default = "default_rate_limit_models")]
+    pub models: HashMap<String, ModelRateLimit>,
+
+    /// Default rate limit for unknown models
+    #[serde(default = "default_model_rate_limit")]
+    pub default: ModelRateLimit,
+
+    /// Whether rate budget allocation is enabled
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+/// Rate limit for a specific model
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelRateLimit {
+    /// Tokens per minute limit
+    pub tokens_per_minute: u64,
+}
+
+impl Default for RateLimitsConfig {
+    fn default() -> Self {
+        Self {
+            models: default_rate_limit_models(),
+            default: default_model_rate_limit(),
+            enabled: true,
+        }
+    }
+}
+
+impl RateLimitsConfig {
+    /// Get the rate limit for a model by name (uses prefix matching)
+    pub fn get_for_model(&self, model: &str) -> &ModelRateLimit {
+        // Try exact match first
+        if let Some(limit) = self.models.get(model) {
+            return limit;
+        }
+
+        // Try prefix matching (e.g., "claude-sonnet-4-20250514" matches "claude-sonnet-4")
+        for (prefix, limit) in &self.models {
+            if model.starts_with(prefix) {
+                return limit;
+            }
+        }
+
+        // Fall back to default
+        &self.default
+    }
+}
+
+fn default_rate_limit_models() -> HashMap<String, ModelRateLimit> {
+    let mut models = HashMap::new();
+    // Claude Sonnet 4.5 - 450K tokens/min (Tier 3+)
+    models.insert(
+        "claude-sonnet-4".to_string(),
+        ModelRateLimit {
+            tokens_per_minute: 450_000,
+        },
+    );
+    // Claude Opus 4 - 80K tokens/min (more limited)
+    models.insert(
+        "claude-opus-4".to_string(),
+        ModelRateLimit {
+            tokens_per_minute: 80_000,
+        },
+    );
+    // Claude Haiku - 1M tokens/min (very fast)
+    models.insert(
+        "claude-haiku".to_string(),
+        ModelRateLimit {
+            tokens_per_minute: 1_000_000,
+        },
+    );
+    models
+}
+
+fn default_model_rate_limit() -> ModelRateLimit {
+    ModelRateLimit {
+        tokens_per_minute: 100_000,
     }
 }
 
@@ -1460,5 +1550,107 @@ mod tests {
         assert!(settings.defaults.max_tokens > 0);
         // Large tier doesn't force ollama
         assert_eq!(settings.defaults.provider, "anthropic");
+    }
+
+    // ===== Rate Limits Config Tests =====
+
+    #[test]
+    fn test_rate_limits_config_default() {
+        let config = RateLimitsConfig::default();
+        assert!(config.enabled);
+        assert!(!config.models.is_empty());
+        assert!(config.models.contains_key("claude-sonnet-4"));
+        assert!(config.models.contains_key("claude-opus-4"));
+        assert!(config.models.contains_key("claude-haiku"));
+    }
+
+    #[test]
+    fn test_rate_limits_get_for_model_exact() {
+        let config = RateLimitsConfig::default();
+        let limit = config.get_for_model("claude-sonnet-4");
+        assert_eq!(limit.tokens_per_minute, 450_000);
+    }
+
+    #[test]
+    fn test_rate_limits_get_for_model_prefix() {
+        let config = RateLimitsConfig::default();
+        // Full model name with version should match prefix
+        let limit = config.get_for_model("claude-sonnet-4-20250514");
+        assert_eq!(limit.tokens_per_minute, 450_000);
+    }
+
+    #[test]
+    fn test_rate_limits_get_for_model_opus() {
+        let config = RateLimitsConfig::default();
+        let limit = config.get_for_model("claude-opus-4-20250514");
+        assert_eq!(limit.tokens_per_minute, 80_000);
+    }
+
+    #[test]
+    fn test_rate_limits_get_for_model_haiku() {
+        let config = RateLimitsConfig::default();
+        let limit = config.get_for_model("claude-haiku-3-20240307");
+        assert_eq!(limit.tokens_per_minute, 1_000_000);
+    }
+
+    #[test]
+    fn test_rate_limits_get_for_model_unknown() {
+        let config = RateLimitsConfig::default();
+        // Unknown model should return default
+        let limit = config.get_for_model("gpt-4-turbo");
+        assert_eq!(limit.tokens_per_minute, 100_000);
+    }
+
+    #[test]
+    fn test_rate_limits_config_serialization() {
+        let config = RateLimitsConfig::default();
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: RateLimitsConfig = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.enabled, config.enabled);
+        assert_eq!(parsed.models.len(), config.models.len());
+        assert_eq!(
+            parsed.default.tokens_per_minute,
+            config.default.tokens_per_minute
+        );
+    }
+
+    #[test]
+    fn test_rate_limits_in_settings() {
+        let settings = Settings::default();
+        assert!(settings.rate_limits.enabled);
+        assert!(!settings.rate_limits.models.is_empty());
+    }
+
+    #[test]
+    fn test_rate_limits_config_disabled() {
+        let config = RateLimitsConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        assert!(!config.enabled);
+    }
+
+    #[test]
+    fn test_model_rate_limit_clone() {
+        let limit = ModelRateLimit {
+            tokens_per_minute: 500_000,
+        };
+        let cloned = limit.clone();
+        assert_eq!(cloned.tokens_per_minute, 500_000);
+    }
+
+    #[test]
+    fn test_rate_limits_custom_model() {
+        let mut config = RateLimitsConfig::default();
+        config.models.insert(
+            "custom-model".to_string(),
+            ModelRateLimit {
+                tokens_per_minute: 200_000,
+            },
+        );
+
+        let limit = config.get_for_model("custom-model");
+        assert_eq!(limit.tokens_per_minute, 200_000);
     }
 }

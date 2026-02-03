@@ -74,6 +74,10 @@ pub enum TedError {
     #[error("Skill error: {0}")]
     Skill(String),
 
+    /// TUI errors
+    #[error("TUI error: {0}")]
+    Tui(String),
+
     /// Bead errors
     #[error("Bead error: {0}")]
     Bead(String),

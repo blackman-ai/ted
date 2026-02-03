@@ -158,6 +158,20 @@ impl AnthropicProvider {
         }
     }
 
+    /// Extract Retry-After header value from HTTP response headers
+    ///
+    /// The Retry-After header can be either:
+    /// - A number of seconds (e.g., "30")
+    /// - An HTTP date (e.g., "Wed, 21 Oct 2015 07:28:00 GMT")
+    ///
+    /// We only parse the numeric form for simplicity.
+    fn extract_retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+        headers
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+    }
+
     /// Parse token counts from an error message like "prompt is too long: 215300 tokens > 200000 maximum"
     fn parse_token_counts(message: &str) -> (u32, u32) {
         let numbers: Vec<u32> = message
@@ -173,11 +187,20 @@ impl AnthropicProvider {
     }
 
     /// Parse an error response
-    fn parse_error(&self, status: u16, body: &str) -> TedError {
+    ///
+    /// # Arguments
+    /// * `status` - HTTP status code
+    /// * `body` - Response body
+    /// * `retry_after` - Optional Retry-After header value in seconds
+    fn parse_error(&self, status: u16, body: &str, retry_after: Option<u64>) -> TedError {
         if let Ok(error_response) = serde_json::from_str::<AnthropicError>(body) {
             match error_response.error.error_type.as_str() {
                 "authentication_error" => TedError::Api(ApiError::AuthenticationFailed),
-                "rate_limit_error" => TedError::Api(ApiError::RateLimited(60)), // Default retry
+                "rate_limit_error" => {
+                    // Use Retry-After header if available, otherwise default to 10 seconds
+                    let retry_secs = retry_after.unwrap_or(10) as u32;
+                    TedError::Api(ApiError::RateLimited(retry_secs))
+                }
                 "invalid_request_error" => {
                     // Check for token limit errors (various phrasings)
                     let msg = &error_response.error.message;
@@ -268,8 +291,10 @@ impl LlmProvider for AnthropicProvider {
         let status = response.status().as_u16();
 
         if !response.status().is_success() {
+            // Extract Retry-After header before consuming response body
+            let retry_after = Self::extract_retry_after(response.headers());
             let body = response.text().await.unwrap_or_default();
-            return Err(self.parse_error(status, &body));
+            return Err(self.parse_error(status, &body, retry_after));
         }
 
         let api_response: AnthropicResponse = response.json().await?;
@@ -336,8 +361,10 @@ impl LlmProvider for AnthropicProvider {
         let status = response.status().as_u16();
 
         if !response.status().is_success() {
+            // Extract Retry-After header before consuming response body
+            let retry_after = Self::extract_retry_after(response.headers());
             let body = response.text().await.unwrap_or_default();
-            return Err(self.parse_error(status, &body));
+            return Err(self.parse_error(status, &body, retry_after));
         }
 
         let byte_stream = response.bytes_stream();
@@ -772,7 +799,7 @@ mod tests {
         let provider = AnthropicProvider::new("test-key");
         let body = r#"{"error": {"type": "authentication_error", "message": "Invalid API key"}}"#;
 
-        let error = provider.parse_error(401, body);
+        let error = provider.parse_error(401, body, None);
 
         match error {
             TedError::Api(ApiError::AuthenticationFailed) => {}
@@ -785,10 +812,21 @@ mod tests {
         let provider = AnthropicProvider::new("test-key");
         let body = r#"{"error": {"type": "rate_limit_error", "message": "Too many requests"}}"#;
 
-        let error = provider.parse_error(429, body);
-
+        // Test with no Retry-After header (uses default of 10 seconds)
+        let error = provider.parse_error(429, body, None);
         match error {
-            TedError::Api(ApiError::RateLimited(_)) => {}
+            TedError::Api(ApiError::RateLimited(secs)) => {
+                assert_eq!(secs, 10); // Default when no header
+            }
+            _ => panic!("Expected RateLimited error"),
+        }
+
+        // Test with Retry-After header
+        let error = provider.parse_error(429, body, Some(30));
+        match error {
+            TedError::Api(ApiError::RateLimited(secs)) => {
+                assert_eq!(secs, 30); // From header
+            }
             _ => panic!("Expected RateLimited error"),
         }
     }
@@ -799,7 +837,7 @@ mod tests {
         let body =
             r#"{"error": {"type": "invalid_request_error", "message": "context length exceeded"}}"#;
 
-        let error = provider.parse_error(400, body);
+        let error = provider.parse_error(400, body, None);
 
         match error {
             TedError::Api(ApiError::ContextTooLong { .. }) => {}
@@ -812,7 +850,7 @@ mod tests {
         let provider = AnthropicProvider::new("test-key");
         let body = r#"{"error": {"type": "invalid_request_error", "message": "Invalid model"}}"#;
 
-        let error = provider.parse_error(400, body);
+        let error = provider.parse_error(400, body, None);
 
         match error {
             TedError::Api(ApiError::InvalidResponse(_)) => {}
@@ -825,7 +863,7 @@ mod tests {
         let provider = AnthropicProvider::new("test-key");
         let body = r#"{"error": {"type": "server_error", "message": "Internal error"}}"#;
 
-        let error = provider.parse_error(500, body);
+        let error = provider.parse_error(500, body, None);
 
         match error {
             TedError::Api(ApiError::ServerError { status, .. }) => {
@@ -840,7 +878,7 @@ mod tests {
         let provider = AnthropicProvider::new("test-key");
         let body = "not json";
 
-        let error = provider.parse_error(500, body);
+        let error = provider.parse_error(500, body, None);
 
         match error {
             TedError::Api(ApiError::ServerError { message, .. }) => {
@@ -1130,7 +1168,7 @@ mod tests {
         let body =
             r#"{"error": {"type": "not_found_error", "message": "Model claude-999 not found"}}"#;
 
-        let error = provider.parse_error(404, body);
+        let error = provider.parse_error(404, body, None);
 
         // not_found_error falls through to ServerError since it's not explicitly handled
         match error {
@@ -1147,7 +1185,7 @@ mod tests {
         let provider = AnthropicProvider::new("test-key");
         let body = r#"{"error": {"type": "overloaded_error", "message": "API is overloaded"}}"#;
 
-        let error = provider.parse_error(503, body);
+        let error = provider.parse_error(503, body, None);
 
         match error {
             TedError::Api(ApiError::ServerError { status, message }) => {
@@ -1376,7 +1414,7 @@ mod tests {
         let provider = AnthropicProvider::new("test-key");
         let body = r#"{"error": {"type": "permission_denied", "message": "Access denied"}}"#;
 
-        let error = provider.parse_error(403, body);
+        let error = provider.parse_error(403, body, None);
 
         // permission_denied falls through to ServerError since it's not explicitly handled
         match error {
@@ -1386,6 +1424,36 @@ mod tests {
             }
             _ => panic!("Expected ServerError for permission_denied"),
         }
+    }
+
+    #[test]
+    fn test_extract_retry_after() {
+        use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
+
+        // Test with numeric retry-after
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("30"));
+        assert_eq!(AnthropicProvider::extract_retry_after(&headers), Some(30));
+
+        // Test with no retry-after header
+        let empty_headers = HeaderMap::new();
+        assert_eq!(AnthropicProvider::extract_retry_after(&empty_headers), None);
+
+        // Test with non-numeric retry-after (HTTP date format - not supported)
+        let mut date_headers = HeaderMap::new();
+        date_headers.insert(
+            RETRY_AFTER,
+            HeaderValue::from_static("Wed, 21 Oct 2015 07:28:00 GMT"),
+        );
+        assert_eq!(AnthropicProvider::extract_retry_after(&date_headers), None);
+
+        // Test with invalid header value
+        let mut invalid_headers = HeaderMap::new();
+        invalid_headers.insert(RETRY_AFTER, HeaderValue::from_static("not-a-number"));
+        assert_eq!(
+            AnthropicProvider::extract_retry_after(&invalid_headers),
+            None
+        );
     }
 
     #[test]

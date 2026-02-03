@@ -420,6 +420,22 @@ impl ToolRegistry {
         )));
     }
 
+    /// Register the spawn_agent tool with rate coordinator for budget allocation
+    ///
+    /// Use this instead of `register_spawn_agent()` when rate limiting is enabled.
+    pub fn register_spawn_agent_with_coordinator(
+        &mut self,
+        provider: Arc<dyn LlmProvider>,
+        skill_registry: Arc<SkillRegistry>,
+        rate_coordinator: Arc<crate::llm::rate_budget::TokenRateCoordinator>,
+    ) {
+        self.register(Arc::new(builtin::SpawnAgentTool::with_rate_coordinator(
+            provider,
+            skill_registry,
+            rate_coordinator,
+        )));
+    }
+
     /// Load external tools from the default directory (~/.ted/tools/)
     pub fn load_external_tools(&mut self) {
         let tools = external::load_external_tools();

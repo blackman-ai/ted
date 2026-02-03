@@ -1,0 +1,111 @@
+# Cargo deny configuration for security and license compliance
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+# If 1 or more target triples are specified, only the dependencies for those
+# target triples will be included in the graph
+targets = [
+    # The triple can be any string, but only the target triples built in to
+    # rustc (as of 1.40) can be checked against the rust-version config, and
+    # matching against them is case-sensitive
+    "x86_64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+
+[advisories]
+# The url(s) of the advisory databases to use
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# A list of advisory IDs to ignore. Note that ignored advisories will still
+# output a note when they are encountered.
+ignore = [
+    # We accept these unmaintained/yanked warnings for now as they are
+    # transitive dependencies of our TUI and testing libraries
+    "RUSTSEC-2024-0384", # instant (unmaintained) - via notify
+    "RUSTSEC-2017-0008", # serial (unmaintained) - via ratatui-testlib
+]
+
+[licenses]
+# The confidence threshold for detecting a license from a license text.
+# 0.0 = low confidence, 1.0 = high confidence
+confidence-threshold = 0.8
+# List of explicitly allowed licenses
+# See https://spdx.org/licenses/ for list of possible licenses
+# Note: In cargo-deny v0.14+, unlisted licenses are denied by default
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MPL-2.0",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "Zlib",
+    "CDLA-Permissive-2.0",
+    "AGPL-3.0-or-later", # Our own license
+]
+# Some crates don't have (easily) machine readable licensing information,
+# adding a clarification or license text here will make the lint happy
+[[licenses.clarify]]
+name = "ring"
+# SPDX identifier for the license
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [
+    # Each entry is a crate relative path, and the (opaque) hash of its contents
+    { path = "LICENSE", hash = 0xbd0eed23 }
+]
+
+[bans]
+# Lint level for when multiple versions of the same crate are detected
+multiple-versions = "warn"
+# Lint level for when a crate version requirement is `*`
+wildcards = "allow"
+# The graph highlighting used when creating dotgraphs for crates
+# with multiple versions
+# * lowest-version - The path to the lowest versioned duplicate is highlighted
+# * simplest-path - The path to the version with the fewest edges is highlighted
+# * all - Both lowest-version and simplest-path are used
+highlight = "all"
+
+# List of crates that are allowed. Use with care!
+allow = [
+    #{ name = "ansi_term", version = "=0.11.0" },
+]
+
+# List of crates to deny
+deny = [
+    # Each entry the name of a crate and a version range. If version is
+    # not specified, all versions will be matched.
+    #{ name = "ansi_term", version = "=0.11.0" },
+    
+    # Deny old versions with known vulnerabilities
+    { name = "openssl", version = "<0.10.55" },
+    { name = "openssl-sys", version = "<0.9.87" },
+]
+
+# Certain crates/versions that will be skipped when doing duplicate detection.
+skip = [
+    #{ name = "ansi_term", version = "=0.11.0" },
+]
+# Similarly to `skip` allows you to skip certain crates from being checked. Unlike
+# `skip`, a skipped crate is removed from the dependency graph entirely and so
+# will not surface in other checks, such as license checks.
+skip-tree = [
+    #{ name = "ansi_term", version = "=0.11.0", depth = 20 },
+]
+
+[sources]
+# Lint level for what to happen when a crate from a crate registry that is
+# not in the allow list is encountered
+unknown-registry = "warn"
+# Lint level for what to happen when a crate from a git repository that is not
+# in the allow list is encountered
+unknown-git = "warn"
+# List of URLs for allowed crate registries. Defaults to the crates.io index
+# if not specified. If it is specified but empty, no registries are allowed.
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# List of URLs for allowed Git repositories
+allow-git = []

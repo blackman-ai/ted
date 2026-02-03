@@ -49,7 +49,7 @@ async-stream = "0.3"
 
 # Terminal UI
 crossterm = "0.28"
-ratatui = "0.29"
+ratatui = "0.30"
 
 # Directory paths
 dirs = "5.0"

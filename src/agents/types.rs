@@ -12,6 +12,8 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use uuid::Uuid;
 
+use crate::llm::rate_budget::RatePriority;
+
 /// Memory management strategy for subagent context
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub enum MemoryStrategy {
@@ -156,6 +158,16 @@ impl AgentConfig {
     pub fn with_model(mut self, model: String) -> Self {
         self.model = Some(model);
         self
+    }
+
+    /// Get the rate limiting priority for this agent type
+    pub fn rate_priority(&self) -> RatePriority {
+        match self.agent_type.as_str() {
+            "implement" | "plan" => RatePriority::High,
+            "explore" | "review" => RatePriority::Normal,
+            _ if self.background => RatePriority::Background,
+            _ => RatePriority::Normal,
+        }
     }
 }
 
@@ -1133,5 +1145,51 @@ mod tests {
 
         assert!(debug_str.contains("ToolPermissions"));
         assert!(debug_str.contains("test_tool"));
+    }
+
+    // ==================== Rate Priority Tests ====================
+
+    #[test]
+    fn test_rate_priority_implement() {
+        let config = AgentConfig::new("implement", "task", PathBuf::from("/"));
+        assert_eq!(config.rate_priority(), RatePriority::High);
+    }
+
+    #[test]
+    fn test_rate_priority_plan() {
+        let config = AgentConfig::new("plan", "task", PathBuf::from("/"));
+        assert_eq!(config.rate_priority(), RatePriority::High);
+    }
+
+    #[test]
+    fn test_rate_priority_explore() {
+        let config = AgentConfig::new("explore", "task", PathBuf::from("/"));
+        assert_eq!(config.rate_priority(), RatePriority::Normal);
+    }
+
+    #[test]
+    fn test_rate_priority_review() {
+        let config = AgentConfig::new("review", "task", PathBuf::from("/"));
+        assert_eq!(config.rate_priority(), RatePriority::Normal);
+    }
+
+    #[test]
+    fn test_rate_priority_background() {
+        let config = AgentConfig::new("explore", "task", PathBuf::from("/")).with_background(true);
+        // Background flag should take precedence for unknown types only
+        // But explore is a known type, so it stays Normal
+        assert_eq!(config.rate_priority(), RatePriority::Normal);
+    }
+
+    #[test]
+    fn test_rate_priority_unknown_background() {
+        let config = AgentConfig::new("custom", "task", PathBuf::from("/")).with_background(true);
+        assert_eq!(config.rate_priority(), RatePriority::Background);
+    }
+
+    #[test]
+    fn test_rate_priority_unknown_foreground() {
+        let config = AgentConfig::new("custom", "task", PathBuf::from("/"));
+        assert_eq!(config.rate_priority(), RatePriority::Normal);
     }
 }

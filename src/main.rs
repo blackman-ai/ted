@@ -441,9 +441,37 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
         }
     }
     let skill_registry = Arc::new(skill_registry);
-    tool_executor
-        .registry_mut()
-        .register_spawn_agent(provider.clone(), skill_registry);
+
+    // Create rate coordinator if rate limits are enabled
+    let rate_coordinator = if settings.rate_limits.enabled {
+        let limit = settings.rate_limits.get_for_model(&model);
+        if verbose > 0 {
+            eprintln!(
+                "[verbose] Rate limiting enabled: {} tokens/min for model {}",
+                limit.tokens_per_minute, model
+            );
+        }
+        Some(Arc::new(ted::llm::TokenRateCoordinator::new(
+            limit.tokens_per_minute,
+        )))
+    } else {
+        None
+    };
+
+    // Register spawn_agent tool (with or without rate coordinator)
+    if let Some(ref coordinator) = rate_coordinator {
+        tool_executor
+            .registry_mut()
+            .register_spawn_agent_with_coordinator(
+                provider.clone(),
+                skill_registry,
+                Arc::clone(coordinator),
+            );
+    } else {
+        tool_executor
+            .registry_mut()
+            .register_spawn_agent(provider.clone(), skill_registry);
+    }
 
     // Update session info
     session_info.project_root = project_root;

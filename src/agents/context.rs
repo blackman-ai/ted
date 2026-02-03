@@ -15,6 +15,7 @@ use uuid::Uuid;
 use crate::context::ContextManager;
 use crate::error::Result;
 use crate::llm::message::{Conversation, Message};
+use crate::llm::rate_budget::RateBudgetAllocation;
 
 use super::builtin::{get_agent_type, AgentTypeDefinition};
 use super::types::{AgentConfig, ToolPermissions};
@@ -53,6 +54,9 @@ pub struct AgentContext {
 
     /// Current iteration count
     iterations: u32,
+
+    /// Rate budget allocation for this agent (if rate limiting is enabled)
+    rate_allocation: Option<Arc<RateBudgetAllocation>>,
 }
 
 impl AgentContext {
@@ -85,6 +89,7 @@ impl AgentContext {
             files_changed: Vec::new(),
             tokens_used: 0,
             iterations: 0,
+            rate_allocation: None,
         }
     }
 
@@ -243,6 +248,16 @@ impl AgentContext {
         &self.files_changed
     }
 
+    /// Set the rate budget allocation for this agent
+    pub fn set_rate_allocation(&mut self, allocation: Arc<RateBudgetAllocation>) {
+        self.rate_allocation = Some(allocation);
+    }
+
+    /// Get the rate budget allocation (if any)
+    pub fn rate_allocation(&self) -> Option<&Arc<RateBudgetAllocation>> {
+        self.rate_allocation.as_ref()
+    }
+
     /// Get a reference to the conversation
     pub fn conversation(&self) -> &Conversation {
         &self.conversation
@@ -280,6 +295,7 @@ pub struct AgentContextBuilder {
     parent_context: Option<Arc<RwLock<ContextManager>>>,
     skill_content: Option<String>,
     additional_permissions: Option<ToolPermissions>,
+    rate_allocation: Option<Arc<RateBudgetAllocation>>,
 }
 
 impl AgentContextBuilder {
@@ -290,6 +306,7 @@ impl AgentContextBuilder {
             parent_context: None,
             skill_content: None,
             additional_permissions: None,
+            rate_allocation: None,
         }
     }
 
@@ -311,6 +328,12 @@ impl AgentContextBuilder {
         self
     }
 
+    /// Set rate budget allocation
+    pub fn with_rate_allocation(mut self, allocation: Arc<RateBudgetAllocation>) -> Self {
+        self.rate_allocation = Some(allocation);
+        self
+    }
+
     /// Build the agent context
     pub async fn build(self) -> Result<AgentContext> {
         let mut ctx = if let Some(parent) = self.parent_context {
@@ -325,6 +348,10 @@ impl AgentContextBuilder {
 
         if let Some(permissions) = self.additional_permissions {
             ctx.extend_permissions(&permissions);
+        }
+
+        if let Some(allocation) = self.rate_allocation {
+            ctx.set_rate_allocation(allocation);
         }
 
         Ok(ctx)
