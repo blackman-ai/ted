@@ -502,6 +502,137 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
         // Get user input
         let input = read_user_input()?;
 
+        // Check for shell command (starts with >)
+        if input.trim().starts_with('>') {
+            let command = input.trim().strip_prefix('>').unwrap().trim();
+            if command.is_empty() {
+                println!("\nUsage: >command [args...]");
+                println!("Example: >ls -la");
+                println!("Example: >git status\n");
+                continue;
+            }
+
+            // Execute the shell command directly
+            let mut stdout = io::stdout();
+            stdout.execute(SetForegroundColor(Color::DarkGrey))?;
+            print!("  ╭─ ");
+            stdout.execute(SetForegroundColor(Color::Magenta))?;
+            print!("shell");
+            stdout.execute(SetForegroundColor(Color::DarkGrey))?;
+            print!(" → ");
+            stdout.execute(SetForegroundColor(Color::Cyan))?;
+            let display_cmd = if command.len() > 60 {
+                format!("{}...", &command[..57])
+            } else {
+                command.to_string()
+            };
+            println!("{}", display_cmd);
+            stdout.execute(ResetColor)?;
+
+            // Execute the command using std::process::Command
+            let output = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(command)
+                .output();
+
+            match output {
+                Ok(result) => {
+                    let stdout_text = String::from_utf8_lossy(&result.stdout);
+                    let stderr_text = String::from_utf8_lossy(&result.stderr);
+                    let exit_code = result.status.code().unwrap_or(-1);
+
+                    // Print result indicator
+                    let mut stdout = io::stdout();
+                    stdout.execute(SetForegroundColor(Color::DarkGrey))?;
+                    print!("  ╰─ ");
+                    
+                    if exit_code == 0 {
+                        stdout.execute(SetForegroundColor(Color::Green))?;
+                        print!("✓ ");
+                    } else {
+                        stdout.execute(SetForegroundColor(Color::Red))?;
+                        print!("✗ ");
+                    }
+                    stdout.execute(ResetColor)?;
+
+                    // Print output
+                    if exit_code == 0 {
+                        if stdout_text.trim().is_empty() && stderr_text.trim().is_empty() {
+                            println!("Command completed (no output)");
+                        } else {
+                            let output_lines: Vec<_> = stdout_text.lines().chain(stderr_text.lines()).collect();
+                            let total_lines = output_lines.len();
+                            
+                            if total_lines <= 15 {
+                                println!("Command completed ({} lines):", total_lines);
+                                for line in &output_lines {
+                                    stdout.execute(SetForegroundColor(Color::DarkGrey))?;
+                                    let display = if line.len() > 120 {
+                                        format!("{}...", &line[..117])
+                                    } else {
+                                        line.to_string()
+                                    };
+                                    println!("     {}", display);
+                                    stdout.execute(ResetColor)?;
+                                }
+                            } else {
+                                println!("Command completed ({} lines):", total_lines);
+                                // Show first 5 lines
+                                for line in output_lines.iter().take(5) {
+                                    stdout.execute(SetForegroundColor(Color::DarkGrey))?;
+                                    let display = if line.len() > 120 {
+                                        format!("{}...", &line[..117])
+                                    } else {
+                                        line.to_string()
+                                    };
+                                    println!("     {}", display);
+                                    stdout.execute(ResetColor)?;
+                                }
+                                stdout.execute(SetForegroundColor(Color::DarkGrey))?;
+                                println!("     ┄┄┄ {} more lines ┄┄┄", total_lines - 10);
+                                // Show last 5 lines
+                                for line in output_lines.iter().skip(total_lines - 5) {
+                                    let display = if line.len() > 120 {
+                                        format!("{}...", &line[..117])
+                                    } else {
+                                        line.to_string()
+                                    };
+                                    println!("     {}", display);
+                                }
+                                stdout.execute(ResetColor)?;
+                            }
+                        }
+                    } else {
+                        println!("Command failed (exit code {})", exit_code);
+                        let error_output = if !stderr_text.trim().is_empty() {
+                            stderr_text.trim()
+                        } else {
+                            stdout_text.trim()
+                        };
+                        
+                        for line in error_output.lines().take(10) {
+                            stdout.execute(SetForegroundColor(Color::DarkGrey))?;
+                            let display = if line.len() > 120 {
+                                format!("{}...", &line[..117])
+                            } else {
+                                line.to_string()
+                            };
+                            println!("     {}", display);
+                            stdout.execute(ResetColor)?;
+                        }
+                    }
+                }
+                Err(e) => {
+                    stdout.execute(SetForegroundColor(Color::Red))?;
+                    println!("✗ Failed to execute command: {}", e);
+                    stdout.execute(ResetColor)?;
+                }
+            }
+            
+            println!(); // Add spacing after command output
+            continue;
+        }
+
         // Check for exit commands
         let trimmed = input.trim().to_lowercase();
         if trimmed == "exit" || trimmed == "quit" || trimmed == "/exit" || trimmed == "/quit" {
@@ -2096,7 +2227,7 @@ fn print_welcome(
         println!("⚠ Trust mode enabled - all tool actions auto-approved");
         stdout.execute(ResetColor)?;
     }
-    println!("Type /help for commands, exit to quit\n");
+    println!("Type /help for commands, >command for shell, exit to quit\n");
     Ok(())
 }
 
@@ -2133,6 +2264,8 @@ fn print_help() -> Result<()> {
     println!("  /stats     - Show context/session statistics");
     println!("  /help      - Show this help message");
     println!("  exit       - Exit ted");
+    println!("\nDirect shell commands:");
+    println!("  >command   - Execute shell command directly (e.g., >ls -la, >git status)");
     println!("\nTools available:");
     println!("  file_read    - Read file contents");
     println!("  file_write   - Create new files");
