@@ -951,4 +951,439 @@ mod tests {
         assert!(json.contains("suggested_fix"));
         assert!(json.contains("context"));
     }
+
+    // ===== JsonLEmitter method tests =====
+    // These test the emit methods. They print to stdout, so we verify they don't panic
+    // and return Ok results.
+
+    #[test]
+    fn test_jsonl_emitter_emit_plan() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let steps = vec![
+            PlanStep {
+                id: "step-1".to_string(),
+                description: "First step".to_string(),
+                estimated_files: Some(vec!["file.rs".to_string()]),
+            },
+            PlanStep {
+                id: "step-2".to_string(),
+                description: "Second step".to_string(),
+                estimated_files: None,
+            },
+        ];
+
+        let result = emitter.emit_plan(steps);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_plan_empty() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_plan(vec![]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_file_create() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_file_create(
+            "/test/path.rs".to_string(),
+            "fn main() {}".to_string(),
+            Some(0o644),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_file_create_no_mode() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result =
+            emitter.emit_file_create("/test/path.rs".to_string(), "content".to_string(), None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_file_edit() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_file_edit(
+            "/test/path.rs".to_string(),
+            "replace".to_string(),
+            Some("old text".to_string()),
+            Some("new text".to_string()),
+            None,
+            None,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_file_edit_insert() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_file_edit(
+            "/test/path.rs".to_string(),
+            "insert".to_string(),
+            None,
+            None,
+            Some(10),
+            Some("inserted line".to_string()),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_file_delete() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_file_delete("/test/to-delete.rs".to_string());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_command() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_command(
+            "cargo build".to_string(),
+            Some("/project".to_string()),
+            None,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_command_with_env() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let mut env = std::collections::HashMap::new();
+        env.insert("RUST_BACKTRACE".to_string(), "1".to_string());
+        env.insert("DEBUG".to_string(), "true".to_string());
+
+        let result = emitter.emit_command(
+            "cargo test".to_string(),
+            Some("/project".to_string()),
+            Some(env),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_command_minimal() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_command("ls".to_string(), None, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_command_output_stdout() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result =
+            emitter.emit_command_output("stdout", "Hello, world!\n".to_string(), None, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_command_output_stderr() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_command_output(
+            "stderr",
+            "Warning: something happened\n".to_string(),
+            None,
+            None,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_command_output_done() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_command_output("stdout", "".to_string(), Some(true), Some(0));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_command_output_error_exit() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_command_output(
+            "stderr",
+            "Error: command failed".to_string(),
+            Some(true),
+            Some(1),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_status_thinking() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_status("thinking", "Processing request...".to_string(), None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_status_reading() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_status("reading", "Reading file.rs".to_string(), Some(25));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_status_writing() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_status("writing", "Writing changes".to_string(), Some(50));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_status_running() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_status("running", "Executing command".to_string(), Some(75));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_status_complete() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_status("complete", "Done".to_string(), Some(100));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_error_simple() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_error(
+            "FILE_NOT_FOUND".to_string(),
+            "The file does not exist".to_string(),
+            None,
+            None,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_error_with_fix() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_error(
+            "PERMISSION_DENIED".to_string(),
+            "Cannot write to file".to_string(),
+            Some("Check file permissions or run with elevated privileges".to_string()),
+            None,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_error_with_context() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let context = serde_json::json!({
+            "path": "/protected/file.txt",
+            "user": "test",
+            "mode": 0o400
+        });
+
+        let result = emitter.emit_error(
+            "PERMISSION_DENIED".to_string(),
+            "Cannot write to file".to_string(),
+            Some("Change file permissions".to_string()),
+            Some(context),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_completion_success() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_completion(
+            true,
+            "Successfully completed the task".to_string(),
+            vec!["file1.rs".to_string(), "file2.rs".to_string()],
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_completion_failure() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_completion(
+            false,
+            "Task failed due to compilation errors".to_string(),
+            vec![],
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_completion_no_files() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result =
+            emitter.emit_completion(true, "Completed without file changes".to_string(), vec![]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_message_user() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_message("user", "Hello, please help me".to_string(), None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_message_assistant() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result =
+            emitter.emit_message("assistant", "I'll help you with that.".to_string(), None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_message_delta() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_message("assistant", "Streaming ".to_string(), Some(true));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_message_delta_complete() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_message("assistant", "done.".to_string(), Some(false));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_conversation_history() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let messages = vec![
+            HistoryMessageData {
+                role: "user".to_string(),
+                content: "What is Rust?".to_string(),
+            },
+            HistoryMessageData {
+                role: "assistant".to_string(),
+                content: "Rust is a systems programming language.".to_string(),
+            },
+            HistoryMessageData {
+                role: "user".to_string(),
+                content: "Thanks!".to_string(),
+            },
+        ];
+
+        let result = emitter.emit_conversation_history(messages);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_conversation_history_empty() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_conversation_history(vec![]);
+        assert!(result.is_ok());
+    }
+
+    // ===== Additional edge case tests =====
+
+    #[test]
+    fn test_jsonl_emitter_unicode_session_id() {
+        let emitter = JsonLEmitter::new("セッション-日本語-🦀".to_string());
+        let result = emitter.emit_status("thinking", "Processing".to_string(), None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_empty_session_id() {
+        let emitter = JsonLEmitter::new("".to_string());
+        let result = emitter.emit_status("thinking", "Processing".to_string(), None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_long_content() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let long_content = "x".repeat(100_000);
+        let result = emitter.emit_message("assistant", long_content, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_special_chars_in_content() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let content = "Special chars: \n\t\r\"\\/'<>&";
+        let result = emitter.emit_message("user", content.to_string(), None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_file_path_with_spaces() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_file_create(
+            "/path/with spaces/and special (chars)/file.rs".to_string(),
+            "content".to_string(),
+            None,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_many_files_changed() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let files: Vec<String> = (0..1000).map(|i| format!("file_{}.rs", i)).collect();
+        let result = emitter.emit_completion(true, "Many files changed".to_string(), files);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_many_plan_steps() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let steps: Vec<PlanStep> = (0..100)
+            .map(|i| PlanStep {
+                id: format!("step-{}", i),
+                description: format!("Step {} description", i),
+                estimated_files: Some(vec![format!("file_{}.rs", i)]),
+            })
+            .collect();
+        let result = emitter.emit_plan(steps);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_error_nested_context() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let context = serde_json::json!({
+            "level1": {
+                "level2": {
+                    "level3": {
+                        "deep_value": 42
+                    }
+                }
+            },
+            "array": [1, 2, 3, {"nested": true}]
+        });
+
+        let result = emitter.emit_error(
+            "COMPLEX_ERROR".to_string(),
+            "Complex context".to_string(),
+            None,
+            Some(context),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_file_edit_all_options() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_file_edit(
+            "/test/path.rs".to_string(),
+            "complex".to_string(),
+            Some("old".to_string()),
+            Some("new".to_string()),
+            Some(42),
+            Some("line text".to_string()),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_command_empty_env() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_command(
+            "echo hello".to_string(),
+            None,
+            Some(std::collections::HashMap::new()),
+        );
+        assert!(result.is_ok());
+    }
 }

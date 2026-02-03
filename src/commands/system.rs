@@ -466,4 +466,316 @@ mod tests {
         let format = OutputFormat::Markdown;
         assert!(matches!(format, OutputFormat::Markdown));
     }
+
+    // ==================== Execute Function Tests ====================
+
+    #[test]
+    fn test_execute_text_format() {
+        let args = SystemArgs {
+            upgrades: false,
+            detailed: false,
+        };
+        let format = OutputFormat::Text;
+
+        // Execute should succeed (it detects real hardware)
+        let result = execute(&args, &format);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_execute_json_format() {
+        let args = SystemArgs {
+            upgrades: false,
+            detailed: false,
+        };
+        let format = OutputFormat::Json;
+
+        // Execute should succeed with JSON output
+        let result = execute(&args, &format);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_execute_with_detailed_flag() {
+        let args = SystemArgs {
+            upgrades: false,
+            detailed: true,
+        };
+        let format = OutputFormat::Text;
+
+        // Execute with detailed flag should succeed
+        let result = execute(&args, &format);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_execute_with_upgrades_flag() {
+        let args = SystemArgs {
+            upgrades: true,
+            detailed: false,
+        };
+        let format = OutputFormat::Text;
+
+        // Execute with upgrades flag should succeed
+        let result = execute(&args, &format);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_execute_with_all_flags() {
+        let args = SystemArgs {
+            upgrades: true,
+            detailed: true,
+        };
+        let format = OutputFormat::Text;
+
+        // Execute with all flags should succeed
+        let result = execute(&args, &format);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_execute_json_with_detailed() {
+        let args = SystemArgs {
+            upgrades: false,
+            detailed: true,
+        };
+        let format = OutputFormat::Json;
+
+        // Execute with JSON format (detailed flag doesn't affect JSON)
+        let result = execute(&args, &format);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_execute_json_with_upgrades() {
+        let args = SystemArgs {
+            upgrades: true,
+            detailed: false,
+        };
+        let format = OutputFormat::Json;
+
+        // Execute with JSON format (upgrades flag doesn't affect JSON)
+        let result = execute(&args, &format);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_execute_markdown_format() {
+        let args = SystemArgs {
+            upgrades: false,
+            detailed: false,
+        };
+        let format = OutputFormat::Markdown;
+
+        // Markdown format falls through to text output
+        let result = execute(&args, &format);
+        assert!(result.is_ok());
+    }
+
+    // ==================== SystemProfile Integration Tests ====================
+
+    #[test]
+    fn test_system_profile_detect() {
+        use crate::hardware::SystemProfile;
+
+        // SystemProfile::detect() should succeed on any system
+        let result = SystemProfile::detect();
+        assert!(result.is_ok());
+
+        let profile = result.unwrap();
+        // Basic sanity checks
+        assert!(profile.cpu_cores > 0);
+        assert!(profile.ram_gb > 0);
+    }
+
+    #[test]
+    fn test_hardware_tier_methods() {
+        use crate::hardware::SystemProfile;
+
+        let profile = SystemProfile::detect().unwrap();
+        let tier = profile.tier;
+
+        // Test tier methods that are used in execute()
+        let _ = tier.description();
+        let _ = tier.recommended_models();
+        let _ = tier.expected_response_time();
+        let _ = tier.capabilities();
+        let _ = tier.limitations();
+        let _ = tier.max_context_tokens();
+        let _ = tier.max_warm_chunks();
+        let _ = tier.disable_background_tasks();
+        let _ = tier.disable_indexer();
+        let _ = tier.streaming_only();
+        let _ = tier.single_file_mode();
+        let _ = tier.recommended_quantization();
+    }
+
+    #[test]
+    fn test_system_profile_upgrade_suggestions() {
+        use crate::hardware::SystemProfile;
+
+        let profile = SystemProfile::detect().unwrap();
+        // get_upgrade_suggestions should not panic
+        let _upgrades = profile.get_upgrade_suggestions();
+    }
+
+    #[test]
+    fn test_system_profile_thermal_throttle_risk() {
+        use crate::hardware::SystemProfile;
+
+        let profile = SystemProfile::detect().unwrap();
+        // thermal_throttle_risk should not panic
+        let _risk = profile.thermal_throttle_risk();
+    }
+
+    // ==================== HardwareInfo Edge Cases ====================
+
+    #[test]
+    fn test_hardware_info_empty_vectors() {
+        let info = HardwareInfo {
+            tier: "Test".to_string(),
+            tier_description: "Test tier".to_string(),
+            cpu_brand: "Test CPU".to_string(),
+            cpu_cores: 1,
+            ram_gb: 1,
+            has_ssd: false,
+            architecture: "Test".to_string(),
+            is_sbc: false,
+            cpu_year: None,
+            recommended_models: vec![],
+            expected_response_time: (0, 0),
+            capabilities: vec![],
+            limitations: vec![],
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"recommendedModels\":[]"));
+        assert!(json.contains("\"capabilities\":[]"));
+        assert!(json.contains("\"limitations\":[]"));
+    }
+
+    #[test]
+    fn test_hardware_info_unicode() {
+        let info = HardwareInfo {
+            tier: "Tier".to_string(),
+            tier_description: "日本語テスト".to_string(),
+            cpu_brand: "AMD Ryzen™ 9".to_string(),
+            cpu_cores: 16,
+            ram_gb: 64,
+            has_ssd: true,
+            architecture: "x86_64".to_string(),
+            is_sbc: false,
+            cpu_year: Some(2023),
+            recommended_models: vec!["模型".to_string()],
+            expected_response_time: (1, 2),
+            capabilities: vec!["能力".to_string()],
+            limitations: vec!["限制".to_string()],
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("日本語テスト"));
+        assert!(json.contains("™"));
+    }
+
+    #[test]
+    fn test_hardware_info_json_parsing() {
+        // Verify the JSON output can be parsed back as generic JSON
+        let info = HardwareInfo {
+            tier: "Medium".to_string(),
+            tier_description: "Good performance".to_string(),
+            cpu_brand: "Intel".to_string(),
+            cpu_cores: 8,
+            ram_gb: 16,
+            has_ssd: true,
+            architecture: "X86_64".to_string(),
+            is_sbc: false,
+            cpu_year: Some(2022),
+            recommended_models: vec!["llama3:8b".to_string()],
+            expected_response_time: (2, 5),
+            capabilities: vec!["Fast".to_string()],
+            limitations: vec![],
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["tier"], "Medium");
+        assert_eq!(parsed["cpuCores"], 8);
+        assert_eq!(parsed["expectedResponseTime"][0], 2);
+        assert_eq!(parsed["expectedResponseTime"][1], 5);
+    }
+
+    #[test]
+    fn test_hardware_info_json_roundtrip() {
+        let original = HardwareInfo {
+            tier: "Large".to_string(),
+            tier_description: "High performance".to_string(),
+            cpu_brand: "Apple M3 Max".to_string(),
+            cpu_cores: 14,
+            ram_gb: 128,
+            has_ssd: true,
+            architecture: "ARM64".to_string(),
+            is_sbc: false,
+            cpu_year: Some(2024),
+            recommended_models: vec!["claude-3-opus".to_string(), "gpt-4".to_string()],
+            expected_response_time: (1, 2),
+            capabilities: vec!["Full agentic".to_string(), "Multi-model".to_string()],
+            limitations: vec![],
+        };
+
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["tier"], original.tier);
+        assert_eq!(parsed["cpuBrand"], original.cpu_brand);
+        assert_eq!(parsed["cpuCores"], original.cpu_cores);
+        assert_eq!(parsed["recommendedModels"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_hardware_info_min_values() {
+        let info = HardwareInfo {
+            tier: "".to_string(),
+            tier_description: "".to_string(),
+            cpu_brand: "".to_string(),
+            cpu_cores: 0,
+            ram_gb: 0,
+            has_ssd: false,
+            architecture: "".to_string(),
+            is_sbc: false,
+            cpu_year: None,
+            recommended_models: vec![],
+            expected_response_time: (0, 0),
+            capabilities: vec![],
+            limitations: vec![],
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"cpuCores\":0"));
+        assert!(json.contains("\"ramGb\":0"));
+    }
+
+    #[test]
+    fn test_hardware_info_max_values() {
+        let info = HardwareInfo {
+            tier: "UltraMax".to_string(),
+            tier_description: "Maximum performance".to_string(),
+            cpu_brand: "Theoretical Max CPU".to_string(),
+            cpu_cores: usize::MAX,
+            ram_gb: usize::MAX,
+            has_ssd: true,
+            architecture: "FUTURE".to_string(),
+            is_sbc: false,
+            cpu_year: Some(u32::MAX),
+            recommended_models: vec!["model".to_string(); 100],
+            expected_response_time: (u32::MAX, u32::MAX),
+            capabilities: vec!["cap".to_string(); 50],
+            limitations: vec![],
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("UltraMax"));
+        // Should handle large values without panicking
+    }
 }

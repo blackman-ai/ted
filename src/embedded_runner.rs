@@ -2315,4 +2315,717 @@ I will read the file.
         let (name, _) = parse_tool_from_json(&value).unwrap();
         assert_eq!(name, "file_write");
     }
+
+    // ==================== Additional comprehensive tests ====================
+
+    // ===== HashSet-based tool call deduplication tests =====
+
+    #[test]
+    fn test_tool_call_key_for_hashset() {
+        use std::collections::HashSet;
+
+        let mut seen: HashSet<String> = HashSet::new();
+
+        let key1 = tool_call_key("file_read", &json!({"path": "/a.txt"}));
+        let key2 = tool_call_key("file_read", &json!({"path": "/a.txt"}));
+        let key3 = tool_call_key("file_read", &json!({"path": "/b.txt"}));
+
+        seen.insert(key1.clone());
+
+        assert!(seen.contains(&key2)); // Same tool+args = same key
+        assert!(!seen.contains(&key3)); // Different args = different key
+    }
+
+    #[test]
+    fn test_consecutive_repeat_detection() {
+        use std::collections::HashSet;
+
+        let current: HashSet<String> = [
+            tool_call_key("file_read", &json!({"path": "/a.txt"})),
+            tool_call_key("file_read", &json!({"path": "/b.txt"})),
+        ]
+        .into_iter()
+        .collect();
+
+        let previous: HashSet<String> = [
+            tool_call_key("file_read", &json!({"path": "/a.txt"})),
+            tool_call_key("file_read", &json!({"path": "/b.txt"})),
+        ]
+        .into_iter()
+        .collect();
+
+        // All current calls were in previous = repeated
+        let all_repeated = !current.is_empty() && current.iter().all(|k| previous.contains(k));
+
+        assert!(all_repeated);
+    }
+
+    #[test]
+    fn test_non_consecutive_repeat_detection() {
+        use std::collections::HashSet;
+
+        let current: HashSet<String> = [tool_call_key("file_read", &json!({"path": "/c.txt"}))]
+            .into_iter()
+            .collect();
+
+        let previous: HashSet<String> = [tool_call_key("file_read", &json!({"path": "/a.txt"}))]
+            .into_iter()
+            .collect();
+
+        let all_repeated = !current.is_empty() && current.iter().all(|k| previous.contains(k));
+
+        assert!(!all_repeated);
+    }
+
+    // ===== More parse_tool_from_json edge cases =====
+
+    #[test]
+    fn test_parse_tool_from_json_array_input() {
+        // Test that array input doesn't crash
+        let value = json!(["not", "an", "object"]);
+        assert!(parse_tool_from_json(&value).is_none());
+    }
+
+    #[test]
+    fn test_parse_tool_from_json_number_input() {
+        let value = json!(42);
+        assert!(parse_tool_from_json(&value).is_none());
+    }
+
+    #[test]
+    fn test_parse_tool_from_json_bool_input() {
+        let value = json!(true);
+        assert!(parse_tool_from_json(&value).is_none());
+    }
+
+    #[test]
+    fn test_parse_tool_from_json_null_input() {
+        let value = json!(null);
+        assert!(parse_tool_from_json(&value).is_none());
+    }
+
+    #[test]
+    fn test_parse_tool_from_json_name_as_number() {
+        let value = json!({"name": 123, "arguments": {"path": "/test"}});
+        assert!(parse_tool_from_json(&value).is_none());
+    }
+
+    #[test]
+    fn test_parse_tool_from_json_arguments_as_array() {
+        let value = json!({"name": "file_read", "arguments": [1, 2, 3]});
+        // Should still work - arguments is just passed through
+        let result = parse_tool_from_json(&value);
+        assert!(result.is_some());
+        let (name, args) = result.unwrap();
+        assert_eq!(name, "file_read");
+        assert!(args.is_array());
+    }
+
+    // ===== extract_json_objects_by_braces edge cases =====
+
+    #[test]
+    fn test_extract_json_objects_by_braces_only_opening_brace() {
+        let text = "Here is some text with just {";
+        let tools = extract_json_objects_by_braces(text);
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_extract_json_objects_by_braces_only_closing_brace() {
+        let text = "Here is some text with just }";
+        let tools = extract_json_objects_by_braces(text);
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_extract_json_objects_by_braces_mismatched_braces() {
+        let text = "{{{{}}";
+        let tools = extract_json_objects_by_braces(text);
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_extract_json_objects_by_braces_string_with_braces() {
+        // JSON with braces inside strings should be handled correctly
+        let text = r#"{"name": "test", "arguments": {"pattern": "{.*}"}}"#;
+        let tools = extract_json_objects_by_braces(text);
+        // This is valid JSON that DOES match our tool format (has name + arguments)
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].0, "test");
+    }
+
+    #[test]
+    fn test_extract_json_objects_by_braces_multiple_nested_levels() {
+        let text = r#"{"name": "shell", "arguments": {"cmd": {"inner": {"deep": "value"}}}}"#;
+        let tools = extract_json_objects_by_braces(text);
+        // Should find the outer object
+        assert_eq!(tools.len(), 1);
+    }
+
+    // ===== map_file_edit_arguments more variations =====
+
+    #[test]
+    fn test_map_file_edit_arguments_old_new_keywords() {
+        let args = json!({"path": "/test.txt", "old": "before", "new": "after"});
+        let mapped = map_file_edit_arguments(&args);
+        assert_eq!(mapped["old_string"], "before");
+        assert_eq!(mapped["new_string"], "after");
+    }
+
+    #[test]
+    fn test_map_file_edit_arguments_camel_case_content() {
+        let args = json!({"path": "/test.txt", "oldContent": "old", "newContent": "new"});
+        let mapped = map_file_edit_arguments(&args);
+        assert_eq!(mapped["old_string"], "old");
+        assert_eq!(mapped["new_string"], "new");
+    }
+
+    #[test]
+    fn test_map_file_edit_arguments_pattern_keyword() {
+        let args = json!({"path": "/test.txt", "pattern": "find this", "replacement": "with this"});
+        let mapped = map_file_edit_arguments(&args);
+        assert_eq!(mapped["old_string"], "find this");
+        assert_eq!(mapped["new_string"], "with this");
+    }
+
+    // ===== extract_history_messages with various content types =====
+
+    #[test]
+    fn test_extract_history_messages_with_tool_result() {
+        let msg = Message {
+            id: uuid::Uuid::new_v4(),
+            role: Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "call_123".to_string(),
+                content: crate::llm::message::ToolResultContent::Text("File contents".to_string()),
+                is_error: None,
+            }]),
+            timestamp: chrono::Utc::now(),
+            tool_use_id: None,
+            token_count: None,
+        };
+        let history = extract_history_messages(&[msg]);
+
+        // ToolResult blocks are not extracted as text
+        assert!(history.is_empty());
+    }
+
+    #[test]
+    fn test_extract_history_messages_multiline_content() {
+        let messages = vec![Message::user("Line 1\nLine 2\nLine 3")];
+        let history = extract_history_messages(&messages);
+
+        assert_eq!(history.len(), 1);
+        assert!(history[0].content.contains('\n'));
+        assert!(history[0].content.contains("Line 2"));
+    }
+
+    #[test]
+    fn test_extract_history_messages_unicode_content() {
+        let messages = vec![Message::user("日本語 テスト 🎉 émojis")];
+        let history = extract_history_messages(&messages);
+
+        assert_eq!(history.len(), 1);
+        assert!(history[0].content.contains("日本語"));
+        assert!(history[0].content.contains("🎉"));
+    }
+
+    #[test]
+    fn test_extract_history_messages_stop_in_middle() {
+        // STOP! prefix should be at the start to be filtered
+        let messages = vec![Message::user("This message has STOP! in the middle")];
+        let history = extract_history_messages(&messages);
+
+        // This should NOT be filtered because STOP! is not at the start
+        assert_eq!(history.len(), 1);
+    }
+
+    #[test]
+    fn test_extract_history_messages_whitespace_only() {
+        // Whitespace-only content is NOT empty, so it should be included
+        let messages = vec![Message::user("   ")];
+        let history = extract_history_messages(&messages);
+
+        assert_eq!(history.len(), 1);
+    }
+
+    // ===== HistoryMessage round-trip tests =====
+
+    #[test]
+    fn test_history_message_json_roundtrip() {
+        let original = HistoryMessage {
+            role: "assistant".to_string(),
+            content: "Hello with \"quotes\" and\nnewlines".to_string(),
+        };
+
+        let json = serde_json::to_string(&original).unwrap();
+        let restored: HistoryMessage = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.role, original.role);
+        assert_eq!(restored.content, original.content);
+    }
+
+    #[test]
+    fn test_history_message_array_roundtrip() {
+        let messages = vec![
+            HistoryMessage {
+                role: "user".to_string(),
+                content: "Q1".to_string(),
+            },
+            HistoryMessage {
+                role: "assistant".to_string(),
+                content: "A1".to_string(),
+            },
+            HistoryMessage {
+                role: "user".to_string(),
+                content: "Q2".to_string(),
+            },
+        ];
+
+        let json = serde_json::to_string(&messages).unwrap();
+        let restored: Vec<HistoryMessage> = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.len(), 3);
+        assert_eq!(restored[0].content, "Q1");
+        assert_eq!(restored[2].content, "Q2");
+    }
+
+    // ===== Additional extract_json_tool_calls tests =====
+
+    #[test]
+    fn test_extract_json_tool_calls_nested_code_blocks() {
+        // Code block inside a code block shouldn't confuse the parser
+        let text = r#"```json
+{"name": "file_write", "arguments": {"path": "/test.md", "content": "```python\nprint('hello')\n```"}}
+```"#;
+        let tools = extract_json_tool_calls(text);
+        // This may or may not parse depending on escaping
+        // The important thing is it doesn't panic
+        assert!(tools.len() <= 1);
+    }
+
+    #[test]
+    fn test_extract_json_tool_calls_with_thinking_text() {
+        let text = r#"Let me think about this...
+
+I need to read the file to understand the context.
+
+```json
+{"name": "file_read", "arguments": {"path": "/src/main.rs"}}
+```
+
+After reading, I'll make the necessary changes."#;
+
+        let tools = extract_json_tool_calls(text);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].0, "file_read");
+    }
+
+    #[test]
+    fn test_extract_json_tool_calls_consecutive_blocks() {
+        let text = r#"```json
+{"name": "file_read", "arguments": {"path": "/a.txt"}}
+```
+```json
+{"name": "file_read", "arguments": {"path": "/b.txt"}}
+```"#;
+        let tools = extract_json_tool_calls(text);
+        assert_eq!(tools.len(), 2);
+    }
+
+    // ===== map functions with null/missing values =====
+
+    #[test]
+    fn test_map_file_read_arguments_null_values() {
+        let args = json!({"path": null});
+        let mapped = map_file_read_arguments(&args);
+        // null should be preserved
+        assert!(mapped["path"].is_null());
+    }
+
+    #[test]
+    fn test_map_file_write_arguments_empty_object() {
+        let args = json!({});
+        let mapped = map_file_write_arguments(&args);
+        assert!(mapped.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_map_shell_arguments_empty_object() {
+        let args = json!({});
+        let mapped = map_shell_arguments(&args);
+        assert!(mapped.as_object().unwrap().is_empty());
+    }
+
+    // ===== Tool name normalization edge cases =====
+
+    #[test]
+    fn test_parse_tool_from_json_case_sensitivity() {
+        // Tool names should be matched case-sensitively
+        let value = json!({"name": "FILE_READ", "arguments": {"path": "/test"}});
+        let (name, _) = parse_tool_from_json(&value).unwrap();
+        // FILE_READ doesn't match any of our mappings, so it's passed through
+        assert_eq!(name, "FILE_READ");
+    }
+
+    #[test]
+    fn test_parse_tool_from_json_with_extra_fields() {
+        let value = json!({
+            "name": "file_read",
+            "arguments": {"path": "/test"},
+            "id": "some_id",
+            "metadata": {"foo": "bar"}
+        });
+        let result = parse_tool_from_json(&value);
+        assert!(result.is_some());
+        let (name, _) = result.unwrap();
+        assert_eq!(name, "file_read");
+    }
+
+    // ===== Message creation helper tests =====
+
+    #[test]
+    fn test_message_user_creation() {
+        let msg = Message::user("Hello");
+        assert!(matches!(msg.role, Role::User));
+
+        if let MessageContent::Text(text) = &msg.content {
+            assert_eq!(text, "Hello");
+        } else {
+            panic!("Expected Text content");
+        }
+    }
+
+    #[test]
+    fn test_message_assistant_creation() {
+        let msg = Message::assistant("Hi there");
+        assert!(matches!(msg.role, Role::Assistant));
+    }
+
+    #[test]
+    fn test_message_system_creation() {
+        let msg = Message::system("You are helpful");
+        assert!(matches!(msg.role, Role::System));
+    }
+
+    #[test]
+    fn test_message_assistant_blocks_creation() {
+        let blocks = vec![ContentBlock::Text {
+            text: "Test".to_string(),
+        }];
+        let msg = Message::assistant_blocks(blocks);
+        assert!(matches!(msg.role, Role::Assistant));
+
+        if let MessageContent::Blocks(b) = &msg.content {
+            assert_eq!(b.len(), 1);
+        } else {
+            panic!("Expected Blocks content");
+        }
+    }
+
+    // ===== Timestamp and ID tests =====
+
+    #[test]
+    fn test_message_has_unique_id() {
+        let msg1 = Message::user("A");
+        let msg2 = Message::user("A");
+
+        assert_ne!(msg1.id, msg2.id);
+    }
+
+    #[test]
+    fn test_message_has_timestamp() {
+        let before = chrono::Utc::now();
+        let msg = Message::user("Test");
+        let after = chrono::Utc::now();
+
+        assert!(msg.timestamp >= before);
+        assert!(msg.timestamp <= after);
+    }
+
+    // ===== map_file_edit_arguments edge cases =====
+
+    #[test]
+    fn test_map_file_edit_arguments_non_object() {
+        // When args is not an object, return it unchanged
+        let args = json!("just a string");
+        let mapped = map_file_edit_arguments(&args);
+        assert_eq!(mapped, json!("just a string"));
+    }
+
+    #[test]
+    fn test_map_file_edit_arguments_array_input() {
+        let args = json!([1, 2, 3]);
+        let mapped = map_file_edit_arguments(&args);
+        assert_eq!(mapped, json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn test_map_file_edit_arguments_null_input() {
+        let args = json!(null);
+        let mapped = map_file_edit_arguments(&args);
+        assert!(mapped.is_null());
+    }
+
+    #[test]
+    fn test_map_file_edit_arguments_number_input() {
+        let args = json!(42);
+        let mapped = map_file_edit_arguments(&args);
+        assert_eq!(mapped, json!(42));
+    }
+
+    #[test]
+    fn test_map_file_edit_arguments_array_old_string() {
+        // Test array values for old_string - should be joined with newlines
+        let args = json!({
+            "old_string": ["line 1", "line 2", "line 3"],
+            "new_string": "replacement"
+        });
+        let mapped = map_file_edit_arguments(&args);
+        assert_eq!(mapped["old_string"], "line 1\nline 2\nline 3");
+        assert_eq!(mapped["new_string"], "replacement");
+    }
+
+    #[test]
+    fn test_map_file_edit_arguments_array_new_string() {
+        // Test array values for new_string - should be joined with newlines
+        let args = json!({
+            "old_string": "original",
+            "new_string": ["new line 1", "new line 2"]
+        });
+        let mapped = map_file_edit_arguments(&args);
+        assert_eq!(mapped["old_string"], "original");
+        assert_eq!(mapped["new_string"], "new line 1\nnew line 2");
+    }
+
+    #[test]
+    fn test_map_file_edit_arguments_both_arrays() {
+        let args = json!({
+            "old": ["a", "b"],
+            "new": ["c", "d"]
+        });
+        let mapped = map_file_edit_arguments(&args);
+        assert_eq!(mapped["old_string"], "a\nb");
+        assert_eq!(mapped["new_string"], "c\nd");
+    }
+
+    #[test]
+    fn test_map_file_edit_arguments_array_with_non_strings() {
+        // Array with non-string elements should filter them out
+        let args = json!({
+            "old_string": ["line 1", 42, "line 2", null, "line 3"]
+        });
+        let mapped = map_file_edit_arguments(&args);
+        assert_eq!(mapped["old_string"], "line 1\nline 2\nline 3");
+    }
+
+    #[test]
+    fn test_map_file_edit_arguments_empty_array_both_fields() {
+        let args = json!({
+            "old_string": [],
+            "new_string": []
+        });
+        let mapped = map_file_edit_arguments(&args);
+        assert_eq!(mapped["old_string"], "");
+        assert_eq!(mapped["new_string"], "");
+    }
+
+    #[test]
+    fn test_map_file_edit_arguments_unknown_key() {
+        // Unknown keys should be passed through unchanged
+        let args = json!({
+            "unknown_key": "value",
+            "old_string": "old"
+        });
+        let mapped = map_file_edit_arguments(&args);
+        assert_eq!(mapped["unknown_key"], "value");
+        assert_eq!(mapped["old_string"], "old");
+    }
+
+    #[test]
+    fn test_map_file_edit_arguments_all_aliases() {
+        // Test all old_string aliases
+        for alias in [
+            "old_text",
+            "oldText",
+            "old_content",
+            "oldContent",
+            "find",
+            "search",
+            "original",
+            "old",
+            "before",
+            "pattern",
+            "target",
+            "match",
+        ] {
+            let args = json!({ alias: "test_value" });
+            let mapped = map_file_edit_arguments(&args);
+            assert_eq!(
+                mapped["old_string"], "test_value",
+                "Failed for alias: {}",
+                alias
+            );
+        }
+
+        // Test all new_string aliases
+        for alias in [
+            "new_text",
+            "newText",
+            "new_content",
+            "newContent",
+            "replace",
+            "replacement",
+            "modified",
+            "new",
+            "after",
+            "content",
+            "updated",
+            "with",
+        ] {
+            let args = json!({ alias: "test_value" });
+            let mapped = map_file_edit_arguments(&args);
+            assert_eq!(
+                mapped["new_string"], "test_value",
+                "Failed for alias: {}",
+                alias
+            );
+        }
+
+        // Test all path aliases
+        for alias in ["file", "file_path", "filepath", "filename", "file_name"] {
+            let args = json!({ alias: "/test/path" });
+            let mapped = map_file_edit_arguments(&args);
+            assert_eq!(mapped["path"], "/test/path", "Failed for alias: {}", alias);
+        }
+    }
+
+    // ===== map_file_read_arguments edge cases =====
+
+    #[test]
+    fn test_map_file_read_arguments_string_passthrough() {
+        let args = json!("string value");
+        let mapped = map_file_read_arguments(&args);
+        assert_eq!(mapped, json!("string value"));
+    }
+
+    #[test]
+    fn test_map_file_read_arguments_array() {
+        let args = json!([1, 2, 3]);
+        let mapped = map_file_read_arguments(&args);
+        assert_eq!(mapped, json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn test_map_file_read_arguments_all_aliases() {
+        for alias in [
+            "file",
+            "file_path",
+            "filepath",
+            "filename",
+            "name",
+            "file_name",
+        ] {
+            let args = json!({ alias: "/test/path" });
+            let mapped = map_file_read_arguments(&args);
+            assert_eq!(mapped["path"], "/test/path", "Failed for alias: {}", alias);
+        }
+    }
+
+    #[test]
+    fn test_map_file_read_arguments_preserves_unknown() {
+        let args = json!({
+            "path": "/test",
+            "unknown": "value"
+        });
+        let mapped = map_file_read_arguments(&args);
+        assert_eq!(mapped["path"], "/test");
+        assert_eq!(mapped["unknown"], "value");
+    }
+
+    // ===== map_file_write_arguments edge cases =====
+
+    #[test]
+    fn test_map_file_write_arguments_non_object() {
+        let args = json!(123);
+        let mapped = map_file_write_arguments(&args);
+        assert_eq!(mapped, json!(123));
+    }
+
+    #[test]
+    fn test_map_file_write_arguments_array() {
+        let args = json!(["a", "b"]);
+        let mapped = map_file_write_arguments(&args);
+        assert_eq!(mapped, json!(["a", "b"]));
+    }
+
+    #[test]
+    fn test_map_file_write_arguments_all_aliases() {
+        // Test path aliases
+        for alias in [
+            "file",
+            "file_path",
+            "filepath",
+            "filename",
+            "name",
+            "file_name",
+        ] {
+            let args = json!({ alias: "/test/path" });
+            let mapped = map_file_write_arguments(&args);
+            assert_eq!(
+                mapped["path"], "/test/path",
+                "Failed for path alias: {}",
+                alias
+            );
+        }
+
+        // Test content aliases
+        for alias in ["text", "data", "contents", "file_content", "code", "body"] {
+            let args = json!({ alias: "test content" });
+            let mapped = map_file_write_arguments(&args);
+            assert_eq!(
+                mapped["content"], "test content",
+                "Failed for content alias: {}",
+                alias
+            );
+        }
+    }
+
+    // ===== map_shell_arguments edge cases =====
+
+    #[test]
+    fn test_map_shell_arguments_boolean_passthrough() {
+        let args = json!(true);
+        let mapped = map_shell_arguments(&args);
+        assert_eq!(mapped, json!(true));
+    }
+
+    #[test]
+    fn test_map_shell_arguments_array() {
+        let args = json!(["cmd1", "cmd2"]);
+        let mapped = map_shell_arguments(&args);
+        assert_eq!(mapped, json!(["cmd1", "cmd2"]));
+    }
+
+    #[test]
+    fn test_map_shell_arguments_all_aliases() {
+        for alias in ["cmd", "shell_command", "bash", "exec", "run"] {
+            let args = json!({ alias: "ls -la" });
+            let mapped = map_shell_arguments(&args);
+            assert_eq!(mapped["command"], "ls -la", "Failed for alias: {}", alias);
+        }
+    }
+
+    #[test]
+    fn test_map_shell_arguments_preserves_unknown() {
+        let args = json!({
+            "command": "ls",
+            "timeout": 30,
+            "working_dir": "/tmp"
+        });
+        let mapped = map_shell_arguments(&args);
+        assert_eq!(mapped["command"], "ls");
+        assert_eq!(mapped["timeout"], 30);
+        assert_eq!(mapped["working_dir"], "/tmp");
+    }
 }

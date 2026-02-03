@@ -607,4 +607,186 @@ mod tests {
         assert_eq!(stats.total_tokens, 500);
         assert_eq!(stats.storage_bytes, 1024);
     }
+
+    // ===== Additional Coverage Tests =====
+
+    #[tokio::test]
+    async fn test_context_manager_project_root() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = ContextManager::new_session(temp_dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        // Initially no project root
+        assert!(manager.project_root().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_context_manager_set_project_root_no_tree() {
+        let temp_dir = TempDir::new().unwrap();
+        let project_dir = TempDir::new().unwrap();
+
+        let mut manager = ContextManager::new_session(temp_dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        // Set project root without generating tree
+        manager
+            .set_project_root(project_dir.path().to_path_buf(), false)
+            .await
+            .unwrap();
+
+        assert!(manager.project_root().is_some());
+        assert_eq!(
+            manager.project_root().unwrap(),
+            &project_dir.path().to_path_buf()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_context_manager_has_file_tree_false() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = ContextManager::new_session(temp_dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        // No file tree initially
+        assert!(!manager.has_file_tree().await);
+    }
+
+    #[tokio::test]
+    async fn test_context_manager_file_tree_context_none() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = ContextManager::new_session(temp_dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        // No file tree context initially
+        assert!(manager.file_tree_context().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_context_manager_set_project_root_with_tree() {
+        let temp_dir = TempDir::new().unwrap();
+        let project_dir = TempDir::new().unwrap();
+
+        // Create some files in the project directory
+        std::fs::write(project_dir.path().join("main.rs"), "fn main() {}").unwrap();
+        std::fs::create_dir(project_dir.path().join("src")).unwrap();
+        std::fs::write(project_dir.path().join("src/lib.rs"), "// lib").unwrap();
+
+        let mut manager = ContextManager::new_session(temp_dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        // Set project root with tree generation
+        manager
+            .set_project_root(project_dir.path().to_path_buf(), true)
+            .await
+            .unwrap();
+
+        assert!(manager.has_file_tree().await);
+        let context = manager.file_tree_context().await;
+        assert!(context.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_context_manager_refresh_file_tree() {
+        let temp_dir = TempDir::new().unwrap();
+        let project_dir = TempDir::new().unwrap();
+
+        // Create a file
+        std::fs::write(project_dir.path().join("test.rs"), "// test").unwrap();
+
+        let mut manager = ContextManager::new_session(temp_dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        // Set project root without generating tree
+        manager
+            .set_project_root(project_dir.path().to_path_buf(), false)
+            .await
+            .unwrap();
+
+        assert!(!manager.has_file_tree().await);
+
+        // Now refresh the tree
+        manager.refresh_file_tree().await.unwrap();
+
+        assert!(manager.has_file_tree().await);
+    }
+
+    #[tokio::test]
+    async fn test_context_manager_refresh_file_tree_no_project_root() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = ContextManager::new_session(temp_dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        // Refresh without project root should succeed but do nothing
+        manager.refresh_file_tree().await.unwrap();
+        assert!(!manager.has_file_tree().await);
+    }
+
+    #[test]
+    fn test_context_stats_clone() {
+        let stats = ContextStats {
+            session_id: "test".to_string(),
+            total_chunks: 5,
+            hot_chunks: 2,
+            warm_chunks: 2,
+            cold_chunks: 1,
+            total_tokens: 100,
+            storage_bytes: 512,
+        };
+
+        let cloned = stats.clone();
+        assert_eq!(cloned.session_id, stats.session_id);
+        assert_eq!(cloned.total_chunks, stats.total_chunks);
+    }
+
+    #[test]
+    fn test_context_stats_debug() {
+        let stats = ContextStats {
+            session_id: "debug-test".to_string(),
+            total_chunks: 1,
+            hot_chunks: 1,
+            warm_chunks: 0,
+            cold_chunks: 0,
+            total_tokens: 10,
+            storage_bytes: 100,
+        };
+
+        let debug_str = format!("{:?}", stats);
+        assert!(debug_str.contains("ContextStats"));
+        assert!(debug_str.contains("debug-test"));
+    }
+
+    #[test]
+    fn test_session_id_clone() {
+        let id = SessionId::new();
+        let cloned = id.clone();
+        assert_eq!(id, cloned);
+    }
+
+    #[test]
+    fn test_session_id_hash() {
+        use std::collections::HashSet;
+        let id1 = SessionId::new();
+        let id2 = SessionId::new();
+
+        let mut set = HashSet::new();
+        set.insert(id1.clone());
+        set.insert(id2.clone());
+        set.insert(id1.clone()); // Duplicate
+
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn test_session_id_debug() {
+        let id = SessionId::new();
+        let debug_str = format!("{:?}", id);
+        assert!(debug_str.contains("SessionId"));
+    }
 }

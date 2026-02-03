@@ -485,4 +485,307 @@ mod tests {
             );
         }
     }
+
+    // ===== Additional recommended_models Tests =====
+
+    #[test]
+    fn test_recommended_models_ancient() {
+        let models = HardwareTier::Ancient.recommended_models();
+        assert!(!models.is_empty());
+        assert!(models.contains(&"qwen2.5-coder:1.5b"));
+        assert!(models.contains(&"phi-3-mini"));
+    }
+
+    #[test]
+    fn test_recommended_models_tiny() {
+        let models = HardwareTier::Tiny.recommended_models();
+        assert!(!models.is_empty());
+        assert!(models.contains(&"qwen2.5-coder:1.5b"));
+    }
+
+    #[test]
+    fn test_recommended_models_medium() {
+        let models = HardwareTier::Medium.recommended_models();
+        assert!(!models.is_empty());
+        assert!(models.contains(&"qwen2.5-coder:7b"));
+        assert!(models.contains(&"deepseek-coder:6.7b"));
+    }
+
+    #[test]
+    fn test_recommended_models_large() {
+        let models = HardwareTier::Large.recommended_models();
+        assert!(!models.is_empty());
+        assert!(models.contains(&"qwen2.5-coder:14b"));
+        assert!(models.contains(&"codellama:34b"));
+    }
+
+    #[test]
+    fn test_recommended_models_cloud_has_many() {
+        let models = HardwareTier::Cloud.recommended_models();
+        assert!(models.len() >= 4);
+        assert!(models.contains(&"gpt-4o"));
+        assert!(models.contains(&"deepseek-coder-v2"));
+        assert!(models.contains(&"qwen2.5-coder:72b"));
+    }
+
+    // ===== Additional expected_response_time Tests =====
+
+    #[test]
+    fn test_expected_response_time_ancient() {
+        let (min, max) = HardwareTier::Ancient.expected_response_time();
+        assert_eq!(min, 30);
+        assert_eq!(max, 60);
+    }
+
+    #[test]
+    fn test_expected_response_time_tiny() {
+        let (min, max) = HardwareTier::Tiny.expected_response_time();
+        assert_eq!(min, 15);
+        assert_eq!(max, 30);
+    }
+
+    #[test]
+    fn test_expected_response_time_small() {
+        let (min, max) = HardwareTier::Small.expected_response_time();
+        assert_eq!(min, 10);
+        assert_eq!(max, 20);
+    }
+
+    #[test]
+    fn test_expected_response_time_medium() {
+        let (min, max) = HardwareTier::Medium.expected_response_time();
+        assert_eq!(min, 5);
+        assert_eq!(max, 10);
+    }
+
+    #[test]
+    fn test_expected_response_time_large() {
+        let (min, max) = HardwareTier::Large.expected_response_time();
+        assert_eq!(min, 2);
+        assert_eq!(max, 5);
+    }
+
+    // ===== Additional capabilities Tests =====
+
+    #[test]
+    fn test_capabilities_ancient() {
+        let caps = HardwareTier::Ancient.capabilities();
+        assert!(!caps.is_empty());
+        assert!(caps.contains(&"Blogs"));
+        assert!(caps.contains(&"Portfolios"));
+        assert!(caps.contains(&"Simple tools"));
+    }
+
+    #[test]
+    fn test_capabilities_tiny() {
+        let caps = HardwareTier::Tiny.capabilities();
+        assert!(!caps.is_empty());
+        assert!(caps.contains(&"Small business sites"));
+        assert!(caps.contains(&"Multi-page apps"));
+    }
+
+    #[test]
+    fn test_capabilities_small() {
+        let caps = HardwareTier::Small.capabilities();
+        assert!(!caps.is_empty());
+        assert!(caps.contains(&"Full-stack apps"));
+        assert!(caps.contains(&"REST APIs"));
+    }
+
+    #[test]
+    fn test_capabilities_medium() {
+        let caps = HardwareTier::Medium.capabilities();
+        assert!(!caps.is_empty());
+        assert!(caps.contains(&"Complex applications"));
+        assert!(caps.contains(&"Microservices"));
+    }
+
+    #[test]
+    fn test_capabilities_large() {
+        let caps = HardwareTier::Large.capabilities();
+        assert!(!caps.is_empty());
+        assert!(caps.contains(&"Enterprise software"));
+        assert!(caps.contains(&"Any project type"));
+    }
+
+    // ===== Additional limitations Tests =====
+
+    #[test]
+    fn test_limitations_ancient() {
+        let limits = HardwareTier::Ancient.limitations();
+        assert!(!limits.is_empty());
+        assert!(limits.contains(&"Complex multi-page apps"));
+        assert!(limits.contains(&"7b+ models"));
+    }
+
+    #[test]
+    fn test_limitations_tiny() {
+        let limits = HardwareTier::Tiny.limitations();
+        assert!(!limits.is_empty());
+        assert!(limits.contains(&"Enterprise software"));
+        assert!(limits.contains(&"14b+ models"));
+    }
+
+    #[test]
+    fn test_limitations_small() {
+        let limits = HardwareTier::Small.limitations();
+        assert!(!limits.is_empty());
+        assert!(limits.contains(&"Massive codebases"));
+        assert!(limits.contains(&"34b+ models"));
+    }
+
+    #[test]
+    fn test_limitations_medium() {
+        let limits = HardwareTier::Medium.limitations();
+        assert!(!limits.is_empty());
+        assert!(limits.contains(&"Extremely large models (70b+)"));
+    }
+
+    #[test]
+    fn test_limitations_large() {
+        let limits = HardwareTier::Large.limitations();
+        assert!(!limits.is_empty());
+        assert!(limits.contains(&"None (hardware-wise)"));
+    }
+
+    // ===== Clone and Copy Tests =====
+
+    #[test]
+    fn test_hardware_tier_clone() {
+        let tier = HardwareTier::Medium;
+        let cloned = tier;
+        assert_eq!(tier, cloned);
+    }
+
+    #[test]
+    fn test_hardware_tier_copy() {
+        let tier = HardwareTier::Large;
+        let copied = tier;
+        assert_eq!(tier, copied);
+    }
+
+    // ===== Equality Tests =====
+
+    #[test]
+    fn test_hardware_tier_eq() {
+        assert_eq!(HardwareTier::Cloud, HardwareTier::Cloud);
+        assert_ne!(HardwareTier::Cloud, HardwareTier::UltraTiny);
+    }
+
+    // ===== Debug Tests =====
+
+    #[test]
+    fn test_hardware_tier_debug() {
+        let debug_str = format!("{:?}", HardwareTier::Medium);
+        assert!(debug_str.contains("Medium"));
+    }
+
+    // ===== All Tiers Tests =====
+
+    #[test]
+    fn test_all_tiers_have_capabilities() {
+        let tiers = [
+            HardwareTier::UltraTiny,
+            HardwareTier::Ancient,
+            HardwareTier::Tiny,
+            HardwareTier::Small,
+            HardwareTier::Medium,
+            HardwareTier::Large,
+            HardwareTier::Cloud,
+        ];
+
+        for tier in tiers {
+            assert!(
+                !tier.capabilities().is_empty(),
+                "Tier {:?} should have capabilities",
+                tier
+            );
+        }
+    }
+
+    #[test]
+    fn test_all_tiers_have_limitations() {
+        let tiers = [
+            HardwareTier::UltraTiny,
+            HardwareTier::Ancient,
+            HardwareTier::Tiny,
+            HardwareTier::Small,
+            HardwareTier::Medium,
+            HardwareTier::Large,
+            HardwareTier::Cloud,
+        ];
+
+        for tier in tiers {
+            assert!(
+                !tier.limitations().is_empty(),
+                "Tier {:?} should have limitations",
+                tier
+            );
+        }
+    }
+
+    #[test]
+    fn test_all_tiers_have_description() {
+        let tiers = [
+            HardwareTier::UltraTiny,
+            HardwareTier::Ancient,
+            HardwareTier::Tiny,
+            HardwareTier::Small,
+            HardwareTier::Medium,
+            HardwareTier::Large,
+            HardwareTier::Cloud,
+        ];
+
+        for tier in tiers {
+            assert!(
+                !tier.description().is_empty(),
+                "Tier {:?} should have description",
+                tier
+            );
+        }
+    }
+
+    #[test]
+    fn test_all_tiers_have_recommended_models() {
+        let tiers = [
+            HardwareTier::UltraTiny,
+            HardwareTier::Ancient,
+            HardwareTier::Tiny,
+            HardwareTier::Small,
+            HardwareTier::Medium,
+            HardwareTier::Large,
+            HardwareTier::Cloud,
+        ];
+
+        for tier in tiers {
+            assert!(
+                !tier.recommended_models().is_empty(),
+                "Tier {:?} should have models",
+                tier
+            );
+        }
+    }
+
+    #[test]
+    fn test_all_tiers_have_valid_response_times() {
+        let tiers = [
+            HardwareTier::UltraTiny,
+            HardwareTier::Ancient,
+            HardwareTier::Tiny,
+            HardwareTier::Small,
+            HardwareTier::Medium,
+            HardwareTier::Large,
+            HardwareTier::Cloud,
+        ];
+
+        for tier in tiers {
+            let (min, max) = tier.expected_response_time();
+            assert!(
+                min > 0,
+                "Min response time should be positive for {:?}",
+                tier
+            );
+            assert!(max >= min, "Max should be >= min for {:?}", tier);
+        }
+    }
 }

@@ -1315,4 +1315,67 @@ mod tests {
         assert_eq!(event.stream, "stdout");
         assert_eq!(event.text, "Hello");
     }
+
+    // ===== Additional coverage tests =====
+
+    #[test]
+    fn test_tool_context_emit_search_match() {
+        use crate::indexer::recall_channel;
+
+        let (sender, receiver) = recall_channel();
+        let context = ToolContext::new(
+            PathBuf::from("/project"),
+            Some(PathBuf::from("/project")),
+            uuid::Uuid::new_v4(),
+            false,
+        )
+        .with_recall_sender(sender);
+
+        context.emit_search_match(vec![
+            PathBuf::from("/project/src/main.rs"),
+            PathBuf::from("/project/src/lib.rs"),
+        ]);
+
+        let events = receiver.drain();
+        assert!(!events.is_empty());
+    }
+
+    #[test]
+    fn test_tool_context_emit_search_match_no_sender() {
+        let context = ToolContext::new(
+            PathBuf::from("/project"),
+            Some(PathBuf::from("/project")),
+            uuid::Uuid::new_v4(),
+            false,
+        );
+
+        // Should not panic without recall sender
+        context.emit_search_match(vec![PathBuf::from("/project/src/main.rs")]);
+    }
+
+    #[test]
+    fn test_tool_context_make_relative_no_project_root() {
+        let context = ToolContext::new(
+            PathBuf::from("/work/myproject"),
+            None, // No project root
+            uuid::Uuid::new_v4(),
+            false,
+        );
+
+        // Should strip working directory prefix
+        let relative = context.make_relative(std::path::Path::new("/work/myproject/src/main.rs"));
+        assert_eq!(relative, PathBuf::from("src/main.rs"));
+
+        // Non-matching paths stay as-is
+        let other = context.make_relative(std::path::Path::new("/other/file.rs"));
+        assert_eq!(other, PathBuf::from("/other/file.rs"));
+    }
+
+    #[test]
+    fn test_tool_registry_has_external_nonexistent() {
+        let registry = ToolRegistry::with_builtins();
+
+        // A nonexistent external tool should return false
+        assert!(!registry.has_external("nonexistent_external_tool_xyz"));
+    }
 }

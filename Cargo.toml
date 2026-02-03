@@ -97,3 +97,4 @@ serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
 proptest = "1.2"
 wiremock = "0.6"
+ratatui-testlib = "0.1"

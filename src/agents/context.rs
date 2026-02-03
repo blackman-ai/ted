@@ -437,4 +437,328 @@ mod tests {
         let system = ctx.conversation.system_prompt.as_ref().unwrap();
         assert!(system.contains("dependency injection"));
     }
+
+    // ===== Additional Agent Type Permission Tests =====
+
+    #[test]
+    fn test_agent_context_unknown_type_permissions() {
+        // Unknown agent types get default permissions (everything allowed when allowed set is empty)
+        let config = AgentConfig::new("unknown_type", "Some task", PathBuf::from("/project"));
+        let ctx = AgentContext::new(config);
+
+        // Unknown agent type has no type definition
+        assert!(ctx.agent_type_def.is_none());
+
+        // With default permissions (empty allowed/denied), everything is permitted
+        assert!(ctx.is_tool_allowed("file_read"));
+        assert!(ctx.is_tool_allowed("file_write"));
+        assert!(ctx.is_tool_allowed("shell"));
+        assert!(ctx.is_tool_allowed("any_custom_tool"));
+    }
+
+    #[test]
+    fn test_agent_context_explore_has_agent_type_def() {
+        let config = AgentConfig::new("explore", "Find files", PathBuf::from("/project"));
+        let ctx = AgentContext::new(config);
+
+        // Explore agent should have a type definition
+        assert!(ctx.agent_type_def.is_some());
+    }
+
+    #[test]
+    fn test_agent_context_implement_has_agent_type_def() {
+        let config = AgentConfig::new("implement", "Add feature", PathBuf::from("/project"));
+        let ctx = AgentContext::new(config);
+
+        // Implement agent should have a type definition
+        assert!(ctx.agent_type_def.is_some());
+    }
+
+    // ===== ToolPermissions Tests =====
+
+    #[test]
+    fn test_tool_permissions_default() {
+        let perms = ToolPermissions::default();
+        assert!(perms.allowed.is_empty());
+        assert!(perms.denied.is_empty());
+    }
+
+    #[test]
+    fn test_tool_permissions_allow() {
+        let perms = ToolPermissions::allow(&["tool1", "tool2"]);
+        assert!(perms.allowed.contains("tool1"));
+        assert!(perms.allowed.contains("tool2"));
+        assert!(!perms.allowed.contains("tool3"));
+    }
+
+    #[test]
+    fn test_tool_permissions_deny() {
+        let perms = ToolPermissions::deny(&["dangerous_tool"]);
+        assert!(perms.denied.contains("dangerous_tool"));
+    }
+
+    #[test]
+    fn test_tool_permissions_clone() {
+        let perms = ToolPermissions::allow(&["tool1"]);
+        let cloned = perms.clone();
+        assert!(cloned.allowed.contains("tool1"));
+    }
+
+    #[test]
+    fn test_tool_permissions_debug() {
+        let perms = ToolPermissions::allow(&["tool1"]);
+        let debug_str = format!("{:?}", perms);
+        assert!(debug_str.contains("tool1"));
+    }
+
+    // ===== Token Tracking Tests =====
+
+    #[test]
+    fn test_agent_context_tokens_used_initial() {
+        let config = AgentConfig::new("explore", "Find files", PathBuf::from("/project"));
+        let ctx = AgentContext::new(config);
+
+        assert_eq!(ctx.tokens_used(), 0);
+    }
+
+    // ===== Conversation Tests =====
+
+    #[test]
+    fn test_agent_context_conversation_not_empty() {
+        let config = AgentConfig::new("explore", "Find auth files", PathBuf::from("/project"));
+        let ctx = AgentContext::new(config);
+
+        // Conversation should have at least the task message
+        assert!(!ctx.conversation.is_empty());
+    }
+
+    #[test]
+    fn test_agent_context_conversation_has_system_prompt() {
+        let config = AgentConfig::new("explore", "Find files", PathBuf::from("/project"));
+        let ctx = AgentContext::new(config);
+
+        assert!(ctx.conversation.system_prompt.is_some());
+    }
+
+    // ===== Config Access Tests =====
+
+    #[test]
+    fn test_agent_context_config_access() {
+        let config = AgentConfig::new("implement", "Add feature", PathBuf::from("/my/project"))
+            .with_caps(vec!["rust".to_string()])
+            .with_skill("expertise".to_string());
+        let ctx = AgentContext::new(config);
+
+        assert_eq!(ctx.config.agent_type, "implement");
+        assert_eq!(ctx.config.task, "Add feature");
+        assert_eq!(ctx.config.working_dir, PathBuf::from("/my/project"));
+        assert_eq!(ctx.config.caps, vec!["rust".to_string()]);
+        assert_eq!(ctx.config.skill, Some("expertise".to_string()));
+    }
+
+    // ===== Iteration Edge Cases =====
+
+    #[test]
+    fn test_agent_context_max_iterations_zero() {
+        let config = AgentConfig::new("explore", "Find files", PathBuf::from("/project"))
+            .with_max_iterations(0);
+        let ctx = AgentContext::new(config);
+
+        // With max_iterations = 0, it should immediately exceed
+        assert!(ctx.exceeded_iterations());
+    }
+
+    #[test]
+    fn test_agent_context_max_iterations_one() {
+        let config = AgentConfig::new("explore", "Find files", PathBuf::from("/project"))
+            .with_max_iterations(1);
+        let mut ctx = AgentContext::new(config);
+
+        assert!(!ctx.exceeded_iterations());
+        ctx.increment_iteration();
+        assert!(ctx.exceeded_iterations());
+    }
+
+    // ===== Multiple Skill Instructions =====
+
+    #[test]
+    fn test_agent_context_multiple_skill_instructions() {
+        let config = AgentConfig::new("implement", "Add feature", PathBuf::from("/project"));
+        let mut ctx = AgentContext::new(config);
+
+        ctx.add_skill_instructions("First skill instruction.");
+        ctx.add_skill_instructions("Second skill instruction.");
+
+        let system = ctx.conversation.system_prompt.as_ref().unwrap();
+        assert!(system.contains("First skill"));
+        assert!(system.contains("Second skill"));
+    }
+
+    // ===== Permission Extension Edge Cases =====
+
+    #[test]
+    fn test_agent_context_extend_permissions_with_deny() {
+        let config = AgentConfig::new("implement", "Add feature", PathBuf::from("/project"));
+        let mut ctx = AgentContext::new(config);
+
+        // Implement should have shell access
+        assert!(ctx.is_tool_allowed("shell"));
+
+        // Deny shell access
+        ctx.extend_permissions(&ToolPermissions::deny(&["shell"]));
+
+        // Should now be denied
+        assert!(!ctx.is_tool_allowed("shell"));
+    }
+
+    #[test]
+    fn test_agent_context_extend_permissions_multiple_times() {
+        let config = AgentConfig::new("explore", "Find files", PathBuf::from("/project"));
+        let mut ctx = AgentContext::new(config);
+
+        ctx.extend_permissions(&ToolPermissions::allow(&["tool1"]));
+        ctx.extend_permissions(&ToolPermissions::allow(&["tool2"]));
+        ctx.extend_permissions(&ToolPermissions::allow(&["tool3"]));
+
+        assert!(ctx.is_tool_allowed("tool1"));
+        assert!(ctx.is_tool_allowed("tool2"));
+        assert!(ctx.is_tool_allowed("tool3"));
+    }
+
+    // ===== AgentContextBuilder Tests =====
+
+    #[tokio::test]
+    async fn test_agent_context_builder_minimal() {
+        let config = AgentConfig::new("explore", "Find files", PathBuf::from("/project"));
+        let ctx = AgentContextBuilder::new(config).build().await.unwrap();
+
+        assert_eq!(ctx.config.agent_type, "explore");
+        assert!(!ctx.conversation.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_agent_context_builder_with_skill_only() {
+        let config = AgentConfig::new("implement", "Add feature", PathBuf::from("/project"));
+        let ctx = AgentContextBuilder::new(config)
+            .with_skill("Use clean architecture.".to_string())
+            .build()
+            .await
+            .unwrap();
+
+        let system = ctx.conversation.system_prompt.as_ref().unwrap();
+        assert!(system.contains("clean architecture"));
+    }
+
+    #[tokio::test]
+    async fn test_agent_context_builder_with_permissions_only() {
+        let config = AgentConfig::new("explore", "Find files", PathBuf::from("/project"));
+        let ctx = AgentContextBuilder::new(config)
+            .with_additional_permissions(ToolPermissions::allow(&["my_custom_tool"]))
+            .build()
+            .await
+            .unwrap();
+
+        assert!(ctx.is_tool_allowed("my_custom_tool"));
+    }
+
+    // ===== File Path Handling Tests =====
+
+    #[test]
+    fn test_agent_context_file_tracking_various_paths() {
+        let config = AgentConfig::new("explore", "Find files", PathBuf::from("/project"));
+        let mut ctx = AgentContext::new(config);
+
+        ctx.record_file_read(PathBuf::from("/absolute/path.rs"));
+        ctx.record_file_read(PathBuf::from("relative/path.rs"));
+        ctx.record_file_read(PathBuf::from("./dot/path.rs"));
+
+        assert_eq!(ctx.files_read().len(), 3);
+    }
+
+    // ===== Additional Coverage Tests =====
+
+    #[test]
+    fn test_agent_context_files_changed() {
+        let config = AgentConfig::new("implement", "Add feature", PathBuf::from("/project"));
+        let mut ctx = AgentContext::new(config);
+
+        assert!(ctx.files_changed().is_empty());
+
+        ctx.record_file_changed(PathBuf::from("/project/src/main.rs"));
+        ctx.record_file_changed(PathBuf::from("/project/src/lib.rs"));
+
+        assert_eq!(ctx.files_changed().len(), 2);
+    }
+
+    #[test]
+    fn test_agent_context_files_changed_duplicates() {
+        let config = AgentConfig::new("implement", "Add feature", PathBuf::from("/project"));
+        let mut ctx = AgentContext::new(config);
+
+        ctx.record_file_changed(PathBuf::from("/project/src/main.rs"));
+        ctx.record_file_changed(PathBuf::from("/project/src/main.rs")); // Duplicate
+
+        assert_eq!(ctx.files_changed().len(), 1);
+    }
+
+    #[test]
+    fn test_agent_context_conversation_getter() {
+        let config = AgentConfig::new("explore", "Find files", PathBuf::from("/project"));
+        let ctx = AgentContext::new(config);
+
+        let conversation = ctx.conversation();
+        assert!(!conversation.is_empty());
+        assert!(conversation.system_prompt.is_some());
+    }
+
+    #[test]
+    fn test_agent_context_conversation_mut() {
+        let config = AgentConfig::new("explore", "Find files", PathBuf::from("/project"));
+        let mut ctx = AgentContext::new(config);
+
+        let initial_len = ctx.conversation().messages.len();
+
+        // Modify conversation via mut reference
+        ctx.conversation_mut()
+            .push(crate::llm::message::Message::assistant("Test message"));
+
+        assert_eq!(ctx.conversation().messages.len(), initial_len + 1);
+    }
+
+    #[test]
+    fn test_agent_context_exceeded_token_budget_false() {
+        let config = AgentConfig::new("explore", "Find files", PathBuf::from("/project"))
+            .with_token_budget(10000);
+        let ctx = AgentContext::new(config);
+
+        // No tokens used yet
+        assert!(!ctx.exceeded_token_budget());
+    }
+
+    #[test]
+    fn test_agent_context_exceeded_token_budget_true() {
+        let config = AgentConfig::new("explore", "Find files", PathBuf::from("/project"))
+            .with_token_budget(0);
+        let ctx = AgentContext::new(config);
+
+        // With budget of 0, should immediately exceed
+        assert!(ctx.exceeded_token_budget());
+    }
+
+    #[test]
+    fn test_agent_context_add_skill_instructions_no_system_prompt() {
+        let config = AgentConfig::new("explore", "Find files", PathBuf::from("/project"));
+        let mut ctx = AgentContext::new(config);
+
+        // Clear system prompt to test the else branch
+        ctx.conversation.system_prompt = None;
+
+        ctx.add_skill_instructions("New skill instruction");
+
+        // Should create a new system prompt
+        assert!(ctx.conversation.system_prompt.is_some());
+        let system = ctx.conversation.system_prompt.as_ref().unwrap();
+        assert!(system.contains("Skill Instructions"));
+        assert!(system.contains("New skill instruction"));
+    }
 }

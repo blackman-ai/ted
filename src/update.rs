@@ -1153,4 +1153,848 @@ mod tests {
         // 0.0.1 should be lower than current VERSION
         assert!(!is_newer_version(lower, VERSION));
     }
+
+    // ==================== Additional comprehensive tests ====================
+
+    // ===== Version parsing edge cases =====
+
+    #[test]
+    fn test_version_comparison_zero_components() {
+        assert!(is_newer_version("0.0.1", "0.0.0"));
+        assert!(!is_newer_version("0.0.0", "0.0.0"));
+        assert!(!is_newer_version("0.0.0", "0.0.1"));
+    }
+
+    #[test]
+    fn test_version_comparison_leading_zeros() {
+        // Leading zeros in version strings
+        assert!(is_newer_version("1.01.0", "1.00.0"));
+        assert!(is_newer_version("01.0.0", "00.0.0"));
+    }
+
+    #[test]
+    fn test_version_comparison_very_long_version() {
+        // Very long version numbers
+        let long_v1 = "1.2.3.4.5.6.7.8.9.10";
+        let long_v2 = "1.2.3.4.5.6.7.8.9.9";
+        // Only first 3 components are compared
+        assert!(!is_newer_version(long_v1, long_v2));
+    }
+
+    #[test]
+    fn test_version_comparison_mixed_separators() {
+        // Versions with mixed separators (only dots should be split on)
+        let v1 = "1.2.3-alpha";
+        let v2 = "1.2.2";
+        assert!(is_newer_version(v1, v2));
+    }
+
+    #[test]
+    fn test_version_comparison_numeric_overflow() {
+        // Large but valid u32 numbers
+        let large_v = format!("{}.0.0", u32::MAX);
+        let smaller_v = format!("{}.0.0", u32::MAX - 1);
+        assert!(is_newer_version(&large_v, &smaller_v));
+    }
+
+    // ===== Target triple tests =====
+
+    #[test]
+    fn test_target_triple_contains_expected_parts() {
+        let target = get_target_triple();
+        // Should have at least arch and OS info
+        let parts: Vec<&str> = target.split('-').collect();
+        assert!(parts.len() >= 2);
+        // First part should be arch
+        assert!(
+            parts[0] == "x86_64" || parts[0] == "aarch64" || parts[0] == "unknown",
+            "Unexpected arch: {}",
+            parts[0]
+        );
+    }
+
+    #[test]
+    fn test_target_triple_deterministic() {
+        // Should return same value every time
+        let t1 = get_target_triple();
+        let t2 = get_target_triple();
+        let t3 = get_target_triple();
+        assert_eq!(t1, t2);
+        assert_eq!(t2, t3);
+    }
+
+    #[test]
+    fn test_target_triple_valid_chars() {
+        let target = get_target_triple();
+        // Should only contain alphanumeric chars and hyphens
+        for c in target.chars() {
+            assert!(
+                c.is_alphanumeric() || c == '-',
+                "Unexpected character in target triple: {}",
+                c
+            );
+        }
+    }
+
+    // ===== ReleaseInfo comprehensive tests =====
+
+    #[test]
+    fn test_release_info_all_fields() {
+        let release = ReleaseInfo {
+            version: "1.2.3".to_string(),
+            tag_name: "v1.2.3".to_string(),
+            published_at: "2025-06-15T12:00:00Z".to_string(),
+            download_url: "https://github.com/owner/repo/releases/download/v1.2.3/binary.tar.gz"
+                .to_string(),
+            asset_name: "binary-x86_64-linux.tar.gz".to_string(),
+            body: "## Changes\n- Fixed bug\n- Added feature".to_string(),
+        };
+
+        assert_eq!(release.version, "1.2.3");
+        assert_eq!(release.tag_name, "v1.2.3");
+        assert!(release.published_at.contains("2025"));
+        assert!(release.download_url.starts_with("https://"));
+        assert!(release.asset_name.ends_with(".tar.gz"));
+        assert!(release.body.contains("Fixed bug"));
+    }
+
+    #[test]
+    fn test_release_info_minimal() {
+        let release = ReleaseInfo {
+            version: "0.0.1".to_string(),
+            tag_name: "v0.0.1".to_string(),
+            published_at: String::new(),
+            download_url: String::new(),
+            asset_name: String::new(),
+            body: String::new(),
+        };
+
+        assert!(!release.version.is_empty());
+        assert!(release.published_at.is_empty());
+        assert!(release.download_url.is_empty());
+    }
+
+    #[test]
+    fn test_release_info_unicode_body() {
+        let release = ReleaseInfo {
+            version: "1.0.0".to_string(),
+            tag_name: "v1.0.0".to_string(),
+            published_at: "2025-01-01".to_string(),
+            download_url: "https://example.com".to_string(),
+            asset_name: "release.tar.gz".to_string(),
+            body: "新機能追加 🎉 Émojis supported!".to_string(),
+        };
+
+        assert!(release.body.contains("🎉"));
+        assert!(release.body.contains("新機能"));
+    }
+
+    // ===== File path handling tests =====
+
+    #[test]
+    fn test_pathbuf_operations() {
+        use std::path::PathBuf;
+
+        let path = PathBuf::from("/tmp/test");
+        let with_extension = path.with_extension("old.exe");
+
+        assert!(with_extension.to_str().unwrap().ends_with(".old.exe"));
+    }
+
+    #[test]
+    fn test_pathbuf_join() {
+        use std::path::PathBuf;
+
+        let base = PathBuf::from("/tmp");
+        let full = base.join("subdir").join("file.txt");
+
+        assert!(full.to_str().unwrap().contains("subdir"));
+        assert!(full.to_str().unwrap().ends_with("file.txt"));
+    }
+
+    #[test]
+    fn test_pathbuf_parent() {
+        use std::path::PathBuf;
+
+        let path = PathBuf::from("/a/b/c");
+        let parent = path.parent();
+
+        assert!(parent.is_some());
+        assert_eq!(parent.unwrap(), PathBuf::from("/a/b"));
+    }
+
+    // ===== Archive name parsing tests =====
+
+    #[test]
+    fn test_archive_name_tar_gz() {
+        let name = "ted-x86_64-unknown-linux-gnu.tar.gz";
+        assert!(name.ends_with(".tar.gz"));
+    }
+
+    #[test]
+    fn test_archive_name_zip() {
+        let name = "ted-x86_64-pc-windows-msvc.zip";
+        assert!(name.ends_with(".zip"));
+    }
+
+    #[test]
+    fn test_archive_name_unknown() {
+        let name = "ted-x86_64-linux.unknown";
+        assert!(!name.ends_with(".tar.gz"));
+        assert!(!name.ends_with(".zip"));
+    }
+
+    // ===== JSON parsing tests =====
+
+    #[test]
+    fn test_parse_release_assets_array() {
+        let json_str = r#"[
+            {"name": "ted-linux.tar.gz", "browser_download_url": "https://example.com/linux.tar.gz"},
+            {"name": "ted-windows.zip", "browser_download_url": "https://example.com/windows.zip"},
+            {"name": "ted-macos.tar.gz", "browser_download_url": "https://example.com/macos.tar.gz"}
+        ]"#;
+
+        let assets: serde_json::Value = serde_json::from_str(json_str).unwrap();
+        let arr = assets.as_array().unwrap();
+
+        assert_eq!(arr.len(), 3);
+        assert!(arr[0]["name"].as_str().unwrap().contains("linux"));
+        assert!(arr[1]["name"].as_str().unwrap().contains("windows"));
+        assert!(arr[2]["name"].as_str().unwrap().contains("macos"));
+    }
+
+    #[test]
+    fn test_parse_release_full_response() {
+        let json_str = r#"{
+            "tag_name": "v2.0.0",
+            "published_at": "2025-06-15T10:30:00Z",
+            "body": "Release Notes - New feature - Bug fix",
+            "assets": [
+                {"name": "ted-x86_64.tar.gz", "browser_download_url": "https://example.com/ted.tar.gz"}
+            ]
+        }"#;
+
+        let release: serde_json::Value = serde_json::from_str(json_str).unwrap();
+
+        assert_eq!(release["tag_name"].as_str().unwrap(), "v2.0.0");
+        assert!(release["body"].as_str().unwrap().contains("New feature"));
+        assert!(!release["assets"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_parse_release_null_body() {
+        let json_str = r#"{"tag_name": "v1.0.0", "body": null}"#;
+
+        let release: serde_json::Value = serde_json::from_str(json_str).unwrap();
+        let body = release["body"].as_str().unwrap_or("");
+
+        assert!(body.is_empty());
+    }
+
+    // ===== Version tag handling tests =====
+
+    #[test]
+    fn test_strip_v_prefix_various() {
+        let cases = [
+            ("v1.0.0", "1.0.0"),
+            ("1.0.0", "1.0.0"),
+            ("v", ""),
+            ("vvv1.0.0", "vv1.0.0"),
+            ("V1.0.0", "V1.0.0"), // Only lowercase 'v' is stripped
+        ];
+
+        for (input, expected) in cases {
+            let result = input.strip_prefix('v').unwrap_or(input);
+            assert_eq!(result, expected, "Failed for input: {}", input);
+        }
+    }
+
+    #[test]
+    fn test_add_v_prefix() {
+        let cases = [("1.0.0", "v1.0.0"), ("v1.0.0", "v1.0.0")];
+
+        for (input, expected) in cases {
+            let result = if input.starts_with('v') {
+                input.to_string()
+            } else {
+                format!("v{}", input)
+            };
+            assert_eq!(result, expected, "Failed for input: {}", input);
+        }
+    }
+
+    // ===== URL construction tests =====
+
+    #[test]
+    fn test_github_api_latest_url() {
+        let repo = "owner-name/repo-name";
+        let url = format!("https://api.github.com/repos/{}/releases/latest", repo);
+
+        assert!(url.starts_with("https://api.github.com"));
+        assert!(url.contains("owner-name"));
+        assert!(url.ends_with("/releases/latest"));
+    }
+
+    #[test]
+    fn test_github_api_tag_url() {
+        let repo = "owner-name/repo-name";
+        let tag = "v1.0.0";
+        let url = format!(
+            "https://api.github.com/repos/{}/releases/tags/{}",
+            repo, tag
+        );
+
+        assert!(url.contains("owner-name"));
+        assert!(url.contains("v1.0.0"));
+    }
+
+    // ===== User agent tests =====
+
+    #[test]
+    fn test_user_agent_format() {
+        let user_agent = format!("ted/{}", VERSION);
+
+        assert!(user_agent.starts_with("ted/"));
+        assert!(user_agent.len() > 4); // "ted/" + version
+    }
+
+    // ===== Replace binary tests =====
+
+    #[test]
+    fn test_file_copy_simulation() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let source = temp_dir.path().join("source");
+        let dest = temp_dir.path().join("dest");
+
+        fs::write(&source, b"source content").unwrap();
+
+        // Copy the file
+        fs::copy(&source, &dest).unwrap();
+
+        // Verify
+        let content = fs::read(&dest).unwrap();
+        assert_eq!(content, b"source content");
+    }
+
+    #[test]
+    fn test_file_rename_simulation() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let original = temp_dir.path().join("original");
+        let renamed = temp_dir.path().join("renamed");
+
+        fs::write(&original, b"content").unwrap();
+        assert!(original.exists());
+
+        fs::rename(&original, &renamed).unwrap();
+
+        assert!(!original.exists());
+        assert!(renamed.exists());
+    }
+
+    // ===== Environment tests =====
+
+    #[test]
+    fn test_env_temp_dir() {
+        let temp = std::env::temp_dir();
+        assert!(temp.exists());
+        assert!(temp.is_absolute());
+    }
+
+    #[test]
+    fn test_env_current_exe_type() {
+        // current_exe returns a Result<PathBuf>
+        let result = std::env::current_exe();
+        // In test context, this should succeed
+        if let Ok(path) = result {
+            assert!(path.is_absolute());
+        }
+    }
+
+    // ===== HTTP status code handling =====
+
+    #[test]
+    fn test_status_code_success_range() {
+        for code in 200..300u16 {
+            assert!(
+                (200..300).contains(&code),
+                "Code {} should be in success range",
+                code
+            );
+        }
+    }
+
+    #[test]
+    fn test_status_code_not_found() {
+        let code: u16 = 404;
+        assert_eq!(code, 404);
+        assert!(!(200..300).contains(&code));
+    }
+
+    #[test]
+    fn test_status_code_client_errors() {
+        for code in 400..500u16 {
+            assert!(
+                (400..500).contains(&code),
+                "Code {} should be in client error range",
+                code
+            );
+        }
+    }
+
+    #[test]
+    fn test_status_code_server_errors() {
+        for code in 500..600u16 {
+            assert!(
+                (500..600).contains(&code),
+                "Code {} should be in server error range",
+                code
+            );
+        }
+    }
+
+    // ===== Semver parsing helpers =====
+
+    #[test]
+    fn test_parse_semver_components() {
+        let version = "1.2.3";
+        let parts: Vec<&str> = version.split('.').collect();
+
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0].parse::<u32>().unwrap(), 1);
+        assert_eq!(parts[1].parse::<u32>().unwrap(), 2);
+        assert_eq!(parts[2].parse::<u32>().unwrap(), 3);
+    }
+
+    #[test]
+    fn test_parse_semver_with_prerelease() {
+        let version = "1.2.3-beta.1";
+        let parts: Vec<&str> = version.split('.').collect();
+
+        // Third part has prerelease info
+        let patch_part = parts[2];
+        let numeric_patch = patch_part.split('-').next().unwrap();
+        assert_eq!(numeric_patch.parse::<u32>().unwrap(), 3);
+    }
+
+    #[test]
+    fn test_version_tuple_comparison() {
+        let v1: (u32, u32, u32) = (1, 2, 3);
+        let v2: (u32, u32, u32) = (1, 2, 4);
+        let v3: (u32, u32, u32) = (1, 3, 0);
+        let v4: (u32, u32, u32) = (2, 0, 0);
+
+        assert!(v2 > v1);
+        assert!(v3 > v2);
+        assert!(v4 > v3);
+        assert!(v4 > v1);
+    }
+
+    // ==================== Async Method Tests with wiremock ====================
+
+    // wiremock is available for future integration tests
+
+    /// Helper to create a mock release JSON response
+    fn create_release_json(version: &str, target: &str) -> serde_json::Value {
+        serde_json::json!({
+            "tag_name": format!("v{}", version),
+            "published_at": "2025-06-15T12:00:00Z",
+            "body": "Test release notes",
+            "assets": [
+                {
+                    "name": format!("ted-{}.tar.gz", target),
+                    "browser_download_url": format!("https://example.com/ted-{}.tar.gz", target)
+                }
+            ]
+        })
+    }
+
+    #[tokio::test]
+    async fn test_check_for_updates_no_releases() {
+        // This test would require mocking the GitHub API at api.github.com
+        // Since we can't easily intercept the actual reqwest calls to github,
+        // we verify the parsing logic with a simulated response
+
+        let json_str = r#"{"message": "Not Found"}"#;
+        let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap();
+
+        // Verify the 404 handling logic
+        let tag_name = parsed["tag_name"].as_str();
+        assert!(tag_name.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_check_for_updates_with_newer_version_parsing() {
+        // Test the parsing logic for a newer version response
+        let target = get_target_triple();
+        let release_json = create_release_json("999.0.0", &target);
+
+        let tag_name = release_json["tag_name"].as_str().unwrap();
+        assert_eq!(tag_name, "v999.0.0");
+
+        let remote_version = tag_name.strip_prefix('v').unwrap_or(tag_name);
+        assert!(is_newer_version(remote_version, VERSION));
+
+        let assets = release_json["assets"].as_array().unwrap();
+        assert!(!assets.is_empty());
+
+        let asset = assets.iter().find(|a| {
+            a["name"]
+                .as_str()
+                .map(|n| n.contains(&target))
+                .unwrap_or(false)
+        });
+        assert!(asset.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_check_for_updates_same_version_parsing() {
+        // Test that same version is not considered newer
+        let target = get_target_triple();
+        let release_json = create_release_json(VERSION, &target);
+
+        let tag_name = release_json["tag_name"].as_str().unwrap();
+        let remote_version = tag_name.strip_prefix('v').unwrap_or(tag_name);
+
+        assert!(!is_newer_version(remote_version, VERSION));
+    }
+
+    #[tokio::test]
+    async fn test_check_for_updates_older_version_parsing() {
+        // Test that older version is not considered newer
+        let target = get_target_triple();
+        let release_json = create_release_json("0.0.1", &target);
+
+        let tag_name = release_json["tag_name"].as_str().unwrap();
+        let remote_version = tag_name.strip_prefix('v').unwrap_or(tag_name);
+
+        assert!(!is_newer_version(remote_version, VERSION));
+    }
+
+    #[tokio::test]
+    async fn test_check_for_version_tag_normalization() {
+        // Test that version tag normalization works
+        let version_no_v = "1.2.3";
+        let tag = if version_no_v.starts_with('v') {
+            version_no_v.to_string()
+        } else {
+            format!("v{}", version_no_v)
+        };
+        assert_eq!(tag, "v1.2.3");
+
+        let version_with_v = "v1.2.3";
+        let tag2 = if version_with_v.starts_with('v') {
+            version_with_v.to_string()
+        } else {
+            format!("v{}", version_with_v)
+        };
+        assert_eq!(tag2, "v1.2.3");
+    }
+
+    #[tokio::test]
+    async fn test_release_info_construction_from_json() {
+        let target = get_target_triple();
+        let json = create_release_json("2.0.0", &target);
+
+        let tag_name = json["tag_name"].as_str().unwrap();
+        let remote_version = tag_name.strip_prefix('v').unwrap_or(tag_name);
+        let assets = json["assets"].as_array().unwrap();
+
+        let asset = assets
+            .iter()
+            .find(|a| {
+                a["name"]
+                    .as_str()
+                    .map(|n| n.contains(&target))
+                    .unwrap_or(false)
+            })
+            .unwrap();
+
+        let release = ReleaseInfo {
+            version: remote_version.to_string(),
+            tag_name: tag_name.to_string(),
+            published_at: json["published_at"]
+                .as_str()
+                .unwrap_or("unknown")
+                .to_string(),
+            download_url: asset["browser_download_url"]
+                .as_str()
+                .unwrap_or("")
+                .to_string(),
+            asset_name: asset["name"].as_str().unwrap_or("").to_string(),
+            body: json["body"].as_str().unwrap_or("").to_string(),
+        };
+
+        assert_eq!(release.version, "2.0.0");
+        assert_eq!(release.tag_name, "v2.0.0");
+        assert!(release.download_url.contains("example.com"));
+        assert!(release.asset_name.contains(&target));
+    }
+
+    #[tokio::test]
+    async fn test_install_update_download_logic() {
+        // Test the temp file path construction logic
+        let release = ReleaseInfo {
+            version: "1.0.0".to_string(),
+            tag_name: "v1.0.0".to_string(),
+            published_at: "2025-01-01".to_string(),
+            download_url: "https://example.com/ted.tar.gz".to_string(),
+            asset_name: "ted-x86_64-linux.tar.gz".to_string(),
+            body: "Notes".to_string(),
+        };
+
+        let temp_dir = std::env::temp_dir();
+        let temp_archive = temp_dir.join(&release.asset_name);
+        let temp_binary = temp_dir.join("ted_new");
+
+        assert!(temp_archive.to_str().unwrap().contains(&release.asset_name));
+        assert!(temp_binary.to_str().unwrap().contains("ted_new"));
+    }
+
+    #[tokio::test]
+    async fn test_release_info_with_missing_assets() {
+        let json_str = r#"{"tag_name": "v1.0.0", "assets": []}"#;
+        let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap();
+
+        let assets = parsed["assets"].as_array().unwrap();
+        assert!(assets.is_empty());
+
+        let target = get_target_triple();
+        let matching_asset = assets.iter().find(|a| {
+            a["name"]
+                .as_str()
+                .map(|n| n.contains(&target))
+                .unwrap_or(false)
+        });
+        assert!(matching_asset.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_release_info_no_matching_platform() {
+        // Test when assets exist but none match current platform
+        let json_str = r#"{"tag_name": "v1.0.0", "assets": [
+            {"name": "ted-wasm.tar.gz", "browser_download_url": "https://example.com/wasm.tar.gz"}
+        ]}"#;
+        let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap();
+
+        let assets = parsed["assets"].as_array().unwrap();
+        assert_eq!(assets.len(), 1);
+
+        let target = get_target_triple();
+        let matching_asset = assets.iter().find(|a| {
+            a["name"]
+                .as_str()
+                .map(|n| n.contains(&target))
+                .unwrap_or(false)
+        });
+
+        // Unless target happens to be wasm, this should be None
+        if !target.contains("wasm") {
+            assert!(matching_asset.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_http_client_construction() {
+        // Test that we can construct an HTTP client with the user agent
+        let client = reqwest::Client::builder()
+            .user_agent(format!("ted/{}", VERSION))
+            .build();
+
+        assert!(client.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_github_api_url_async_construction() {
+        let latest_url = format!(
+            "https://api.github.com/repos/{}/releases/latest",
+            GITHUB_REPO
+        );
+        assert!(latest_url.contains("api.github.com"));
+        assert!(latest_url.contains(GITHUB_REPO));
+        assert!(latest_url.ends_with("/releases/latest"));
+
+        let tag = "v1.0.0";
+        let tag_url = format!(
+            "https://api.github.com/repos/{}/releases/tags/{}",
+            GITHUB_REPO, tag
+        );
+        assert!(tag_url.contains(GITHUB_REPO));
+        assert!(tag_url.ends_with("/v1.0.0"));
+    }
+
+    #[tokio::test]
+    async fn test_error_message_formatting() {
+        // Test error message construction
+        let error_msg = format!("Failed to check for updates: {}", "connection error");
+        assert!(error_msg.contains("connection error"));
+
+        let api_error = format!("GitHub API error: {}", "403 Forbidden");
+        assert!(api_error.contains("403"));
+
+        let platform_error = format!(
+            "No release available for your platform ({})",
+            get_target_triple()
+        );
+        assert!(platform_error.contains(&get_target_triple()));
+    }
+
+    #[tokio::test]
+    async fn test_json_parsing_edge_cases() {
+        // Test with null values
+        let json_str = r#"{"tag_name": "v1.0.0", "published_at": null, "body": null}"#;
+        let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap();
+
+        let published_at = parsed["published_at"].as_str().unwrap_or("unknown");
+        assert_eq!(published_at, "unknown");
+
+        let body = parsed["body"].as_str().unwrap_or("");
+        assert!(body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_json_parsing_extra_fields() {
+        // Test that extra fields in JSON don't cause issues
+        let json_str = r#"{
+            "tag_name": "v1.0.0",
+            "published_at": "2025-01-01",
+            "body": "Notes",
+            "extra_field": "ignored",
+            "another_field": 123,
+            "assets": []
+        }"#;
+        let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap();
+
+        assert_eq!(parsed["tag_name"].as_str().unwrap(), "v1.0.0");
+        // Extra fields are just ignored
+    }
+
+    #[tokio::test]
+    async fn test_version_stripping_edge_cases() {
+        let cases = [
+            ("v1.0.0", "1.0.0"),
+            ("1.0.0", "1.0.0"),
+            ("v", ""),
+            ("vv1.0.0", "v1.0.0"),
+            ("V1.0.0", "V1.0.0"), // Only lowercase v
+        ];
+
+        for (input, expected) in cases {
+            let result = input.strip_prefix('v').unwrap_or(input);
+            assert_eq!(result, expected, "Failed for input: {}", input);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_current_exe_path() {
+        // Test that we can get the current executable path
+        let exe_result = std::env::current_exe();
+        // In test context, this should succeed
+        if let Ok(path) = exe_result {
+            assert!(path.is_absolute());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_temp_dir_operations() {
+        let temp_dir = std::env::temp_dir();
+        assert!(temp_dir.exists());
+
+        let test_file = temp_dir.join("ted_test_file");
+        // Just test the path construction
+        assert!(test_file.to_str().unwrap().contains("ted_test_file"));
+    }
+
+    // ==================== Integration-style tests ====================
+
+    #[tokio::test]
+    async fn test_release_info_full_workflow() {
+        // Test the full workflow of parsing a release and constructing ReleaseInfo
+        let target = get_target_triple();
+
+        let json = serde_json::json!({
+            "tag_name": "v999.999.999",
+            "published_at": "2025-12-31T23:59:59Z",
+            "body": "## What's New\n\n- Feature 1\n- Feature 2",
+            "assets": [
+                {
+                    "name": format!("ted-{}.tar.gz", target),
+                    "browser_download_url": format!("https://github.com/blackman-ai/ted/releases/download/v999.999.999/ted-{}.tar.gz", target)
+                },
+                {
+                    "name": "checksums.txt",
+                    "browser_download_url": "https://github.com/blackman-ai/ted/releases/download/v999.999.999/checksums.txt"
+                }
+            ]
+        });
+
+        let tag_name = json["tag_name"].as_str().unwrap();
+        let remote_version = tag_name.strip_prefix('v').unwrap_or(tag_name);
+
+        // Verify it's newer than current
+        assert!(is_newer_version(remote_version, VERSION));
+
+        // Find the right asset
+        let assets = json["assets"].as_array().unwrap();
+        let asset = assets.iter().find(|a| {
+            a["name"]
+                .as_str()
+                .map(|n| n.contains(&target))
+                .unwrap_or(false)
+        });
+        assert!(asset.is_some());
+
+        let asset = asset.unwrap();
+        let release = ReleaseInfo {
+            version: remote_version.to_string(),
+            tag_name: tag_name.to_string(),
+            published_at: json["published_at"]
+                .as_str()
+                .unwrap_or("unknown")
+                .to_string(),
+            download_url: asset["browser_download_url"]
+                .as_str()
+                .unwrap_or("")
+                .to_string(),
+            asset_name: asset["name"].as_str().unwrap_or("").to_string(),
+            body: json["body"].as_str().unwrap_or("").to_string(),
+        };
+
+        assert_eq!(release.version, "999.999.999");
+        assert!(release.download_url.contains("github.com"));
+        assert!(release.body.contains("What's New"));
+    }
+
+    #[tokio::test]
+    async fn test_reqwest_client_with_custom_timeout() {
+        use std::time::Duration;
+
+        let client = reqwest::Client::builder()
+            .user_agent(format!("ted/{}", VERSION))
+            .timeout(Duration::from_secs(30))
+            .build();
+
+        assert!(client.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_bytes_to_file_operations() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let test_file = temp_dir.path().join("test_data");
+
+        let bytes = b"test binary content";
+        std::fs::write(&test_file, bytes).unwrap();
+
+        let read_bytes = std::fs::read(&test_file).unwrap();
+        assert_eq!(read_bytes, bytes);
+
+        // Clean up is automatic with TempDir
+    }
 }

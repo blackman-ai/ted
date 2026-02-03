@@ -12,8 +12,14 @@ pub mod provider;
 pub mod providers;
 pub mod retry;
 
+#[cfg(test)]
+pub mod mock_provider;
+
 pub use circuit_breaker::*;
 pub use factory::ProviderFactory;
 pub use message::*;
 pub use provider::*;
 pub use retry::*;
+
+#[cfg(test)]
+pub use mock_provider::MockProvider;

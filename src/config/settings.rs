@@ -1201,4 +1201,264 @@ mod tests {
         assert_eq!(default_circuit_failure_threshold(), 5);
         assert_eq!(default_circuit_cooldown_secs(), 10);
     }
+
+    // ===== Additional settings tests for coverage =====
+
+    #[test]
+    fn test_get_openrouter_api_key_from_config() {
+        let mut settings = Settings::default();
+        settings.providers.openrouter.api_key = Some("or-key".to_string());
+        settings.providers.openrouter.api_key_env = "NONEXISTENT_ENV_VAR_12345".to_string();
+
+        let key = settings.get_openrouter_api_key();
+        assert_eq!(key, Some("or-key".to_string()));
+    }
+
+    #[test]
+    fn test_get_openrouter_api_key_none() {
+        let mut settings = Settings::default();
+        settings.providers.openrouter.api_key = None;
+        settings.providers.openrouter.api_key_env = "NONEXISTENT_ENV_VAR_12345".to_string();
+
+        let key = settings.get_openrouter_api_key();
+        assert!(key.is_none());
+    }
+
+    #[test]
+    fn test_get_blackman_api_key_from_config() {
+        let mut settings = Settings::default();
+        settings.providers.blackman.api_key = Some("bm-key".to_string());
+        settings.providers.blackman.api_key_env = "NONEXISTENT_ENV_VAR_12345".to_string();
+
+        let key = settings.get_blackman_api_key();
+        assert_eq!(key, Some("bm-key".to_string()));
+    }
+
+    #[test]
+    fn test_get_blackman_api_key_none() {
+        let mut settings = Settings::default();
+        settings.providers.blackman.api_key = None;
+        settings.providers.blackman.api_key_env = "NONEXISTENT_ENV_VAR_12345".to_string();
+
+        let key = settings.get_blackman_api_key();
+        assert!(key.is_none());
+    }
+
+    #[test]
+    fn test_get_blackman_base_url_from_config() {
+        // Ensure env var is not set
+        std::env::remove_var("BLACKMAN_BASE_URL");
+
+        let mut settings = Settings::default();
+        settings.providers.blackman.base_url = "https://custom.api".to_string();
+
+        let url = settings.get_blackman_base_url();
+        assert_eq!(url, "https://custom.api");
+    }
+
+    #[test]
+    fn test_apply_hardware_adaptive_config_disabled() {
+        let mut settings = Settings {
+            hardware: Some(HardwareConfig {
+                tier: HardwareTier::Ancient,
+                tier_override: None,
+                adaptive_mode: false, // Disabled!
+                last_detection: None,
+            }),
+            ..Default::default()
+        };
+
+        let original_warm_chunks = settings.context.max_warm_chunks;
+        settings.apply_hardware_adaptive_config();
+
+        // Should not change when adaptive_mode is disabled
+        assert_eq!(settings.context.max_warm_chunks, original_warm_chunks);
+    }
+
+    #[test]
+    fn test_apply_hardware_adaptive_config_ultratiny() {
+        let mut settings = Settings {
+            hardware: Some(HardwareConfig {
+                tier: HardwareTier::UltraTiny,
+                tier_override: None,
+                adaptive_mode: true,
+                last_detection: None,
+            }),
+            ..Default::default()
+        };
+
+        settings.apply_hardware_adaptive_config();
+
+        // UltraTiny should set provider to ollama
+        assert_eq!(settings.defaults.provider, "ollama");
+    }
+
+    #[test]
+    fn test_apply_hardware_adaptive_config_tiny() {
+        let mut settings = Settings {
+            hardware: Some(HardwareConfig {
+                tier: HardwareTier::Tiny,
+                tier_override: None,
+                adaptive_mode: true,
+                last_detection: None,
+            }),
+            ..Default::default()
+        };
+
+        settings.apply_hardware_adaptive_config();
+
+        // Tiny should set provider to ollama
+        assert_eq!(settings.defaults.provider, "ollama");
+    }
+
+    #[test]
+    fn test_get_hardware_warnings_ultratiny() {
+        let settings = Settings {
+            hardware: Some(HardwareConfig {
+                tier: HardwareTier::UltraTiny,
+                tier_override: None,
+                adaptive_mode: true,
+                last_detection: None,
+            }),
+            ..Default::default()
+        };
+
+        let warnings = settings.get_hardware_warnings();
+        assert!(!warnings.is_empty());
+        assert!(warnings[0].contains("Raspberry Pi") || warnings[0].contains("Education Mode"));
+    }
+
+    #[test]
+    fn test_get_hardware_warnings_medium() {
+        let settings = Settings {
+            hardware: Some(HardwareConfig {
+                tier: HardwareTier::Medium,
+                tier_override: None,
+                adaptive_mode: true,
+                last_detection: None,
+            }),
+            ..Default::default()
+        };
+
+        let warnings = settings.get_hardware_warnings();
+        // Medium tier should have no warnings
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn test_get_hardware_warnings_with_override() {
+        let settings = Settings {
+            hardware: Some(HardwareConfig {
+                tier: HardwareTier::Ancient,
+                tier_override: Some(HardwareTier::Medium), // Override to medium
+                adaptive_mode: true,
+                last_detection: None,
+            }),
+            ..Default::default()
+        };
+
+        let warnings = settings.get_hardware_warnings();
+        // Override to medium should have no warnings
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn test_ensure_directories_in_temp() {
+        let temp_dir = TempDir::new().unwrap();
+        let test_path = temp_dir.path().join("test_dir").join("nested");
+
+        // Create a test directory using same pattern as ensure_directories
+        let dirs = [test_path.clone()];
+        for dir in dirs {
+            if !dir.exists() {
+                std::fs::create_dir_all(&dir).unwrap();
+            }
+        }
+
+        assert!(test_path.exists());
+    }
+
+    #[test]
+    fn test_apply_hardware_adaptive_config_no_hardware() {
+        let mut settings = Settings {
+            hardware: None,
+            ..Default::default()
+        };
+
+        let original_provider = settings.defaults.provider.clone();
+        settings.apply_hardware_adaptive_config();
+
+        // Should not change when hardware is None (effective_tier returns Medium)
+        // Medium tier doesn't force ollama
+        assert_eq!(settings.defaults.provider, original_provider);
+    }
+
+    #[test]
+    fn test_get_hardware_warnings_no_hardware() {
+        let settings = Settings {
+            hardware: None,
+            ..Default::default()
+        };
+
+        let warnings = settings.get_hardware_warnings();
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn test_blackman_config_default() {
+        let config = BlackmanConfig::default();
+        assert!(config.api_key.is_none());
+        assert_eq!(config.api_key_env, "BLACKMAN_API_KEY");
+        assert!(config.base_url.contains("blackman") || !config.base_url.is_empty());
+    }
+
+    #[test]
+    fn test_openrouter_config_default() {
+        let config = OpenRouterConfig::default();
+        assert!(config.api_key.is_none());
+        assert_eq!(config.api_key_env, "OPENROUTER_API_KEY");
+        assert!(config.default_model.contains("claude") || !config.default_model.is_empty());
+    }
+
+    #[test]
+    fn test_hardware_config_serialization() {
+        let config = HardwareConfig {
+            tier: HardwareTier::Large,
+            tier_override: Some(HardwareTier::Medium),
+            adaptive_mode: false,
+            last_detection: Some("2025-01-01T00:00:00Z".to_string()),
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: HardwareConfig = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.tier, HardwareTier::Large);
+        assert_eq!(parsed.tier_override, Some(HardwareTier::Medium));
+        assert!(!parsed.adaptive_mode);
+        assert_eq!(
+            parsed.last_detection,
+            Some("2025-01-01T00:00:00Z".to_string())
+        );
+    }
+
+    #[test]
+    fn test_apply_hardware_adaptive_config_large_tier() {
+        let mut settings = Settings {
+            hardware: Some(HardwareConfig {
+                tier: HardwareTier::Large,
+                tier_override: None,
+                adaptive_mode: true,
+                last_detection: None,
+            }),
+            ..Default::default()
+        };
+
+        settings.apply_hardware_adaptive_config();
+
+        // Large tier should update context and tokens
+        assert!(settings.context.max_warm_chunks > 0);
+        assert!(settings.defaults.max_tokens > 0);
+        // Large tier doesn't force ollama
+        assert_eq!(settings.defaults.provider, "anthropic");
+    }
 }

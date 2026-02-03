@@ -563,6 +563,77 @@ mod tests {
     }
 
     #[test]
+    fn test_is_likely_binary_case_insensitive() {
+        // Test uppercase extensions
+        assert!(is_likely_binary(std::path::Path::new("image.PNG")));
+        assert!(is_likely_binary(std::path::Path::new("document.PDF")));
+        assert!(is_likely_binary(std::path::Path::new("archive.ZIP")));
+        assert!(is_likely_binary(std::path::Path::new("image.JpEg")));
+    }
+
+    #[test]
+    fn test_is_likely_binary_all_extensions() {
+        // Images
+        assert!(is_likely_binary(std::path::Path::new("file.jpg")));
+        assert!(is_likely_binary(std::path::Path::new("file.jpeg")));
+        assert!(is_likely_binary(std::path::Path::new("file.gif")));
+        assert!(is_likely_binary(std::path::Path::new("file.ico")));
+        assert!(is_likely_binary(std::path::Path::new("file.svg")));
+
+        // Fonts
+        assert!(is_likely_binary(std::path::Path::new("font.woff")));
+        assert!(is_likely_binary(std::path::Path::new("font.woff2")));
+        assert!(is_likely_binary(std::path::Path::new("font.ttf")));
+        assert!(is_likely_binary(std::path::Path::new("font.eot")));
+
+        // Archives
+        assert!(is_likely_binary(std::path::Path::new("archive.tar")));
+        assert!(is_likely_binary(std::path::Path::new("archive.gz")));
+        assert!(is_likely_binary(std::path::Path::new("archive.rar")));
+        assert!(is_likely_binary(std::path::Path::new("archive.7z")));
+
+        // Executables/libraries
+        assert!(is_likely_binary(std::path::Path::new("program.exe")));
+        assert!(is_likely_binary(std::path::Path::new("library.dll")));
+        assert!(is_likely_binary(std::path::Path::new("library.dylib")));
+
+        // Office documents
+        assert!(is_likely_binary(std::path::Path::new("document.doc")));
+        assert!(is_likely_binary(std::path::Path::new("document.docx")));
+        assert!(is_likely_binary(std::path::Path::new("spreadsheet.xls")));
+        assert!(is_likely_binary(std::path::Path::new("spreadsheet.xlsx")));
+
+        // Media
+        assert!(is_likely_binary(std::path::Path::new("audio.mp3")));
+        assert!(is_likely_binary(std::path::Path::new("video.mp4")));
+        assert!(is_likely_binary(std::path::Path::new("video.avi")));
+        assert!(is_likely_binary(std::path::Path::new("video.mov")));
+        assert!(is_likely_binary(std::path::Path::new("audio.wav")));
+
+        // Compiled/bytecode
+        assert!(is_likely_binary(std::path::Path::new("object.o")));
+        assert!(is_likely_binary(std::path::Path::new("static.a")));
+        assert!(is_likely_binary(std::path::Path::new("windows.lib")));
+        assert!(is_likely_binary(std::path::Path::new("python.pyc")));
+        assert!(is_likely_binary(std::path::Path::new("python.pyo")));
+        assert!(is_likely_binary(std::path::Path::new("java.class")));
+
+        // Databases
+        assert!(is_likely_binary(std::path::Path::new("data.sqlite")));
+        assert!(is_likely_binary(std::path::Path::new("data.sqlite3")));
+    }
+
+    #[test]
+    fn test_is_likely_binary_with_paths() {
+        // Full paths should work
+        assert!(is_likely_binary(std::path::Path::new("/path/to/image.png")));
+        assert!(is_likely_binary(std::path::Path::new(
+            "relative/path/doc.pdf"
+        )));
+        assert!(!is_likely_binary(std::path::Path::new("/src/main.rs")));
+    }
+
+    #[test]
     fn test_is_hidden_or_ignored() {
         assert!(is_hidden_or_ignored(std::path::Path::new(
             ".hidden/file.txt"
@@ -576,6 +647,65 @@ mod tests {
         assert!(is_hidden_or_ignored(std::path::Path::new(".git/config")));
         assert!(!is_hidden_or_ignored(std::path::Path::new("src/main.rs")));
         assert!(!is_hidden_or_ignored(std::path::Path::new("lib/utils.rs")));
+    }
+
+    #[test]
+    fn test_is_hidden_or_ignored_all_directories() {
+        // Test all ignored directory names
+        assert!(is_hidden_or_ignored(std::path::Path::new(
+            "__pycache__/cache.pyc"
+        )));
+        assert!(is_hidden_or_ignored(std::path::Path::new(
+            "venv/bin/python"
+        )));
+        assert!(is_hidden_or_ignored(std::path::Path::new(".venv/lib/site")));
+        assert!(is_hidden_or_ignored(std::path::Path::new("dist/bundle.js")));
+        assert!(is_hidden_or_ignored(std::path::Path::new(
+            "build/output.js"
+        )));
+        assert!(is_hidden_or_ignored(std::path::Path::new(
+            "vendor/pkg/mod.go"
+        )));
+    }
+
+    #[test]
+    fn test_is_hidden_or_ignored_nested_paths() {
+        // Hidden dirs deep in path
+        assert!(is_hidden_or_ignored(std::path::Path::new(
+            "src/components/.hidden/file.ts"
+        )));
+        // Ignored dirs deep in path
+        assert!(is_hidden_or_ignored(std::path::Path::new(
+            "packages/app/node_modules/react/index.js"
+        )));
+        assert!(is_hidden_or_ignored(std::path::Path::new(
+            "crates/lib/target/release/binary"
+        )));
+    }
+
+    #[test]
+    fn test_is_hidden_or_ignored_hidden_files() {
+        // Files starting with dot are also considered hidden
+        // because the function checks all path components
+        assert!(is_hidden_or_ignored(std::path::Path::new("src/.gitignore")));
+        assert!(is_hidden_or_ignored(std::path::Path::new("pkg/.eslintrc")));
+        assert!(is_hidden_or_ignored(std::path::Path::new(".env")));
+        // But regular files are not hidden
+        assert!(!is_hidden_or_ignored(std::path::Path::new("src/gitignore")));
+    }
+
+    #[test]
+    fn test_is_hidden_or_ignored_similar_names() {
+        // Names that contain but aren't exactly the ignored names
+        assert!(!is_hidden_or_ignored(std::path::Path::new(
+            "not_node_modules/file.js"
+        )));
+        assert!(!is_hidden_or_ignored(std::path::Path::new(
+            "target_practice/file.rs"
+        )));
+        assert!(!is_hidden_or_ignored(std::path::Path::new(
+            "my_dist/file.js"
+        )));
     }
 
     #[test]
@@ -602,5 +732,112 @@ mod tests {
         let matches = search_file(&file_path, &regex, 0, 2).unwrap();
 
         assert_eq!(matches.len(), 2);
+    }
+
+    #[test]
+    fn test_search_file_empty_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("empty.txt");
+        std::fs::write(&file_path, "").unwrap();
+
+        let regex = Regex::new("anything").unwrap();
+        let matches = search_file(&file_path, &regex, 0, 100).unwrap();
+
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_search_file_no_matches() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        std::fs::write(&file_path, "Line one\nLine two\nLine three").unwrap();
+
+        let regex = Regex::new("notfound").unwrap();
+        let matches = search_file(&file_path, &regex, 0, 100).unwrap();
+
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_search_file_multiple_lines() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        std::fs::write(&file_path, "Before\nMatch here\nAfter").unwrap();
+
+        let regex = Regex::new("Match").unwrap();
+        let matches = search_file(&file_path, &regex, 0, 100).unwrap();
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].line_number, 2);
+        assert_eq!(matches[0].line, "Match here");
+    }
+
+    #[test]
+    fn test_search_file_first_and_last_lines() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        std::fs::write(&file_path, "Match at start\nMiddle line\nMatch at end").unwrap();
+
+        let regex = Regex::new("Match").unwrap();
+        let matches = search_file(&file_path, &regex, 0, 100).unwrap();
+
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].line_number, 1);
+        assert_eq!(matches[1].line_number, 3);
+    }
+
+    #[test]
+    fn test_search_file_regex_patterns() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        std::fs::write(&file_path, "fn main() {}\nasync fn test() {}\nlet x = 5;").unwrap();
+
+        // Test regex with word boundary
+        let regex = Regex::new(r"\bfn\b").unwrap();
+        let matches = search_file(&file_path, &regex, 0, 100).unwrap();
+        assert_eq!(matches.len(), 2);
+
+        // Test regex with capture group behavior
+        let regex = Regex::new(r"fn\s+\w+").unwrap();
+        let matches = search_file(&file_path, &regex, 0, 100).unwrap();
+        assert_eq!(matches.len(), 2);
+    }
+
+    #[test]
+    fn test_search_file_nonexistent() {
+        let result = search_file(
+            std::path::Path::new("/nonexistent/path"),
+            &Regex::new("x").unwrap(),
+            0,
+            100,
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_search_file_line_field() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        std::fs::write(&file_path, "Hello World\nGoodbye World").unwrap();
+
+        let regex = Regex::new("World").unwrap();
+        let matches = search_file(&file_path, &regex, 0, 100).unwrap();
+
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].line, "Hello World");
+        assert_eq!(matches[1].line, "Goodbye World");
+    }
+
+    #[test]
+    fn test_search_file_path_field() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        std::fs::write(&file_path, "Match this").unwrap();
+
+        let regex = Regex::new("Match").unwrap();
+        let matches = search_file(&file_path, &regex, 0, 100).unwrap();
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].path, file_path);
     }
 }

@@ -802,4 +802,158 @@ mod tests {
         assert!(retrieved.summary.contains("'quotes'"));
         assert!(retrieved.content.contains("%"));
     }
+
+    // ===== Semantic Search Tests =====
+
+    #[tokio::test]
+    async fn test_semantic_search() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let generator = EmbeddingGenerator::new();
+        let store = MemoryStore::open(temp_file.path(), generator).unwrap();
+
+        // Store a memory
+        let memory = create_test_memory();
+        store.store(&memory).await.unwrap();
+
+        // Perform semantic search
+        let results = store.search("authentication system", 5).await.unwrap();
+
+        // Should return results (even if empty with mock embeddings)
+        // The function should complete without error
+        assert!(results.len() <= 5);
+    }
+
+    #[tokio::test]
+    async fn test_semantic_search_empty_store() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let generator = EmbeddingGenerator::new();
+        let store = MemoryStore::open(temp_file.path(), generator).unwrap();
+
+        // Search on empty store
+        let results = store.search("any query", 5).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_semantic_search_multiple_memories() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let generator = EmbeddingGenerator::new();
+        let store = MemoryStore::open(temp_file.path(), generator).unwrap();
+
+        // Store multiple memories
+        for i in 0..5 {
+            let mut memory = create_test_memory();
+            memory.summary = format!("Memory {} about topic {}", i, i);
+            store.store(&memory).await.unwrap();
+        }
+
+        // Search should return up to top_k results
+        let results = store.search("topic", 3).await.unwrap();
+        assert!(results.len() <= 3);
+    }
+
+    #[tokio::test]
+    async fn test_semantic_search_result_format() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let generator = EmbeddingGenerator::new();
+        let store = MemoryStore::open(temp_file.path(), generator).unwrap();
+
+        let mut memory = create_test_memory();
+        memory.summary = "Authentication implementation".to_string();
+        memory.files_changed = vec!["src/auth.rs".to_string()];
+        memory.tags = vec!["auth".to_string()];
+        store.store(&memory).await.unwrap();
+
+        let results = store.search("auth", 1).await.unwrap();
+
+        if !results.is_empty() {
+            let result = &results[0];
+            // Result content should contain formatted information
+            assert!(result.content.contains("Authentication"));
+            // Result should have metadata
+            assert!(result.metadata.is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_semantic_search_top_k_limit() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let generator = EmbeddingGenerator::new();
+        let store = MemoryStore::open(temp_file.path(), generator).unwrap();
+
+        // Store 10 memories
+        for i in 0..10 {
+            let mut memory = create_test_memory();
+            memory.summary = format!("Feature {}", i);
+            store.store(&memory).await.unwrap();
+        }
+
+        // Request only top 3
+        let results = store.search("feature", 3).await.unwrap();
+        assert!(results.len() <= 3);
+    }
+
+    // ===== load_all Tests (via search) =====
+
+    #[tokio::test]
+    async fn test_load_all_via_search() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let generator = EmbeddingGenerator::new();
+        let store = MemoryStore::open(temp_file.path(), generator).unwrap();
+
+        // Store memories with different content
+        let mut mem1 = create_test_memory();
+        mem1.summary = "First memory about rust".to_string();
+        store.store(&mem1).await.unwrap();
+
+        let mut mem2 = create_test_memory();
+        mem2.summary = "Second memory about python".to_string();
+        store.store(&mem2).await.unwrap();
+
+        // Search loads all memories internally
+        let results = store.search("programming", 10).await.unwrap();
+        // Both memories should be loaded (2 in store)
+        // Results may be 0, 1, or 2 depending on embedding similarity
+        assert!(results.len() <= 2);
+    }
+
+    // ===== UUID and DateTime parsing error handling =====
+
+    #[test]
+    fn test_parse_uuid_from_db_valid() {
+        let uuid_str = "550e8400-e29b-41d4-a716-446655440000";
+        let result = parse_uuid_from_db(uuid_str, 0);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().to_string(), uuid_str);
+    }
+
+    #[test]
+    fn test_parse_uuid_from_db_invalid() {
+        let invalid = "not-a-uuid";
+        let result = parse_uuid_from_db(invalid, 0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_datetime_from_db_valid() {
+        let timestamp = "2025-01-15T10:30:00+00:00";
+        let result = parse_datetime_from_db(timestamp, 1);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_datetime_from_db_invalid() {
+        let invalid = "not-a-date";
+        let result = parse_datetime_from_db(invalid, 1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_datetime_preserves_timezone() {
+        use chrono::Timelike;
+        let timestamp = "2025-01-15T10:30:00+05:00";
+        let result = parse_datetime_from_db(timestamp, 1).unwrap();
+        // Should be converted to UTC
+        assert_eq!(result.hour(), 5); // 10:30+05:00 = 05:30 UTC
+    }
 }

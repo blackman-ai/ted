@@ -974,4 +974,140 @@ mod tests {
         // Should account for tree + root_name + overhead
         assert!(tokens > 0);
     }
+
+    #[test]
+    fn test_extract_file_paths_from_file_edit_tool() {
+        let content = ChunkContent::ToolCall {
+            tool_name: "file_edit".to_string(),
+            input: serde_json::json!({"path": "src/lib.rs", "old_string": "a", "new_string": "b"}),
+            output: "edited".to_string(),
+            is_error: false,
+        };
+
+        let paths = content.extract_file_paths();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0], PathBuf::from("src/lib.rs"));
+    }
+
+    #[test]
+    fn test_extract_file_paths_from_file_write_tool() {
+        let content = ChunkContent::ToolCall {
+            tool_name: "file_write".to_string(),
+            input: serde_json::json!({"path": "new_file.txt", "content": "hello"}),
+            output: "created".to_string(),
+            is_error: false,
+        };
+
+        let paths = content.extract_file_paths();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0], PathBuf::from("new_file.txt"));
+    }
+
+    #[test]
+    fn test_extract_file_paths_from_grep_tool() {
+        let content = ChunkContent::ToolCall {
+            tool_name: "grep".to_string(),
+            input: serde_json::json!({"pattern": "src/**/*.rs", "path": "project/"}),
+            output: "found matches".to_string(),
+            is_error: false,
+        };
+
+        let paths = content.extract_file_paths();
+        // Grep extracts both path and pattern fields
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains(&PathBuf::from("project/")));
+        assert!(paths.contains(&PathBuf::from("src/**/*.rs")));
+    }
+
+    #[test]
+    fn test_extract_file_paths_from_non_file_tool() {
+        let content = ChunkContent::ToolCall {
+            tool_name: "shell".to_string(),
+            input: serde_json::json!({"command": "ls -la"}),
+            output: "output".to_string(),
+            is_error: false,
+        };
+
+        let paths = content.extract_file_paths();
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_extract_file_paths_missing_path_field() {
+        let content = ChunkContent::ToolCall {
+            tool_name: "file_read".to_string(),
+            input: serde_json::json!({"wrong_field": "src/main.rs"}),
+            output: "error".to_string(),
+            is_error: true,
+        };
+
+        let paths = content.extract_file_paths();
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_extract_file_paths_from_summary() {
+        let content = ChunkContent::Summary {
+            text: "Summarized discussion about files".to_string(),
+            summarized_chunks: vec![],
+        };
+
+        let paths = content.extract_file_paths();
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_extract_file_paths_from_system() {
+        let content = ChunkContent::System {
+            content: "System configuration".to_string(),
+        };
+
+        let paths = content.extract_file_paths();
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_extract_file_paths_from_metadata() {
+        let content = ChunkContent::Metadata {
+            key: "version".to_string(),
+            value: serde_json::json!("1.0.0"),
+        };
+
+        let paths = content.extract_file_paths();
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_extract_file_paths_from_file_tree() {
+        let content = ChunkContent::FileTree {
+            root_name: "project".to_string(),
+            tree: "├── src/\n└── main.rs".to_string(),
+            file_count: 1,
+            dir_count: 1,
+            truncated: false,
+        };
+
+        let paths = content.extract_file_paths();
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_chunk_priority_all_orderings() {
+        let mut priorities = vec![
+            ChunkPriority::Low,
+            ChunkPriority::High,
+            ChunkPriority::Normal,
+            ChunkPriority::Critical,
+        ];
+        priorities.sort();
+        assert_eq!(
+            priorities,
+            vec![
+                ChunkPriority::Critical,
+                ChunkPriority::High,
+                ChunkPriority::Normal,
+                ChunkPriority::Low
+            ]
+        );
+    }
 }

@@ -278,4 +278,186 @@ mod tests {
             .parser_for_path(Path::new("lib/utils.py"))
             .is_some());
     }
+
+    // ===== Additional Coverage Tests =====
+
+    #[test]
+    fn test_parser_for_language_typescript() {
+        let registry = ParserRegistry::new();
+        assert!(registry.parser_for_language(Language::TypeScript).is_some());
+    }
+
+    #[test]
+    fn test_parser_for_language_javascript() {
+        let registry = ParserRegistry::new();
+        assert!(registry.parser_for_language(Language::JavaScript).is_some());
+    }
+
+    #[test]
+    fn test_parser_for_language_python() {
+        let registry = ParserRegistry::new();
+        assert!(registry.parser_for_language(Language::Python).is_some());
+    }
+
+    #[test]
+    fn test_parser_for_language_go() {
+        let registry = ParserRegistry::new();
+        assert!(registry.parser_for_language(Language::Go).is_some());
+    }
+
+    #[test]
+    fn test_parse_imports_registry() {
+        let registry = ParserRegistry::new();
+        let rust_content = r#"
+use std::collections::HashMap;
+use crate::utils::helpers;
+"#;
+        let imports = registry.parse_imports(Path::new("src/main.rs"), rust_content);
+        assert!(!imports.is_empty());
+    }
+
+    #[test]
+    fn test_parse_exports_registry() {
+        let registry = ParserRegistry::new();
+        let rust_content = r#"
+pub fn my_function() {}
+pub struct MyStruct {}
+"#;
+        let exports = registry.parse_exports(Path::new("src/lib.rs"), rust_content);
+        assert!(!exports.is_empty());
+    }
+
+    #[test]
+    fn test_parse_imports_no_extension() {
+        let registry = ParserRegistry::new();
+        // Path without extension should fall back to generic parser
+        let imports = registry.parse_imports(Path::new("Makefile"), "include other.mk");
+        // Generic parser may or may not find imports, but shouldn't crash
+        let _ = imports;
+    }
+
+    #[test]
+    fn test_parse_exports_no_extension() {
+        let registry = ParserRegistry::new();
+        let exports = registry.parse_exports(Path::new("Makefile"), "target: deps");
+        let _ = exports;
+    }
+
+    #[test]
+    fn test_parser_registry_default() {
+        let registry = ParserRegistry::default();
+        // Should have the same parsers as new()
+        assert!(registry.parser_for_extension("rs").is_some());
+        assert!(registry.parser_for_extension("py").is_some());
+        assert!(registry.parser_for_extension("go").is_some());
+    }
+
+    #[test]
+    fn test_parser_for_path_no_extension() {
+        let registry = ParserRegistry::new();
+        // Path without extension returns None (no extension to match)
+        let parser = registry.parser_for_path(Path::new("Makefile"));
+        assert!(parser.is_none());
+    }
+
+    #[test]
+    fn test_import_kind_variants() {
+        // Test all ImportKind variants
+        let kinds = [
+            ImportKind::CrateRoot,
+            ImportKind::Parent,
+            ImportKind::Current,
+            ImportKind::External,
+            ImportKind::Relative,
+            ImportKind::Absolute,
+        ];
+
+        for kind in kinds {
+            let import = ImportRef::new("test", kind, 1);
+            assert_eq!(import.kind, kind);
+        }
+    }
+
+    #[test]
+    fn test_export_kind_variants() {
+        // Test all ExportKind variants
+        let kinds = [
+            ExportKind::Function,
+            ExportKind::Type,
+            ExportKind::Constant,
+            ExportKind::Module,
+            ExportKind::ReExport,
+            ExportKind::Default,
+            ExportKind::Other,
+        ];
+
+        for kind in kinds {
+            let export = ExportRef::new("test", kind, 1);
+            assert_eq!(export.kind, kind);
+        }
+    }
+
+    #[test]
+    fn test_import_ref_clone() {
+        let import = ImportRef::new("crate::utils", ImportKind::CrateRoot, 5);
+        let cloned = import.clone();
+        assert_eq!(import.raw_path, cloned.raw_path);
+        assert_eq!(import.kind, cloned.kind);
+        assert_eq!(import.line, cloned.line);
+    }
+
+    #[test]
+    fn test_export_ref_clone() {
+        let export = ExportRef::new("MyFunc", ExportKind::Function, 10);
+        let cloned = export.clone();
+        assert_eq!(export.name, cloned.name);
+        assert_eq!(export.kind, cloned.kind);
+        assert_eq!(export.line, cloned.line);
+    }
+
+    #[test]
+    fn test_import_ref_hash() {
+        use std::collections::HashSet;
+        let import1 = ImportRef::new("crate::utils", ImportKind::CrateRoot, 5);
+        let import2 = ImportRef::new("crate::utils", ImportKind::CrateRoot, 5);
+        let import3 = ImportRef::new("crate::other", ImportKind::CrateRoot, 5);
+
+        let mut set = HashSet::new();
+        set.insert(import1.clone());
+        set.insert(import2);
+        set.insert(import3);
+
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn test_export_ref_hash() {
+        use std::collections::HashSet;
+        let export1 = ExportRef::new("MyFunc", ExportKind::Function, 10);
+        let export2 = ExportRef::new("MyFunc", ExportKind::Function, 10);
+        let export3 = ExportRef::new("OtherFunc", ExportKind::Function, 10);
+
+        let mut set = HashSet::new();
+        set.insert(export1.clone());
+        set.insert(export2);
+        set.insert(export3);
+
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn test_import_ref_debug() {
+        let import = ImportRef::new("crate::utils", ImportKind::CrateRoot, 5);
+        let debug_str = format!("{:?}", import);
+        assert!(debug_str.contains("ImportRef"));
+        assert!(debug_str.contains("crate::utils"));
+    }
+
+    #[test]
+    fn test_export_ref_debug() {
+        let export = ExportRef::new("MyFunc", ExportKind::Function, 10);
+        let debug_str = format!("{:?}", export);
+        assert!(debug_str.contains("ExportRef"));
+        assert!(debug_str.contains("MyFunc"));
+    }
 }

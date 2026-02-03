@@ -571,4 +571,435 @@ mod tests {
         let delete_entry = BeadLogEntry::delete(bead);
         assert!(matches!(delete_entry.operation, BeadOperation::Delete));
     }
+
+    // ===== BeadId Additional Tests =====
+
+    #[test]
+    fn test_bead_id_random() {
+        let id1 = BeadId::random();
+        let id2 = BeadId::random();
+
+        // Random IDs should start with bd-
+        assert!(id1.0.starts_with("bd-"));
+        assert!(id2.0.starts_with("bd-"));
+
+        // Random IDs should be unique
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn test_bead_id_random_format() {
+        let id = BeadId::random();
+        // Format should be bd-{8 chars}
+        assert!(id.0.starts_with("bd-"));
+        let suffix = &id.0[3..];
+        assert_eq!(suffix.len(), 8);
+    }
+
+    #[test]
+    fn test_bead_id_as_str() {
+        let id = BeadId::from_title("Test task");
+        let s = id.as_str();
+
+        assert!(s.starts_with("bd-"));
+        assert_eq!(s, &id.0);
+    }
+
+    #[test]
+    fn test_bead_id_as_str_child() {
+        let parent = BeadId::from_title("Parent");
+        let child = parent.child(1);
+        let s = child.as_str();
+
+        assert!(s.ends_with(".1"));
+    }
+
+    #[test]
+    fn test_bead_id_from_string() {
+        let id: BeadId = "bd-12345678".to_string().into();
+        assert_eq!(id.0, "bd-12345678");
+    }
+
+    #[test]
+    fn test_bead_id_from_string_custom() {
+        let id: BeadId = "custom-id".to_string().into();
+        assert_eq!(id.0, "custom-id");
+    }
+
+    #[test]
+    fn test_bead_id_from_str() {
+        let id: BeadId = "bd-abcdef12".into();
+        assert_eq!(id.0, "bd-abcdef12");
+    }
+
+    #[test]
+    fn test_bead_id_from_str_with_dots() {
+        let id: BeadId = "bd-12345678.1.2".into();
+        assert_eq!(id.0, "bd-12345678.1.2");
+        assert_eq!(id.depth(), 2);
+    }
+
+    #[test]
+    fn test_bead_id_is_root() {
+        let root = BeadId::from_title("Root task");
+        let child = root.child(1);
+        let grandchild = child.child(2);
+
+        assert!(root.is_root());
+        assert!(!child.is_root());
+        assert!(!grandchild.is_root());
+    }
+
+    #[test]
+    fn test_bead_id_is_root_custom() {
+        let root: BeadId = "my-custom-id".into();
+        let with_dot: BeadId = "my-custom-id.1".into();
+
+        assert!(root.is_root());
+        assert!(!with_dot.is_root());
+    }
+
+    #[test]
+    fn test_bead_id_display() {
+        let id = BeadId::from_title("Display test");
+        let display_str = format!("{}", id);
+        assert_eq!(display_str, id.0);
+    }
+
+    #[test]
+    fn test_bead_id_hash() {
+        use std::collections::HashSet;
+
+        let id1 = BeadId::from_title("Task A");
+        let id2 = BeadId::from_title("Task A"); // Same as id1
+        let id3 = BeadId::from_title("Task B");
+
+        let mut set = HashSet::new();
+        set.insert(id1.clone());
+        set.insert(id2.clone()); // Should not increase size
+        set.insert(id3.clone());
+
+        assert_eq!(set.len(), 2);
+        assert!(set.contains(&id1));
+        assert!(set.contains(&id3));
+    }
+
+    // ===== Bead add_file Tests =====
+
+    #[test]
+    fn test_bead_add_file() {
+        let mut bead = Bead::new("Task", "Description");
+        let path = PathBuf::from("/src/main.rs");
+
+        bead.add_file(path.clone());
+
+        assert_eq!(bead.files_affected.len(), 1);
+        assert!(bead.files_affected.contains(&path));
+    }
+
+    #[test]
+    fn test_bead_add_file_duplicate() {
+        let mut bead = Bead::new("Task", "Description");
+        let path = PathBuf::from("/src/main.rs");
+
+        bead.add_file(path.clone());
+        bead.add_file(path.clone()); // Duplicate
+
+        // Should only have one entry
+        assert_eq!(bead.files_affected.len(), 1);
+    }
+
+    #[test]
+    fn test_bead_add_file_multiple() {
+        let mut bead = Bead::new("Task", "Description");
+
+        bead.add_file(PathBuf::from("/src/main.rs"));
+        bead.add_file(PathBuf::from("/src/lib.rs"));
+        bead.add_file(PathBuf::from("/Cargo.toml"));
+
+        assert_eq!(bead.files_affected.len(), 3);
+    }
+
+    #[test]
+    fn test_bead_add_file_updates_timestamp() {
+        let mut bead = Bead::new("Task", "Description");
+        let original_updated = bead.updated_at;
+
+        // Small delay to ensure timestamp changes
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        bead.add_file(PathBuf::from("/new/file.rs"));
+
+        assert!(bead.updated_at >= original_updated);
+    }
+
+    // ===== BeadStatus Additional Tests =====
+
+    #[test]
+    fn test_bead_status_default() {
+        let status = BeadStatus::default();
+        assert!(matches!(status, BeadStatus::Pending));
+    }
+
+    #[test]
+    fn test_bead_status_clone() {
+        let status = BeadStatus::Blocked {
+            reason: "Waiting".to_string(),
+        };
+        let cloned = status.clone();
+        if let BeadStatus::Blocked { reason } = cloned {
+            assert_eq!(reason, "Waiting");
+        } else {
+            panic!("Expected Blocked status");
+        }
+    }
+
+    #[test]
+    fn test_bead_status_eq() {
+        assert_eq!(BeadStatus::Pending, BeadStatus::Pending);
+        assert_eq!(BeadStatus::Done, BeadStatus::Done);
+        assert_ne!(BeadStatus::Pending, BeadStatus::Ready);
+
+        let blocked1 = BeadStatus::Blocked {
+            reason: "A".to_string(),
+        };
+        let blocked2 = BeadStatus::Blocked {
+            reason: "A".to_string(),
+        };
+        let blocked3 = BeadStatus::Blocked {
+            reason: "B".to_string(),
+        };
+
+        assert_eq!(blocked1, blocked2);
+        assert_ne!(blocked1, blocked3);
+    }
+
+    // ===== BeadPriority Additional Tests =====
+
+    #[test]
+    fn test_bead_priority_default() {
+        let priority = BeadPriority::default();
+        assert!(matches!(priority, BeadPriority::Medium));
+    }
+
+    #[test]
+    fn test_bead_priority_ord() {
+        assert!(BeadPriority::Low < BeadPriority::Medium);
+        assert!(BeadPriority::Medium < BeadPriority::High);
+        assert!(BeadPriority::High < BeadPriority::Critical);
+    }
+
+    #[test]
+    fn test_bead_priority_clone() {
+        let priority = BeadPriority::Critical;
+        let cloned = priority;
+        assert_eq!(priority, cloned);
+    }
+
+    // ===== Bead with_id Tests =====
+
+    #[test]
+    fn test_bead_with_id() {
+        let custom_id = BeadId::from("custom-bead-id");
+        let bead = Bead::with_id(custom_id.clone(), "Custom Task", "Custom Description");
+
+        assert_eq!(bead.id, custom_id);
+        assert_eq!(bead.title, "Custom Task");
+        assert_eq!(bead.description, "Custom Description");
+    }
+
+    #[test]
+    fn test_bead_with_id_defaults() {
+        let id = BeadId::from("test-id");
+        let bead = Bead::with_id(id, "Title", "Description");
+
+        assert!(matches!(bead.status, BeadStatus::Pending));
+        assert_eq!(bead.priority, BeadPriority::Medium);
+        assert!(bead.depends_on.is_empty());
+        assert!(bead.files_affected.is_empty());
+        assert!(bead.tags.is_empty());
+        assert!(bead.notes.is_empty());
+        assert!(bead.completed_at.is_none());
+        assert!(bead.agent_id.is_none());
+        assert!(bead.compacted_summary.is_none());
+    }
+
+    // ===== BeadNote Tests =====
+
+    #[test]
+    fn test_bead_note_fields() {
+        let mut bead = Bead::new("Task", "Description");
+        bead.add_note("Test note content", "test-author");
+
+        let note = &bead.notes[0];
+        assert_eq!(note.content, "Test note content");
+        assert_eq!(note.author, "test-author");
+        assert!(note.timestamp <= chrono::Utc::now());
+    }
+
+    #[test]
+    fn test_bead_note_clone() {
+        let note = BeadNote {
+            timestamp: chrono::Utc::now(),
+            content: "Content".to_string(),
+            author: "Author".to_string(),
+        };
+        let cloned = note.clone();
+        assert_eq!(cloned.content, note.content);
+        assert_eq!(cloned.author, note.author);
+    }
+
+    // ===== Bead set_status Tests =====
+
+    #[test]
+    fn test_bead_set_status_to_done() {
+        let mut bead = Bead::new("Task", "Description");
+        bead.set_status(BeadStatus::Done);
+
+        assert!(matches!(bead.status, BeadStatus::Done));
+        assert!(bead.completed_at.is_some());
+    }
+
+    #[test]
+    fn test_bead_set_status_to_ready() {
+        let mut bead = Bead::new("Task", "Description");
+        bead.set_status(BeadStatus::Ready);
+
+        assert!(matches!(bead.status, BeadStatus::Ready));
+        assert!(bead.completed_at.is_none());
+    }
+
+    #[test]
+    fn test_bead_set_status_updates_timestamp() {
+        let mut bead = Bead::new("Task", "Description");
+        let original = bead.updated_at;
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        bead.set_status(BeadStatus::InProgress);
+
+        assert!(bead.updated_at >= original);
+    }
+
+    // ===== Bead start Tests =====
+
+    #[test]
+    fn test_bead_start_updates_timestamp() {
+        let mut bead = Bead::new("Task", "Description");
+        let original = bead.updated_at;
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        bead.start(Uuid::new_v4());
+
+        assert!(bead.updated_at >= original);
+    }
+
+    // ===== Bead complete Tests =====
+
+    #[test]
+    fn test_bead_complete_without_summary() {
+        let mut bead = Bead::new("Task", "Description");
+        bead.start(Uuid::new_v4());
+        bead.complete(None);
+
+        assert!(matches!(bead.status, BeadStatus::Done));
+        assert!(bead.completed_at.is_some());
+        assert!(bead.agent_id.is_none());
+        assert!(bead.compacted_summary.is_none());
+    }
+
+    #[test]
+    fn test_bead_complete_with_summary() {
+        let mut bead = Bead::new("Task", "Description");
+        bead.complete(Some("Summary of work done".to_string()));
+
+        assert_eq!(
+            bead.compacted_summary,
+            Some("Summary of work done".to_string())
+        );
+    }
+
+    // ===== BeadLogEntry Tests =====
+
+    #[test]
+    fn test_bead_log_entry_timestamps() {
+        let bead = Bead::new("Task", "Description");
+
+        let entry = BeadLogEntry::create(bead);
+        assert!(entry.timestamp <= chrono::Utc::now());
+    }
+
+    #[test]
+    fn test_bead_log_entry_clone() {
+        let bead = Bead::new("Task", "Description");
+        let entry = BeadLogEntry::create(bead);
+        let cloned = entry.clone();
+
+        assert_eq!(cloned.bead.title, entry.bead.title);
+        assert!(matches!(cloned.operation, BeadOperation::Create));
+    }
+
+    // ===== Serialization Tests =====
+
+    #[test]
+    fn test_bead_id_serialize() {
+        let id = BeadId::from_title("Serialize test");
+        let json = serde_json::to_string(&id).unwrap();
+        assert!(json.contains("bd-"));
+    }
+
+    #[test]
+    fn test_bead_id_deserialize() {
+        let json = r#""bd-12345678""#;
+        let id: BeadId = serde_json::from_str(json).unwrap();
+        assert_eq!(id.0, "bd-12345678");
+    }
+
+    #[test]
+    fn test_bead_status_serialize() {
+        let status = BeadStatus::Blocked {
+            reason: "API unavailable".to_string(),
+        };
+        let json = serde_json::to_string(&status).unwrap();
+        assert!(json.contains("blocked"));
+        assert!(json.contains("API unavailable"));
+    }
+
+    #[test]
+    fn test_bead_status_deserialize() {
+        let json = r#"{"blocked":{"reason":"Waiting for approval"}}"#;
+        let status: BeadStatus = serde_json::from_str(json).unwrap();
+        if let BeadStatus::Blocked { reason } = status {
+            assert_eq!(reason, "Waiting for approval");
+        } else {
+            panic!("Expected Blocked status");
+        }
+    }
+
+    #[test]
+    fn test_bead_priority_serialize() {
+        let priority = BeadPriority::Critical;
+        let json = serde_json::to_string(&priority).unwrap();
+        assert_eq!(json, r#""critical""#);
+    }
+
+    #[test]
+    fn test_bead_priority_deserialize() {
+        let json = r#""high""#;
+        let priority: BeadPriority = serde_json::from_str(json).unwrap();
+        assert_eq!(priority, BeadPriority::High);
+    }
+
+    #[test]
+    fn test_bead_operation_serialize() {
+        let op = BeadOperation::Update;
+        let json = serde_json::to_string(&op).unwrap();
+        assert_eq!(json, r#""update""#);
+    }
+
+    #[test]
+    fn test_bead_operation_deserialize() {
+        let json = r#""delete""#;
+        let op: BeadOperation = serde_json::from_str(json).unwrap();
+        assert!(matches!(op, BeadOperation::Delete));
+    }
 }

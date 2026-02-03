@@ -778,4 +778,598 @@ mod tests {
         let list_response = server.handle_request(list_request).await;
         assert!(list_response.error.is_none());
     }
+
+    // ===== TedToolAdapter Tests =====
+
+    #[test]
+    fn test_ted_tool_adapter_name_method() {
+        // Test the name() method
+        let adapter = TedToolAdapter {
+            tool: Arc::new(MockTestTool::new()),
+            name: "test_tool".to_string(),
+            description: "A test tool".to_string(),
+            parameters: serde_json::json!({}),
+        };
+
+        assert_eq!(adapter.name(), "test_tool");
+    }
+
+    #[test]
+    fn test_ted_tool_adapter_description_method() {
+        // Test the description() method
+        let adapter = TedToolAdapter {
+            tool: Arc::new(MockTestTool::new()),
+            name: "test".to_string(),
+            description: "Test description".to_string(),
+            parameters: serde_json::json!({}),
+        };
+
+        assert_eq!(adapter.description(), "Test description");
+    }
+
+    #[test]
+    fn test_ted_tool_adapter_parameters_method() {
+        // Test the parameters() method
+        let params = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"}
+            }
+        });
+        let adapter = TedToolAdapter {
+            tool: Arc::new(MockTestTool::new()),
+            name: "test".to_string(),
+            description: "Test".to_string(),
+            parameters: params.clone(),
+        };
+
+        assert_eq!(adapter.parameters(), params);
+    }
+
+    // Mock tool for testing
+    struct MockTestTool {
+        name: String,
+    }
+
+    impl MockTestTool {
+        fn new() -> Self {
+            Self {
+                name: "mock_test".to_string(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::tools::Tool for MockTestTool {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn definition(&self) -> crate::llm::ToolDefinition {
+            crate::llm::ToolDefinition {
+                name: self.name.clone(),
+                description: "Mock test tool".to_string(),
+                input_schema: crate::llm::ToolInputSchema {
+                    schema_type: "object".to_string(),
+                    properties: serde_json::json!({}),
+                    required: vec![],
+                },
+            }
+        }
+
+        fn permission_request(
+            &self,
+            _input: &serde_json::Value,
+        ) -> Option<crate::tools::PermissionRequest> {
+            None
+        }
+
+        async fn execute(
+            &self,
+            tool_use_id: String,
+            _args: serde_json::Value,
+            _context: &crate::tools::ToolContext,
+        ) -> crate::error::Result<crate::tools::ToolResult> {
+            Ok(crate::tools::ToolResult {
+                tool_use_id,
+                output: crate::tools::ToolOutput::Success("Mock result".to_string()),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ted_tool_adapter_from_tool() {
+        // Test TedToolAdapter::new() creation
+        let tool = Arc::new(MockTestTool::new());
+        let adapter = TedToolAdapter::new(tool);
+
+        assert_eq!(adapter.name(), "mock_test");
+        assert_eq!(adapter.description(), "Mock test tool");
+    }
+
+    #[tokio::test]
+    async fn test_register_tool_adds_to_map() {
+        use std::env;
+        let context = crate::tools::ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+        let executor = ToolExecutor::new(context, false);
+        let server = McpServer::new(executor);
+
+        // Initially empty
+        assert!(server.tools.read().await.is_empty());
+
+        // Register tool
+        let tool = Arc::new(MockTestTool::new());
+        server.register_tool(tool).await;
+
+        // Now has one tool
+        assert_eq!(server.tools.read().await.len(), 1);
+        assert!(server.tools.read().await.contains_key("mock_test"));
+    }
+
+    #[tokio::test]
+    async fn test_register_multiple_tools() {
+        use std::env;
+        let context = crate::tools::ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+        let executor = ToolExecutor::new(context, false);
+        let server = McpServer::new(executor);
+
+        // Register from builtin registry
+        let registry = crate::tools::ToolRegistry::with_builtins();
+        for name in registry.names().iter().take(3) {
+            if let Some(tool) = registry.get(name) {
+                server.register_tool(tool.clone()).await;
+            }
+        }
+
+        // Should have at least some tools registered
+        assert!(!server.tools.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_tools_list_with_registered_tools() {
+        use std::env;
+        let context = crate::tools::ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+        let executor = ToolExecutor::new(context, false);
+        let server = McpServer::new(executor);
+
+        // Register a tool
+        let tool = Arc::new(MockTestTool::new());
+        server.register_tool(tool).await;
+
+        // List tools
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(1.into())),
+            method: "tools/list".to_string(),
+            params: None,
+        };
+
+        let response = server.handle_request(request).await;
+
+        assert!(response.error.is_none());
+        let result = response.result.unwrap();
+        let tools = result["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["name"], "mock_test");
+    }
+
+    // ===== Run Method Tests =====
+    // These test the server run loop logic
+
+    #[tokio::test]
+    async fn test_server_run_setup() {
+        // Test the setup portion of run() without actually blocking on stdin
+        use std::env;
+        let context = crate::tools::ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+        let executor = ToolExecutor::new(context, false);
+        let server = McpServer::new(executor);
+
+        // Verify server is created with correct initial state
+        assert!(!*server.initialized.read().await);
+        assert!(server.tools.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_server_transport_creation() {
+        use std::env;
+        let context = crate::tools::ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+        let executor = ToolExecutor::new(context, false);
+        let server = McpServer::new(executor);
+
+        // Transport should be created
+        assert!(Arc::strong_count(&server.transport) >= 1);
+    }
+
+    // ===== Handle Tools Call Execution Tests =====
+
+    struct MockSuccessTool;
+
+    #[async_trait::async_trait]
+    impl crate::tools::Tool for MockSuccessTool {
+        fn name(&self) -> &str {
+            "mock_success"
+        }
+
+        fn definition(&self) -> crate::llm::ToolDefinition {
+            crate::llm::ToolDefinition {
+                name: "mock_success".to_string(),
+                description: "A mock tool that succeeds".to_string(),
+                input_schema: crate::llm::ToolInputSchema {
+                    schema_type: "object".to_string(),
+                    properties: serde_json::json!({}),
+                    required: vec![],
+                },
+            }
+        }
+
+        fn permission_request(
+            &self,
+            _input: &serde_json::Value,
+        ) -> Option<crate::tools::PermissionRequest> {
+            None
+        }
+
+        async fn execute(
+            &self,
+            tool_use_id: String,
+            _args: serde_json::Value,
+            _context: &crate::tools::ToolContext,
+        ) -> crate::error::Result<crate::tools::ToolResult> {
+            Ok(crate::tools::ToolResult {
+                tool_use_id,
+                output: crate::tools::ToolOutput::Success("Success!".to_string()),
+            })
+        }
+    }
+
+    struct MockErrorTool;
+
+    #[async_trait::async_trait]
+    impl crate::tools::Tool for MockErrorTool {
+        fn name(&self) -> &str {
+            "mock_error"
+        }
+
+        fn definition(&self) -> crate::llm::ToolDefinition {
+            crate::llm::ToolDefinition {
+                name: "mock_error".to_string(),
+                description: "A mock tool that returns an error".to_string(),
+                input_schema: crate::llm::ToolInputSchema {
+                    schema_type: "object".to_string(),
+                    properties: serde_json::json!({}),
+                    required: vec![],
+                },
+            }
+        }
+
+        fn permission_request(
+            &self,
+            _input: &serde_json::Value,
+        ) -> Option<crate::tools::PermissionRequest> {
+            None
+        }
+
+        async fn execute(
+            &self,
+            tool_use_id: String,
+            _args: serde_json::Value,
+            _context: &crate::tools::ToolContext,
+        ) -> crate::error::Result<crate::tools::ToolResult> {
+            Ok(crate::tools::ToolResult {
+                tool_use_id,
+                output: crate::tools::ToolOutput::Error("Error occurred".to_string()),
+            })
+        }
+    }
+
+    struct MockFailingTool;
+
+    #[async_trait::async_trait]
+    impl crate::tools::Tool for MockFailingTool {
+        fn name(&self) -> &str {
+            "mock_failing"
+        }
+
+        fn definition(&self) -> crate::llm::ToolDefinition {
+            crate::llm::ToolDefinition {
+                name: "mock_failing".to_string(),
+                description: "A mock tool that fails execution".to_string(),
+                input_schema: crate::llm::ToolInputSchema {
+                    schema_type: "object".to_string(),
+                    properties: serde_json::json!({}),
+                    required: vec![],
+                },
+            }
+        }
+
+        fn permission_request(
+            &self,
+            _input: &serde_json::Value,
+        ) -> Option<crate::tools::PermissionRequest> {
+            None
+        }
+
+        async fn execute(
+            &self,
+            _tool_use_id: String,
+            _args: serde_json::Value,
+            _context: &crate::tools::ToolContext,
+        ) -> crate::error::Result<crate::tools::ToolResult> {
+            Err(crate::error::TedError::Config(
+                "Execution failed".to_string(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tools_call_success() {
+        use std::env;
+        let context = crate::tools::ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+        let executor = ToolExecutor::new(context, false);
+        let server = McpServer::new(executor);
+
+        // Register success tool
+        server.register_tool(Arc::new(MockSuccessTool)).await;
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(1.into())),
+            method: "tools/call".to_string(),
+            params: Some(serde_json::json!({
+                "name": "mock_success"
+            })),
+        };
+
+        let response = server.handle_request(request).await;
+
+        assert!(response.error.is_none());
+        let result = response.result.unwrap();
+        assert!(result["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Success"));
+    }
+
+    #[tokio::test]
+    async fn test_tools_call_with_arguments() {
+        use std::env;
+        let context = crate::tools::ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+        let executor = ToolExecutor::new(context, false);
+        let server = McpServer::new(executor);
+
+        server.register_tool(Arc::new(MockSuccessTool)).await;
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(1.into())),
+            method: "tools/call".to_string(),
+            params: Some(serde_json::json!({
+                "name": "mock_success",
+                "arguments": {"key": "value"}
+            })),
+        };
+
+        let response = server.handle_request(request).await;
+        assert!(response.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_tools_call_error_output() {
+        use std::env;
+        let context = crate::tools::ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+        let executor = ToolExecutor::new(context, false);
+        let server = McpServer::new(executor);
+
+        server.register_tool(Arc::new(MockErrorTool)).await;
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(1.into())),
+            method: "tools/call".to_string(),
+            params: Some(serde_json::json!({
+                "name": "mock_error"
+            })),
+        };
+
+        let response = server.handle_request(request).await;
+
+        // Error output is still a success response, but with is_error flag
+        assert!(response.error.is_none());
+        let result = response.result.unwrap();
+        assert_eq!(result["is_error"], true);
+    }
+
+    #[tokio::test]
+    async fn test_tools_call_execution_failure() {
+        use std::env;
+        let context = crate::tools::ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+        let executor = ToolExecutor::new(context, false);
+        let server = McpServer::new(executor);
+
+        server.register_tool(Arc::new(MockFailingTool)).await;
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(1.into())),
+            method: "tools/call".to_string(),
+            params: Some(serde_json::json!({
+                "name": "mock_failing"
+            })),
+        };
+
+        let response = server.handle_request(request).await;
+
+        // Execution failure returns an error response
+        assert!(response.error.is_some());
+        assert_eq!(response.error.unwrap().code, -32001);
+    }
+
+    // ===== CallToolParams Tests =====
+
+    #[test]
+    fn test_call_tool_params_deserialization() {
+        let json = r#"{"name": "test_tool"}"#;
+        let params: CallToolParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.name, "test_tool");
+        assert!(params.arguments.is_none());
+    }
+
+    #[test]
+    fn test_call_tool_params_with_arguments() {
+        let json = r#"{"name": "test_tool", "arguments": {"key": "value"}}"#;
+        let params: CallToolParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.name, "test_tool");
+        assert!(params.arguments.is_some());
+        assert_eq!(params.arguments.unwrap()["key"], "value");
+    }
+
+    // ===== CallToolResult Tests =====
+
+    #[test]
+    fn test_call_tool_result_serialization() {
+        let result = CallToolResult {
+            content: vec![ToolContent::Text {
+                text: "Result text".to_string(),
+            }],
+            is_error: None,
+        };
+
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["content"][0]["type"], "text");
+        assert_eq!(json["content"][0]["text"], "Result text");
+    }
+
+    #[test]
+    fn test_call_tool_result_with_error() {
+        let result = CallToolResult {
+            content: vec![ToolContent::Text {
+                text: "Error message".to_string(),
+            }],
+            is_error: Some(true),
+        };
+
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["is_error"], true);
+    }
+
+    // ===== ToolContent Tests =====
+
+    #[test]
+    fn test_tool_content_text() {
+        let content = ToolContent::Text {
+            text: "Hello".to_string(),
+        };
+        let json = serde_json::to_value(&content).unwrap();
+
+        assert_eq!(json["type"], "text");
+        assert_eq!(json["text"], "Hello");
+    }
+
+    // ===== Additional Integration Tests =====
+
+    #[tokio::test]
+    async fn test_full_tool_call_flow() {
+        use std::env;
+        let context = crate::tools::ToolContext::new(
+            env::current_dir().unwrap(),
+            None,
+            uuid::Uuid::new_v4(),
+            false,
+        );
+        let executor = ToolExecutor::new(context, false);
+        let server = McpServer::new(executor);
+
+        // 1. Initialize
+        let init_request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(1.into())),
+            method: "initialize".to_string(),
+            params: Some(serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "Test", "version": "1.0"}
+            })),
+        };
+        let _ = server.handle_request(init_request).await;
+
+        // 2. Initialized
+        let initialized_request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(2.into())),
+            method: "initialized".to_string(),
+            params: None,
+        };
+        let _ = server.handle_request(initialized_request).await;
+
+        // 3. Register tool
+        server.register_tool(Arc::new(MockSuccessTool)).await;
+
+        // 4. List tools
+        let list_request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(3.into())),
+            method: "tools/list".to_string(),
+            params: None,
+        };
+        let list_response = server.handle_request(list_request).await;
+        assert!(list_response.error.is_none());
+
+        // 5. Call tool
+        let call_request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(4.into())),
+            method: "tools/call".to_string(),
+            params: Some(serde_json::json!({
+                "name": "mock_success",
+                "arguments": {}
+            })),
+        };
+        let call_response = server.handle_request(call_request).await;
+        assert!(call_response.error.is_none());
+    }
 }

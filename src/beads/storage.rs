@@ -653,4 +653,387 @@ mod tests {
         let empty_stats = BeadStats::default();
         assert_eq!(empty_stats.completion_percentage(), 0.0);
     }
+
+    // ===== Additional edge case tests =====
+
+    #[test]
+    fn test_bead_store_all_statuses_in_stats() {
+        let (_temp, store) = create_test_store();
+
+        // Create beads with all status types
+        let bead1 = Bead::new("Pending", "Desc");
+        // bead1 is Pending by default
+
+        let mut bead2 = Bead::new("Ready", "Desc");
+        bead2.set_status(BeadStatus::Ready);
+
+        let mut bead3 = Bead::new("InProgress", "Desc");
+        bead3.set_status(BeadStatus::InProgress);
+
+        let mut bead4 = Bead::new("Blocked", "Desc");
+        bead4.set_status(BeadStatus::Blocked {
+            reason: "Waiting".to_string(),
+        });
+
+        let mut bead5 = Bead::new("Done", "Desc");
+        bead5.set_status(BeadStatus::Done);
+
+        let mut bead6 = Bead::new("Cancelled", "Desc");
+        bead6.set_status(BeadStatus::Cancelled {
+            reason: "No longer needed".to_string(),
+        });
+
+        store.create(bead1).unwrap();
+        store.create(bead2).unwrap();
+        store.create(bead3).unwrap();
+        store.create(bead4).unwrap();
+        store.create(bead5).unwrap();
+        store.create(bead6).unwrap();
+
+        let stats = store.stats();
+        assert_eq!(stats.total, 6);
+        assert_eq!(stats.pending, 1);
+        assert_eq!(stats.ready, 1);
+        assert_eq!(stats.in_progress, 1);
+        assert_eq!(stats.blocked, 1);
+        assert_eq!(stats.done, 1);
+        assert_eq!(stats.cancelled, 1);
+    }
+
+    #[test]
+    fn test_bead_store_by_status_blocked() {
+        let (_temp, store) = create_test_store();
+
+        let mut bead = Bead::new("Blocked task", "Description");
+        let reason = "Waiting for approval".to_string();
+        bead.set_status(BeadStatus::Blocked {
+            reason: reason.clone(),
+        });
+        store.create(bead).unwrap();
+
+        // by_status requires exact match including reason
+        let blocked = store.by_status(&BeadStatus::Blocked { reason });
+        assert_eq!(blocked.len(), 1);
+    }
+
+    #[test]
+    fn test_bead_store_by_status_cancelled() {
+        let (_temp, store) = create_test_store();
+
+        let mut bead = Bead::new("Cancelled task", "Description");
+        let reason = "No longer needed".to_string();
+        bead.set_status(BeadStatus::Cancelled {
+            reason: reason.clone(),
+        });
+        store.create(bead).unwrap();
+
+        // by_status requires exact match including reason
+        let cancelled = store.by_status(&BeadStatus::Cancelled { reason });
+        assert_eq!(cancelled.len(), 1);
+    }
+
+    #[test]
+    fn test_bead_store_set_status_non_existent() {
+        let (_temp, store) = create_test_store();
+
+        // Try to set status on non-existent bead
+        let fake_id = BeadId::from_title("nonexistent_bead_xyz");
+        let result = store.set_status(&fake_id, BeadStatus::Done);
+        // set_status is a no-op for non-existent beads (doesn't error)
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_bead_store_get_non_existent() {
+        let (_temp, store) = create_test_store();
+
+        let fake_id = BeadId::from_title("nonexistent_bead_xyz");
+        let result = store.get(&fake_id);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_bead_store_delete_non_existent() {
+        let (_temp, store) = create_test_store();
+
+        let fake_id = BeadId::from_title("nonexistent_bead_xyz");
+        // Deleting non-existent returns error
+        let result = store.delete(&fake_id);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_bead_stats_default() {
+        let stats = BeadStats::default();
+        assert_eq!(stats.total, 0);
+        assert_eq!(stats.pending, 0);
+        assert_eq!(stats.ready, 0);
+        assert_eq!(stats.in_progress, 0);
+        assert_eq!(stats.blocked, 0);
+        assert_eq!(stats.done, 0);
+        assert_eq!(stats.cancelled, 0);
+    }
+
+    #[test]
+    fn test_bead_stats_clone() {
+        let stats = BeadStats {
+            total: 5,
+            done: 3,
+            ..Default::default()
+        };
+        let cloned = stats.clone();
+        assert_eq!(cloned.total, 5);
+        assert_eq!(cloned.done, 3);
+    }
+
+    #[test]
+    fn test_bead_stats_debug() {
+        let stats = BeadStats::default();
+        let debug_str = format!("{:?}", stats);
+        assert!(debug_str.contains("BeadStats"));
+    }
+
+    #[test]
+    fn test_bead_stats_completion_percentage_all_done() {
+        let stats = BeadStats {
+            total: 10,
+            done: 10,
+            ..Default::default()
+        };
+        assert!((stats.completion_percentage() - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_bead_store_multiple_updates_same_bead() {
+        let (_temp, store) = create_test_store();
+
+        let mut bead = Bead::new("Task", "Description");
+        let id = store.create(bead.clone()).unwrap();
+
+        // Update multiple times
+        bead.set_status(BeadStatus::Ready);
+        store.update(bead.clone()).unwrap();
+
+        bead.set_status(BeadStatus::InProgress);
+        store.update(bead.clone()).unwrap();
+
+        bead.set_status(BeadStatus::Done);
+        store.update(bead.clone()).unwrap();
+
+        let retrieved = store.get(&id).unwrap();
+        assert!(matches!(retrieved.status, BeadStatus::Done));
+    }
+
+    #[test]
+    fn test_bead_store_by_tag_empty() {
+        let (_temp, store) = create_test_store();
+
+        let bead = Bead::new("Task", "Description");
+        store.create(bead).unwrap();
+
+        // Search for non-existent tag
+        let results = store.by_tag("nonexistent");
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_bead_store_children_of_no_children() {
+        let (_temp, store) = create_test_store();
+
+        let parent = Bead::new("Parent", "Description");
+        let parent_id = store.create(parent).unwrap();
+
+        // No children created
+        let children = store.children_of(&parent_id);
+        assert!(children.is_empty());
+    }
+
+    #[test]
+    fn test_init_beads() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = init_beads(temp_dir.path()).unwrap();
+
+        assert_eq!(store.count(), 0);
+    }
+
+    // ===== Additional edge case tests for coverage =====
+
+    #[test]
+    fn test_bead_store_create_duplicate_id() {
+        let (_temp, store) = create_test_store();
+
+        let bead1 = Bead::new("Task 1", "Description");
+        let id = store.create(bead1.clone()).unwrap();
+
+        // Try to create another bead with the same ID
+        let bead2 = Bead::with_id(id.clone(), "Task 2", "Description");
+        let result = store.create(bead2);
+
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(e.to_string().contains("already exists"));
+        }
+    }
+
+    #[test]
+    fn test_bead_store_update_non_existent() {
+        let (_temp, store) = create_test_store();
+
+        // Try to update a bead that doesn't exist
+        let fake_bead = Bead::with_id(BeadId::from_title("nonexistent_xyz"), "Fake", "Description");
+        let result = store.update(fake_bead);
+
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(e.to_string().contains("not found"));
+        }
+    }
+
+    #[test]
+    fn test_bead_store_delete_and_reload() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create, then delete a bead
+        let id;
+        {
+            let store = BeadStore::new(temp_dir.path().to_path_buf()).unwrap();
+            let bead = Bead::new("Task to delete", "Description");
+            id = store.create(bead).unwrap();
+
+            // Verify it exists
+            assert!(store.get(&id).is_some());
+            assert_eq!(store.count(), 1);
+
+            // Delete it
+            store.delete(&id).unwrap();
+            assert!(store.get(&id).is_none());
+            assert_eq!(store.count(), 0);
+        }
+
+        // Reload the store - delete operation should be replayed
+        {
+            let store = BeadStore::new(temp_dir.path().to_path_buf()).unwrap();
+            assert!(store.get(&id).is_none());
+            assert_eq!(store.count(), 0);
+        }
+    }
+
+    #[test]
+    fn test_bead_store_log_with_empty_lines() {
+        let temp_dir = TempDir::new().unwrap();
+        let beads_dir = temp_dir.path().join("beads");
+
+        // Create a bead first
+        {
+            let store = BeadStore::new(temp_dir.path().to_path_buf()).unwrap();
+            let bead = Bead::new("Task", "Description");
+            store.create(bead).unwrap();
+        }
+
+        // Manually add empty lines to the JSONL file
+        {
+            let jsonl_path = beads_dir.join("beads.jsonl");
+            if jsonl_path.exists() {
+                let mut file = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&jsonl_path)
+                    .unwrap();
+                use std::io::Write;
+                writeln!(file).unwrap(); // Empty line
+                writeln!(file, "   ").unwrap(); // Whitespace line
+            }
+        }
+
+        // Reload should handle empty lines gracefully
+        {
+            let store = BeadStore::new(temp_dir.path().to_path_buf()).unwrap();
+            assert_eq!(store.count(), 1);
+        }
+    }
+
+    #[test]
+    fn test_bead_store_refresh_ready() {
+        let (_temp, store) = create_test_store();
+
+        // Create some pending beads (actionable)
+        let bead1 = Bead::new("Task 1", "Description");
+        let bead2 = Bead::new("Task 2", "Description");
+        store.create(bead1).unwrap();
+        store.create(bead2).unwrap();
+
+        // Both should be Pending and actionable (no dependencies)
+        assert_eq!(store.get_actionable().len(), 2);
+
+        // Refresh ready status
+        let count = store.refresh_ready().unwrap();
+        assert_eq!(count, 2);
+
+        // Now they should be Ready status
+        let ready = store.ready();
+        assert_eq!(ready.len(), 2);
+    }
+
+    #[test]
+    fn test_bead_store_refresh_ready_no_actionable() {
+        let (_temp, store) = create_test_store();
+
+        // Create a bead that's already done (not actionable)
+        let mut bead = Bead::new("Done task", "Description");
+        bead.set_status(BeadStatus::Done);
+        store.create(bead).unwrap();
+
+        // No actionable beads
+        let count = store.refresh_ready().unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_bead_store_by_priority() {
+        let (_temp, store) = create_test_store();
+
+        // Create beads with different priorities
+        let low = Bead::new("Low priority", "Desc").with_priority(BeadPriority::Low);
+        let medium = Bead::new("Medium priority", "Desc").with_priority(BeadPriority::Medium);
+        let high = Bead::new("High priority", "Desc").with_priority(BeadPriority::High);
+        let critical = Bead::new("Critical", "Desc").with_priority(BeadPriority::Critical);
+
+        store.create(low).unwrap();
+        store.create(medium).unwrap();
+        store.create(high).unwrap();
+        store.create(critical).unwrap();
+
+        // Test each priority level
+        assert_eq!(store.by_priority(BeadPriority::Low).len(), 1);
+        assert_eq!(store.by_priority(BeadPriority::Medium).len(), 1);
+        assert_eq!(store.by_priority(BeadPriority::High).len(), 1);
+        assert_eq!(store.by_priority(BeadPriority::Critical).len(), 1);
+    }
+
+    #[test]
+    fn test_bead_store_by_priority_empty() {
+        let (_temp, store) = create_test_store();
+
+        // Create only Medium priority beads
+        let bead = Bead::new("Task", "Description").with_priority(BeadPriority::Medium);
+        store.create(bead).unwrap();
+
+        // Search for Low priority should return empty
+        let results = store.by_priority(BeadPriority::Low);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_bead_store_by_priority_multiple() {
+        let (_temp, store) = create_test_store();
+
+        // Create multiple high priority beads
+        for i in 0..5 {
+            let bead =
+                Bead::new(format!("High task {}", i), "Desc").with_priority(BeadPriority::High);
+            store.create(bead).unwrap();
+        }
+
+        let high_priority = store.by_priority(BeadPriority::High);
+        assert_eq!(high_priority.len(), 5);
+    }
 }

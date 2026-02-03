@@ -830,4 +830,168 @@ mod tests {
             assert_eq!(app.screen, Screen::Plans);
         }
     }
+
+    // ===== handle_model_selection_input Tests =====
+
+    use crate::tui::app::ModelDisplayInfo;
+
+    fn make_test_model(id: &str) -> ModelDisplayInfo {
+        ModelDisplayInfo {
+            id: id.to_string(),
+            name: id.to_string(),
+            tier: "Standard".to_string(),
+            description: "Test model".to_string(),
+            recommended: false,
+        }
+    }
+
+    #[test]
+    fn test_handle_model_selection_input_enter_confirms() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.input_mode = InputMode::SelectingModel;
+        app.available_models = vec![make_test_model("model1"), make_test_model("model2")];
+        app.model_picker_index = 0;
+
+        handle_model_selection_input(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_handle_model_selection_input_esc_cancels() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.input_mode = InputMode::SelectingModel;
+        app.available_models = vec![make_test_model("model1")];
+
+        handle_model_selection_input(&mut app, KeyCode::Esc);
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_handle_model_selection_input_up_arrow() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.input_mode = InputMode::SelectingModel;
+        app.available_models = vec![
+            make_test_model("model1"),
+            make_test_model("model2"),
+            make_test_model("model3"),
+        ];
+        app.model_picker_index = 1;
+
+        handle_model_selection_input(&mut app, KeyCode::Up);
+
+        assert_eq!(app.model_picker_index, 0);
+    }
+
+    #[test]
+    fn test_handle_model_selection_input_k_moves_up() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.input_mode = InputMode::SelectingModel;
+        app.available_models = vec![make_test_model("model1"), make_test_model("model2")];
+        app.model_picker_index = 1;
+
+        handle_model_selection_input(&mut app, KeyCode::Char('k'));
+
+        assert_eq!(app.model_picker_index, 0);
+    }
+
+    #[test]
+    fn test_handle_model_selection_input_down_arrow() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.input_mode = InputMode::SelectingModel;
+        app.available_models = vec![
+            make_test_model("model1"),
+            make_test_model("model2"),
+            make_test_model("model3"),
+        ];
+        app.model_picker_index = 0;
+
+        handle_model_selection_input(&mut app, KeyCode::Down);
+
+        assert_eq!(app.model_picker_index, 1);
+    }
+
+    #[test]
+    fn test_handle_model_selection_input_j_moves_down() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.input_mode = InputMode::SelectingModel;
+        app.available_models = vec![make_test_model("model1"), make_test_model("model2")];
+        app.model_picker_index = 0;
+
+        handle_model_selection_input(&mut app, KeyCode::Char('j'));
+
+        assert_eq!(app.model_picker_index, 1);
+    }
+
+    #[test]
+    fn test_handle_model_selection_input_up_wraps() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.input_mode = InputMode::SelectingModel;
+        app.available_models = vec![
+            make_test_model("model1"),
+            make_test_model("model2"),
+            make_test_model("model3"),
+        ];
+        app.model_picker_index = 0;
+
+        handle_model_selection_input(&mut app, KeyCode::Up);
+
+        // Should wrap to last item
+        assert_eq!(app.model_picker_index, 2);
+    }
+
+    #[test]
+    fn test_handle_model_selection_input_down_wraps() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.input_mode = InputMode::SelectingModel;
+        app.available_models = vec![
+            make_test_model("model1"),
+            make_test_model("model2"),
+            make_test_model("model3"),
+        ];
+        app.model_picker_index = 2;
+
+        handle_model_selection_input(&mut app, KeyCode::Down);
+
+        // Should wrap to first item
+        assert_eq!(app.model_picker_index, 0);
+    }
+
+    #[test]
+    fn test_handle_model_selection_input_unknown_key() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.input_mode = InputMode::SelectingModel;
+        app.available_models = vec![make_test_model("model1")];
+        app.model_picker_index = 0;
+
+        handle_model_selection_input(&mut app, KeyCode::Tab);
+
+        // Should not change anything
+        assert_eq!(app.input_mode, InputMode::SelectingModel);
+        assert_eq!(app.model_picker_index, 0);
+    }
+
+    #[test]
+    fn test_handle_model_selection_input_empty_models() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.input_mode = InputMode::SelectingModel;
+        app.available_models = vec![];
+        app.model_picker_index = 0;
+
+        // Should not crash with empty models
+        handle_model_selection_input(&mut app, KeyCode::Up);
+        handle_model_selection_input(&mut app, KeyCode::Down);
+        assert_eq!(app.model_picker_index, 0);
+    }
 }

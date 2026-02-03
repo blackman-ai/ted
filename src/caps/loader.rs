@@ -466,4 +466,54 @@ description = "User cap"
             .iter()
             .any(|(name, is_builtin)| name == "custom-user-cap" && !*is_builtin));
     }
+
+    #[test]
+    fn test_list_available_includes_project_caps() {
+        let project_dir = tempdir().unwrap();
+        let user_dir = tempdir().unwrap();
+
+        // Create a project-local cap
+        std::fs::write(
+            project_dir.path().join("project-local-cap.toml"),
+            r#"name = "project-local-cap""#,
+        )
+        .unwrap();
+
+        let loader = CapLoader::with_paths(
+            Some(project_dir.path().to_path_buf()),
+            user_dir.path().to_path_buf(),
+        );
+        let caps = loader.list_available().unwrap();
+
+        // Should include the project cap (marked as not builtin)
+        assert!(caps
+            .iter()
+            .any(|(name, is_builtin)| name == "project-local-cap" && !*is_builtin));
+    }
+
+    #[test]
+    fn test_list_available_project_cap_not_duplicated_with_builtin() {
+        let project_dir = tempdir().unwrap();
+        let user_dir = tempdir().unwrap();
+
+        // Create a project cap with a unique name
+        std::fs::write(
+            project_dir.path().join("unique-project-cap.toml"),
+            r#"name = "unique-project-cap""#,
+        )
+        .unwrap();
+
+        let loader = CapLoader::with_paths(
+            Some(project_dir.path().to_path_buf()),
+            user_dir.path().to_path_buf(),
+        );
+        let caps = loader.list_available().unwrap();
+
+        // Count how many times unique-project-cap appears
+        let count = caps
+            .iter()
+            .filter(|(name, _)| name == "unique-project-cap")
+            .count();
+        assert_eq!(count, 1);
+    }
 }
