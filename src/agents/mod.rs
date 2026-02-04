@@ -63,7 +63,10 @@ pub mod types;
 pub use builtin::{get_agent_type, get_agent_type_names, is_valid_agent_type, AgentTypeDefinition};
 pub use context::{AgentContext, AgentContextBuilder};
 pub use memory::{apply_memory_strategy, MemoryAction};
-pub use runner::{spawn_background_agent, AgentRunner, BackgroundAgentHandle, RunnerConfig};
+pub use runner::{
+    spawn_background_agent, AgentProgressEvent, AgentRunner, BackgroundAgentHandle, ProgressSender,
+    RunnerConfig,
+};
 pub use types::{
     AgentConfig, AgentHandle, AgentResult, AgentStatus, MemoryStrategy, ToolPermissions,
 };

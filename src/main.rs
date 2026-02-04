@@ -36,6 +36,7 @@ use ted::llm::provider::{
 use ted::llm::providers::{AnthropicProvider, OllamaProvider, OpenRouterProvider};
 use ted::plans::PlanStore;
 use ted::tools::{ToolContext, ToolExecutor, ToolResult};
+use ted::tui::chat::{run_chat_tui_loop, ChatTuiConfig};
 use ted::update;
 use ted::utils;
 
@@ -486,18 +487,20 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
             .registry_mut()
             .register_spawn_agent_with_coordinator(
                 provider.clone(),
-                skill_registry,
+                skill_registry.clone(),
                 Arc::clone(coordinator),
                 model.to_string(),
             );
     } else {
-        tool_executor
-            .registry_mut()
-            .register_spawn_agent(provider.clone(), skill_registry, model.to_string());
+        tool_executor.registry_mut().register_spawn_agent(
+            provider.clone(),
+            skill_registry.clone(),
+            model.to_string(),
+        );
     }
 
     // Update session info
-    session_info.project_root = project_root;
+    session_info.project_root = project_root.clone();
     if !is_resumed {
         session_info.caps = cap_names.clone();
     } else {
@@ -511,7 +514,60 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
         }
     }
 
-    // Print welcome message with cap info
+    // Use TUI or simple mode
+    if !args.no_tui {
+        // TUI mode requires trust mode for tool permissions since interactive
+        // prompts don't work in raw terminal mode. We'll add a TUI permission
+        // dialog in the future, but for now auto-approve is necessary.
+        let tui_trust_mode = true;
+
+        // Set environment variable to suppress agent output in TUI mode
+        std::env::set_var("TED_TUI_MODE", "1");
+
+        // Recreate tool executor with trust mode for TUI
+        let tui_tool_context = ToolContext::new(
+            working_directory.clone(),
+            project_root.clone(),
+            session_id.0,
+            tui_trust_mode,
+        )
+        .with_files_in_context(args.files_in_context.clone());
+        let mut tui_tool_executor = ToolExecutor::new(tui_tool_context, tui_trust_mode);
+
+        // Re-register spawn_agent tool for TUI executor with progress tracking
+        let agent_progress_tracker = tui_tool_executor
+            .registry_mut()
+            .register_spawn_agent_with_progress(
+                provider.clone(),
+                skill_registry.clone(),
+                model.to_string(),
+            );
+
+        // Run TUI mode
+        let tui_config = ChatTuiConfig {
+            session_id: session_id.0,
+            provider_name: provider_name.clone(),
+            model: model.clone(),
+            caps: cap_names.clone(),
+            trust_mode: tui_trust_mode,
+            stream_enabled: !args.no_stream,
+        };
+
+        return run_chat_tui_loop(
+            tui_config,
+            provider,
+            tui_tool_executor,
+            context_manager,
+            settings,
+            conversation,
+            history_store,
+            session_info,
+            agent_progress_tracker,
+        )
+        .await;
+    }
+
+    // Print welcome message with cap info (only for simple mode)
     print_welcome(
         &provider_name,
         &model,
@@ -520,7 +576,7 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
         &merged_cap.source_caps,
     )?;
 
-    // Main chat loop
+    // Main chat loop (simple mode - used when --no-tui is set)
     loop {
         // Get user input
         let input = read_user_input()?;

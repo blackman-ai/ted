@@ -215,7 +215,7 @@ mod tests {
             .unwrap();
         let merged = resolver.merge(&caps);
 
-        assert!(merged.system_prompt.contains("coding assistant")); // From base
+        assert!(merged.system_prompt.contains("concise")); // From base
         assert!(merged.system_prompt.contains("Rust")); // From rust-expert
     }
 

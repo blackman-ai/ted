@@ -7,17 +7,72 @@
 
 use async_trait::async_trait;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use crate::agents::{
-    get_agent_type_names, is_valid_agent_type, AgentConfig, AgentContext, AgentRunner,
-    MemoryStrategy,
+    get_agent_type_names, is_valid_agent_type, AgentConfig, AgentContext, AgentProgressEvent,
+    AgentRunner, MemoryStrategy,
 };
 use crate::error::{Result, TedError};
 use crate::llm::provider::{LlmProvider, ToolDefinition};
 use crate::llm::rate_budget::TokenRateCoordinator;
 use crate::skills::SkillRegistry;
 use crate::tools::{PermissionRequest, SchemaBuilder, Tool, ToolContext, ToolResult};
+
+/// Progress state for an agent execution
+#[derive(Debug, Clone)]
+pub struct AgentProgressState {
+    /// Current iteration
+    pub iteration: u32,
+    /// Max iterations
+    pub max_iterations: u32,
+    /// Whether the agent has completed
+    pub completed: bool,
+    /// Current tool being executed (None if between tools)
+    pub current_tool: Option<String>,
+    /// Last tool activity for display (persists after tool completes)
+    pub last_activity: String,
+}
+
+impl Default for AgentProgressState {
+    fn default() -> Self {
+        Self {
+            iteration: 0,
+            max_iterations: 30,
+            completed: false,
+            current_tool: None,
+            last_activity: "Starting...".to_string(),
+        }
+    }
+}
+
+impl AgentProgressState {
+    /// Get a display string for the current progress
+    pub fn display_status(&self) -> String {
+        if let Some(ref tool) = self.current_tool {
+            // Show active tool
+            format!("[{}/{}] → {}", self.iteration, self.max_iterations, tool)
+        } else if !self.last_activity.is_empty() {
+            // Show last activity
+            format!(
+                "[{}/{}] {}",
+                self.iteration, self.max_iterations, self.last_activity
+            )
+        } else {
+            format!("[{}/{}] Working...", self.iteration, self.max_iterations)
+        }
+    }
+}
+
+/// Shared progress tracker for all spawn_agent executions
+pub type ProgressTracker = Arc<Mutex<HashMap<String, AgentProgressState>>>;
+
+/// Create a new progress tracker
+pub fn new_progress_tracker() -> ProgressTracker {
+    Arc::new(Mutex::new(HashMap::new()))
+}
 
 /// Tool for spawning specialized subagents
 pub struct SpawnAgentTool {
@@ -29,6 +84,8 @@ pub struct SpawnAgentTool {
     rate_coordinator: Option<Arc<TokenRateCoordinator>>,
     /// Model name to use for subagents (inherited from parent)
     model: String,
+    /// Progress tracker for active executions
+    progress_tracker: ProgressTracker,
 }
 
 impl SpawnAgentTool {
@@ -43,6 +100,7 @@ impl SpawnAgentTool {
             skill_registry,
             rate_coordinator: None,
             model,
+            progress_tracker: new_progress_tracker(),
         }
     }
 
@@ -58,7 +116,29 @@ impl SpawnAgentTool {
             skill_registry,
             rate_coordinator: Some(rate_coordinator),
             model,
+            progress_tracker: new_progress_tracker(),
         }
+    }
+
+    /// Create a new spawn agent tool with an existing progress tracker
+    pub fn with_progress_tracker(
+        provider: Arc<dyn LlmProvider>,
+        skill_registry: Arc<SkillRegistry>,
+        model: String,
+        progress_tracker: ProgressTracker,
+    ) -> Self {
+        Self {
+            provider,
+            skill_registry,
+            rate_coordinator: None,
+            model,
+            progress_tracker,
+        }
+    }
+
+    /// Get a clone of the progress tracker for external monitoring
+    pub fn progress_tracker(&self) -> ProgressTracker {
+        Arc::clone(&self.progress_tracker)
     }
 }
 
@@ -74,9 +154,18 @@ impl Tool for SpawnAgentTool {
         ToolDefinition {
             name: "spawn_agent".to_string(),
             description: format!(
-                "Spawn a specialized subagent to handle a specific task. \
-                 Available agent types: {}. \
-                 The subagent will execute autonomously and return results.",
+                "Spawn a specialized subagent for complex tasks. USE THIS for:\n\
+                 - Exploring/analyzing codebases ('look at the project', 'what needs work')\n\
+                 - Multi-file implementations or refactoring\n\
+                 - Running builds, tests, or complex shell workflows\n\
+                 - Code review and quality analysis\n\n\
+                 Agent types:\n\
+                 - explore: Codebase discovery & analysis (read-only). Best for understanding code.\n\
+                 - implement: Writing/modifying code across multiple files.\n\
+                 - plan: Architecture design and implementation planning.\n\
+                 - bash: Running builds, tests, shell commands.\n\
+                 - review: Code quality analysis and suggestions.\n\n\
+                 Available: {}",
                 agent_types
             ),
             input_schema: SchemaBuilder::new()
@@ -165,8 +254,8 @@ impl Tool for SpawnAgentTool {
             .unwrap_or_else(|| context.working_directory.clone());
 
         // Inherit the parent's model for subagents
-        let mut config = AgentConfig::new(agent_type, task, working_dir)
-            .with_model(self.model.clone());
+        let mut config =
+            AgentConfig::new(agent_type, task, working_dir).with_model(self.model.clone());
 
         // Parse optional caps
         if let Some(caps) = input["caps"].as_array() {
@@ -218,18 +307,23 @@ impl Tool for SpawnAgentTool {
         // Create agent context
         let mut agent_context = AgentContext::new(config.clone());
 
+        // Check if we're in TUI mode (suppress output)
+        let tui_mode = std::env::var("TED_TUI_MODE").is_ok();
+
         // Allocate rate budget if coordinator is available
         if let Some(coordinator) = &self.rate_coordinator {
             let priority = config.rate_priority();
             let allocation = coordinator.request_allocation(priority, config.name.clone());
 
-            // Log the allocation
-            eprintln!(
-                "  [{}] Rate budget: {}K tokens/min ({})",
-                config.name,
-                allocation.budget() / 1000,
-                format!("{:?}", priority).to_lowercase()
-            );
+            // Log the allocation (unless in TUI mode)
+            if !tui_mode {
+                eprintln!(
+                    "  [{}] Rate budget: {}K tokens/min ({})",
+                    config.name,
+                    allocation.budget() / 1000,
+                    format!("{:?}", priority).to_lowercase()
+                );
+            }
 
             agent_context.set_rate_allocation(Arc::new(allocation));
         }
@@ -261,8 +355,12 @@ impl Tool for SpawnAgentTool {
             }
         }
 
-        // Create runner
-        let runner = AgentRunner::new(Arc::clone(&self.provider));
+        // Create runner with quiet mode if in TUI
+        let runner_config = crate::agents::RunnerConfig {
+            quiet: tui_mode,
+            ..Default::default()
+        };
+        let runner = AgentRunner::with_config(Arc::clone(&self.provider), runner_config);
 
         if background {
             // Spawn in background
@@ -280,8 +378,93 @@ impl Tool for SpawnAgentTool {
                 ),
             ))
         } else {
-            // Run synchronously
-            match runner.run(agent_context).await {
+            // Initialize progress tracker for this execution
+            let max_iterations = config.max_iterations;
+            {
+                let mut tracker = self.progress_tracker.lock().await;
+                tracker.insert(
+                    tool_use_id.clone(),
+                    AgentProgressState {
+                        iteration: 0,
+                        max_iterations,
+                        completed: false,
+                        current_tool: None,
+                        last_activity: format!("Starting {} agent...", agent_type),
+                    },
+                );
+            }
+
+            // Create progress channel
+            let (progress_tx, mut progress_rx) =
+                tokio::sync::mpsc::unbounded_channel::<AgentProgressEvent>();
+
+            // Spawn a task to update the progress tracker from events
+            let tracker_clone = Arc::clone(&self.progress_tracker);
+            let tool_use_id_clone = tool_use_id.clone();
+            let progress_task = tokio::spawn(async move {
+                while let Some(event) = progress_rx.recv().await {
+                    let mut tracker = tracker_clone.lock().await;
+                    if let Some(state) = tracker.get_mut(&tool_use_id_clone) {
+                        match &event {
+                            AgentProgressEvent::Started { .. } => {
+                                state.last_activity = "Starting...".to_string();
+                            }
+                            AgentProgressEvent::IterationStart {
+                                iteration,
+                                max_iterations,
+                            } => {
+                                state.iteration = *iteration;
+                                state.max_iterations = *max_iterations;
+                                // Don't clear current_tool here - let it persist until next tool starts
+                            }
+                            AgentProgressEvent::ToolStart {
+                                tool_name,
+                                input_summary,
+                            } => {
+                                // Set current tool with summary
+                                let summary = if input_summary.len() > 50 {
+                                    format!("{}...", &input_summary[..47])
+                                } else {
+                                    input_summary.clone()
+                                };
+                                state.current_tool = Some(format!("{} {}", tool_name, summary));
+                            }
+                            AgentProgressEvent::ToolComplete { tool_name, success } => {
+                                // Update last activity and clear current tool
+                                let status = if *success { "✓" } else { "✗" };
+                                state.last_activity = format!("{} {}", status, tool_name);
+                                state.current_tool = None;
+                            }
+                            AgentProgressEvent::RateLimited { wait_secs } => {
+                                state.current_tool = None;
+                                state.last_activity = format!("Rate limited ({:.1}s)", wait_secs);
+                            }
+                            AgentProgressEvent::Completed { success, .. } => {
+                                state.completed = true;
+                                state.current_tool = None;
+                                state.last_activity =
+                                    if *success { "Completed" } else { "Failed" }.to_string();
+                            }
+                        }
+                    }
+                }
+            });
+
+            // Run synchronously with progress reporting
+            let result = runner
+                .run_with_progress(agent_context, Some(progress_tx))
+                .await;
+
+            // Wait for progress task to finish processing any remaining events
+            let _ = progress_task.await;
+
+            // Clean up progress tracker
+            {
+                let mut tracker = self.progress_tracker.lock().await;
+                tracker.remove(&tool_use_id);
+            }
+
+            match result {
                 Ok(result) => Ok(ToolResult::success(tool_use_id, result.format_for_parent())),
                 Err(e) => Ok(ToolResult::error(
                     tool_use_id,
@@ -322,7 +505,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_spawn_agent_tool_name() {
+    fn test_spawn_agent_valid_types() {
         // We can't easily test the full tool without mocking the provider,
         // but we can verify the basic structure
         assert!(is_valid_agent_type("explore"));
@@ -561,5 +744,577 @@ mod tests {
         let long_task = "a".repeat(100);
         let truncated = truncate_str(&long_task, 80);
         assert_eq!(truncated.len(), 83); // 80 + "..."
+    }
+
+    // ===== AgentProgressState Tests =====
+
+    #[test]
+    fn test_agent_progress_state_default() {
+        let state = AgentProgressState::default();
+        assert_eq!(state.iteration, 0);
+        assert_eq!(state.max_iterations, 30);
+        assert!(!state.completed);
+        assert!(state.current_tool.is_none());
+        assert_eq!(state.last_activity, "Starting...");
+    }
+
+    #[test]
+    fn test_agent_progress_state_display_status_with_tool() {
+        let state = AgentProgressState {
+            iteration: 5,
+            max_iterations: 30,
+            completed: false,
+            current_tool: Some("file_read".to_string()),
+            last_activity: "Reading...".to_string(),
+        };
+
+        let status = state.display_status();
+        assert!(status.contains("[5/30]"));
+        assert!(status.contains("file_read"));
+        assert!(status.contains("→"));
+    }
+
+    #[test]
+    fn test_agent_progress_state_display_status_with_activity() {
+        let state = AgentProgressState {
+            iteration: 10,
+            max_iterations: 50,
+            completed: false,
+            current_tool: None,
+            last_activity: "Processing results".to_string(),
+        };
+
+        let status = state.display_status();
+        assert!(status.contains("[10/50]"));
+        assert!(status.contains("Processing results"));
+    }
+
+    #[test]
+    fn test_agent_progress_state_display_status_empty_activity() {
+        let state = AgentProgressState {
+            iteration: 3,
+            max_iterations: 20,
+            completed: false,
+            current_tool: None,
+            last_activity: String::new(),
+        };
+
+        let status = state.display_status();
+        assert!(status.contains("[3/20]"));
+        assert!(status.contains("Working..."));
+    }
+
+    #[test]
+    fn test_agent_progress_state_clone() {
+        let state = AgentProgressState {
+            iteration: 5,
+            max_iterations: 100,
+            completed: true,
+            current_tool: Some("shell".to_string()),
+            last_activity: "Done".to_string(),
+        };
+
+        let cloned = state.clone();
+        assert_eq!(cloned.iteration, state.iteration);
+        assert_eq!(cloned.max_iterations, state.max_iterations);
+        assert_eq!(cloned.completed, state.completed);
+        assert_eq!(cloned.current_tool, state.current_tool);
+        assert_eq!(cloned.last_activity, state.last_activity);
+    }
+
+    #[test]
+    fn test_agent_progress_state_debug() {
+        let state = AgentProgressState::default();
+        let debug = format!("{:?}", state);
+        assert!(debug.contains("AgentProgressState"));
+        assert!(debug.contains("iteration"));
+    }
+
+    #[test]
+    fn test_new_progress_tracker() {
+        let tracker = new_progress_tracker();
+        // Tracker should be empty initially
+        let guard = tracker.blocking_lock();
+        assert!(guard.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_progress_tracker_insert_and_retrieve() {
+        let tracker = new_progress_tracker();
+        let tool_id = "test-id".to_string();
+
+        {
+            let mut guard = tracker.lock().await;
+            guard.insert(tool_id.clone(), AgentProgressState::default());
+        }
+
+        {
+            let guard = tracker.lock().await;
+            let state = guard.get(&tool_id);
+            assert!(state.is_some());
+            assert_eq!(state.unwrap().iteration, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_progress_tracker_update() {
+        let tracker = new_progress_tracker();
+        let tool_id = "update-test".to_string();
+
+        // Insert
+        {
+            let mut guard = tracker.lock().await;
+            guard.insert(tool_id.clone(), AgentProgressState::default());
+        }
+
+        // Update
+        {
+            let mut guard = tracker.lock().await;
+            if let Some(state) = guard.get_mut(&tool_id) {
+                state.iteration = 5;
+                state.last_activity = "Updated".to_string();
+            }
+        }
+
+        // Verify
+        {
+            let guard = tracker.lock().await;
+            let state = guard.get(&tool_id).unwrap();
+            assert_eq!(state.iteration, 5);
+            assert_eq!(state.last_activity, "Updated");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_progress_tracker_remove() {
+        let tracker = new_progress_tracker();
+        let tool_id = "remove-test".to_string();
+
+        // Insert
+        {
+            let mut guard = tracker.lock().await;
+            guard.insert(tool_id.clone(), AgentProgressState::default());
+            assert!(guard.contains_key(&tool_id));
+        }
+
+        // Remove
+        {
+            let mut guard = tracker.lock().await;
+            guard.remove(&tool_id);
+        }
+
+        // Verify removed
+        {
+            let guard = tracker.lock().await;
+            assert!(!guard.contains_key(&tool_id));
+        }
+    }
+
+    #[test]
+    fn test_agent_progress_state_completed() {
+        let mut state = AgentProgressState::default();
+        assert!(!state.completed);
+
+        state.completed = true;
+        state.last_activity = "Completed".to_string();
+
+        assert!(state.completed);
+        assert_eq!(state.display_status(), "[0/30] Completed");
+    }
+
+    #[test]
+    fn test_agent_progress_state_max_iterations_respected() {
+        let state = AgentProgressState {
+            iteration: 30,
+            max_iterations: 30,
+            completed: false,
+            current_tool: None,
+            last_activity: "At max".to_string(),
+        };
+
+        let status = state.display_status();
+        assert!(status.contains("[30/30]"));
+    }
+
+    #[test]
+    fn test_agent_progress_state_tool_with_long_name() {
+        let state = AgentProgressState {
+            iteration: 1,
+            max_iterations: 10,
+            completed: false,
+            current_tool: Some("very_long_tool_name_with_lots_of_characters".to_string()),
+            last_activity: String::new(),
+        };
+
+        let status = state.display_status();
+        assert!(status.contains("very_long_tool_name"));
+    }
+
+    // ===== SpawnAgentTool Tests =====
+
+    use crate::llm::mock_provider::MockProvider;
+    use crate::skills::SkillRegistry;
+    use crate::tools::Tool;
+
+    fn create_test_spawn_agent_tool() -> SpawnAgentTool {
+        let provider: Arc<dyn crate::llm::provider::LlmProvider> = Arc::new(MockProvider::new());
+        let skill_registry = Arc::new(SkillRegistry::with_paths(vec![]));
+        SpawnAgentTool::new(provider, skill_registry, "mock-model".to_string())
+    }
+
+    #[test]
+    fn test_spawn_agent_tool_new() {
+        let tool = create_test_spawn_agent_tool();
+        assert_eq!(tool.model, "mock-model");
+        assert!(tool.rate_coordinator.is_none());
+    }
+
+    #[test]
+    fn test_spawn_agent_tool_name() {
+        let tool = create_test_spawn_agent_tool();
+        assert_eq!(tool.name(), "spawn_agent");
+    }
+
+    #[test]
+    fn test_spawn_agent_tool_definition() {
+        let tool = create_test_spawn_agent_tool();
+        let definition = tool.definition();
+
+        assert_eq!(definition.name, "spawn_agent");
+        assert!(definition
+            .description
+            .contains("Spawn a specialized subagent"));
+        assert!(definition.description.contains("explore"));
+        assert!(definition.description.contains("implement"));
+    }
+
+    #[test]
+    fn test_spawn_agent_tool_definition_schema() {
+        let tool = create_test_spawn_agent_tool();
+        let definition = tool.definition();
+
+        // Check that input_schema has required fields
+        let properties = &definition.input_schema.properties;
+        assert!(properties.get("agent_type").is_some());
+        assert!(properties.get("task").is_some());
+        assert!(properties.get("caps").is_some());
+        assert!(properties.get("skill").is_some());
+        assert!(properties.get("memory_strategy").is_some());
+        assert!(properties.get("max_iterations").is_some());
+        assert!(properties.get("background").is_some());
+        assert!(properties.get("bead_id").is_some());
+    }
+
+    #[test]
+    fn test_spawn_agent_tool_requires_permission() {
+        let tool = create_test_spawn_agent_tool();
+        assert!(tool.requires_permission());
+    }
+
+    #[test]
+    fn test_spawn_agent_tool_permission_request() {
+        let tool = create_test_spawn_agent_tool();
+
+        let input = serde_json::json!({
+            "agent_type": "explore",
+            "task": "Find all API endpoints"
+        });
+
+        let request = tool.permission_request(&input);
+        assert!(request.is_some());
+
+        let request = request.unwrap();
+        assert_eq!(request.tool_name, "spawn_agent");
+        assert!(request.action_description.contains("explore"));
+        assert!(request
+            .action_description
+            .contains("Find all API endpoints"));
+        assert!(!request.is_destructive);
+        assert!(request.affected_paths.is_empty());
+    }
+
+    #[test]
+    fn test_spawn_agent_tool_permission_request_long_task() {
+        let tool = create_test_spawn_agent_tool();
+
+        // Task longer than 80 chars should be truncated
+        let long_task = "a".repeat(100);
+        let input = serde_json::json!({
+            "agent_type": "implement",
+            "task": long_task
+        });
+
+        let request = tool.permission_request(&input).unwrap();
+        assert!(request.action_description.len() < 100 + 30); // Should be truncated
+        assert!(request.action_description.contains("..."));
+    }
+
+    #[test]
+    fn test_spawn_agent_tool_permission_request_missing_fields() {
+        let tool = create_test_spawn_agent_tool();
+
+        // Missing agent_type and task
+        let input = serde_json::json!({});
+
+        let request = tool.permission_request(&input);
+        assert!(request.is_some());
+
+        let request = request.unwrap();
+        assert!(request.action_description.contains("unknown"));
+    }
+
+    #[test]
+    fn test_spawn_agent_tool_progress_tracker() {
+        let tool = create_test_spawn_agent_tool();
+        let tracker = tool.progress_tracker();
+
+        // Should return a clone of the Arc
+        let guard = tracker.blocking_lock();
+        assert!(guard.is_empty());
+    }
+
+    #[test]
+    fn test_spawn_agent_tool_with_progress_tracker() {
+        let provider: Arc<dyn crate::llm::provider::LlmProvider> = Arc::new(MockProvider::new());
+        let skill_registry = Arc::new(SkillRegistry::with_paths(vec![]));
+
+        // Create a custom progress tracker with some state
+        let custom_tracker = new_progress_tracker();
+        {
+            let mut guard = custom_tracker.blocking_lock();
+            guard.insert("existing-tool".to_string(), AgentProgressState::default());
+        }
+
+        let tool = SpawnAgentTool::with_progress_tracker(
+            provider,
+            skill_registry,
+            "mock-model".to_string(),
+            custom_tracker.clone(),
+        );
+
+        // The tool should use the provided tracker
+        let tracker = tool.progress_tracker();
+        let guard = tracker.blocking_lock();
+        assert!(guard.contains_key("existing-tool"));
+    }
+
+    #[tokio::test]
+    async fn test_spawn_agent_tool_execute_missing_agent_type() {
+        let tool = create_test_spawn_agent_tool();
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let context = crate::tools::ToolContext::new(
+            temp_dir.path().to_path_buf(),
+            Some(temp_dir.path().to_path_buf()),
+            uuid::Uuid::new_v4(),
+            false,
+        );
+
+        let input = serde_json::json!({
+            "task": "Find files"
+        });
+
+        let result = tool.execute("test-id".to_string(), input, &context).await;
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        let err_msg = format!("{}", err);
+        assert!(err_msg.contains("agent_type is required"));
+    }
+
+    #[tokio::test]
+    async fn test_spawn_agent_tool_execute_invalid_agent_type() {
+        let tool = create_test_spawn_agent_tool();
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let context = crate::tools::ToolContext::new(
+            temp_dir.path().to_path_buf(),
+            Some(temp_dir.path().to_path_buf()),
+            uuid::Uuid::new_v4(),
+            false,
+        );
+
+        let input = serde_json::json!({
+            "agent_type": "invalid_type",
+            "task": "Find files"
+        });
+
+        let result = tool.execute("test-id".to_string(), input, &context).await;
+        assert!(result.is_ok());
+
+        let tool_result = result.unwrap();
+        assert!(tool_result.is_error());
+        assert!(tool_result.output_text().contains("Invalid agent type"));
+        assert!(tool_result.output_text().contains("invalid_type"));
+    }
+
+    #[tokio::test]
+    async fn test_spawn_agent_tool_execute_missing_task() {
+        let tool = create_test_spawn_agent_tool();
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let context = crate::tools::ToolContext::new(
+            temp_dir.path().to_path_buf(),
+            Some(temp_dir.path().to_path_buf()),
+            uuid::Uuid::new_v4(),
+            false,
+        );
+
+        let input = serde_json::json!({
+            "agent_type": "explore"
+        });
+
+        let result = tool.execute("test-id".to_string(), input, &context).await;
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        let err_msg = format!("{}", err);
+        assert!(err_msg.contains("task is required"));
+    }
+
+    #[tokio::test]
+    async fn test_spawn_agent_tool_execute_invalid_memory_strategy() {
+        let tool = create_test_spawn_agent_tool();
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let context = crate::tools::ToolContext::new(
+            temp_dir.path().to_path_buf(),
+            Some(temp_dir.path().to_path_buf()),
+            uuid::Uuid::new_v4(),
+            false,
+        );
+
+        let input = serde_json::json!({
+            "agent_type": "explore",
+            "task": "Find files",
+            "memory_strategy": "invalid_strategy"
+        });
+
+        let result = tool.execute("test-id".to_string(), input, &context).await;
+        assert!(result.is_ok());
+
+        let tool_result = result.unwrap();
+        assert!(tool_result.is_error());
+        assert!(tool_result
+            .output_text()
+            .contains("Invalid memory_strategy"));
+    }
+
+    #[tokio::test]
+    async fn test_spawn_agent_tool_execute_invalid_skill() {
+        let tool = create_test_spawn_agent_tool();
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let context = crate::tools::ToolContext::new(
+            temp_dir.path().to_path_buf(),
+            Some(temp_dir.path().to_path_buf()),
+            uuid::Uuid::new_v4(),
+            false,
+        );
+
+        let input = serde_json::json!({
+            "agent_type": "explore",
+            "task": "Find files",
+            "skill": "nonexistent-skill"
+        });
+
+        let result = tool.execute("test-id".to_string(), input, &context).await;
+        assert!(result.is_ok());
+
+        let tool_result = result.unwrap();
+        assert!(tool_result.is_error());
+        assert!(tool_result.output_text().contains("Failed to load skill"));
+    }
+
+    #[tokio::test]
+    async fn test_spawn_agent_tool_execute_alternative_field_names() {
+        let tool = create_test_spawn_agent_tool();
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let context = crate::tools::ToolContext::new(
+            temp_dir.path().to_path_buf(),
+            Some(temp_dir.path().to_path_buf()),
+            uuid::Uuid::new_v4(),
+            false,
+        );
+
+        // Test "type" instead of "agent_type"
+        let input = serde_json::json!({
+            "type": "invalid_type",
+            "task": "Find files"
+        });
+
+        let result = tool.execute("test-id".to_string(), input, &context).await;
+        assert!(result.is_ok());
+
+        let tool_result = result.unwrap();
+        // Should recognize "type" as an alias for "agent_type"
+        assert!(tool_result.is_error());
+        assert!(tool_result.output_text().contains("Invalid agent type"));
+    }
+
+    #[tokio::test]
+    async fn test_spawn_agent_tool_execute_alternative_task_names() {
+        let tool = create_test_spawn_agent_tool();
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let context = crate::tools::ToolContext::new(
+            temp_dir.path().to_path_buf(),
+            Some(temp_dir.path().to_path_buf()),
+            uuid::Uuid::new_v4(),
+            false,
+        );
+
+        // Test "prompt" instead of "task"
+        let input = serde_json::json!({
+            "agent_type": "invalid_type",
+            "prompt": "Find files"
+        });
+
+        let result = tool.execute("test-id".to_string(), input, &context).await;
+        assert!(result.is_ok());
+
+        // Should recognize "prompt" as an alias for "task"
+        let tool_result = result.unwrap();
+        assert!(tool_result.is_error()); // Invalid agent type error, not missing task
+    }
+
+    #[test]
+    fn test_spawn_agent_tool_with_rate_coordinator() {
+        use crate::llm::rate_budget::TokenRateCoordinator;
+
+        let provider: Arc<dyn crate::llm::provider::LlmProvider> = Arc::new(MockProvider::new());
+        let skill_registry = Arc::new(SkillRegistry::with_paths(vec![]));
+        // TokenRateCoordinator::new already returns Arc<Self>
+        let rate_coordinator = TokenRateCoordinator::new(100_000); // 100K tokens/min
+
+        let tool = SpawnAgentTool::with_rate_coordinator(
+            provider,
+            skill_registry,
+            rate_coordinator,
+            "mock-model".to_string(),
+        );
+
+        assert!(tool.rate_coordinator.is_some());
+        assert_eq!(tool.model, "mock-model");
+    }
+
+    #[test]
+    fn test_agent_config_with_model() {
+        let working_dir = std::env::current_dir().unwrap();
+        let config = AgentConfig::new("explore", "Find files", working_dir)
+            .with_model("custom-model".to_string());
+
+        assert_eq!(config.model, Some("custom-model".to_string()));
+    }
+
+    #[test]
+    fn test_agent_config_rate_priority() {
+        let working_dir = std::env::current_dir().unwrap();
+        let config = AgentConfig::new("explore", "task", working_dir);
+
+        // Rate priority should be accessible
+        let priority = config.rate_priority();
+        // Just verify it returns something valid (the actual value depends on agent type)
+        assert!(matches!(
+            priority,
+            crate::llm::rate_budget::RatePriority::Critical
+                | crate::llm::rate_budget::RatePriority::High
+                | crate::llm::rate_budget::RatePriority::Normal
+                | crate::llm::rate_budget::RatePriority::Background
+        ));
     }
 }

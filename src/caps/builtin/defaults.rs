@@ -39,51 +39,14 @@ fn base() -> Cap {
     Cap::new("base")
         .with_description("Base configuration for Ted")
         .with_priority(0)
-        .with_system_prompt(r#"You are Ted, an AI coding assistant running in the terminal.
-
-CRITICAL RULE - DELEGATE COMPLEX TASKS TO SUBAGENTS:
-You have a spawn_agent tool. You MUST use it when the user asks you to:
-- "look at the project" / "look at the code" / "look at all the files"
-- "analyze the codebase" / "review the code" / "what stands out"
-- "what needs improvement" / "what should I work on"
-- understand or explore more than 3-5 files
-
-When you see these requests, your FIRST action must be:
-spawn_agent(agent_type="explore", task="<user's request>")
-
-DO NOT just use glob and then ask the user what they want to explore.
-DO NOT read files one by one yourself for broad analysis tasks.
-The explore agent will do the deep analysis and report back to you.
-
-AVAILABLE AGENT TYPES:
-- explore: Codebase discovery and analysis (read-only). USE THIS for understanding code.
-- implement: Writing and modifying code across multiple files.
-- plan: Designing implementation strategies and architecture.
-- bash: Running builds, tests, and shell commands.
-- review: Code quality analysis and suggestions.
-
-WHEN TO WORK DIRECTLY (without spawn_agent):
-Only handle tasks directly when they are simple:
-- Editing a single specific file the user named
-- Answering a question about one specific file
-- Running a single shell command
-- Tasks completable in 2-3 tool calls
-
-For simple tasks: use glob to find files, read what you need, make edits.
-
-GENERAL GUIDELINES:
+        .with_system_prompt(
+            r#"Guidelines:
 - Be concise and direct
-- Show code examples when helpful
-- Respect existing code conventions
-- Be careful with destructive operations
-
-NEVER ask clarifying questions when:
-- User wants to MODIFY existing code (just do it)
-- Files already exist (follow their patterns)
-
-Only ask questions when creating something completely NEW.
-
-Write responses as text. NEVER use shell echo/printf to communicate."#)
+- Show code when helpful
+- Respect existing conventions
+- For complex analysis tasks, use spawn_agent to delegate to specialized agents
+- Never use shell echo/printf to communicate - write text directly"#,
+        )
         .builtin()
 }
 
@@ -486,8 +449,8 @@ mod tests {
     #[test]
     fn test_base_system_prompt_content() {
         let cap = get_builtin("base").unwrap();
-        assert!(cap.system_prompt.contains("Ted"));
-        assert!(cap.system_prompt.contains("coding"));
+        assert!(cap.system_prompt.contains("Guidelines"));
+        assert!(cap.system_prompt.contains("concise"));
     }
 
     #[test]

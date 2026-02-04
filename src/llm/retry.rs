@@ -177,6 +177,42 @@ mod tests {
     }
 
     #[test]
+    fn test_retry_config_from_resilience_config() {
+        let resilience = ResilienceConfig {
+            max_retries: 10,
+            base_delay_ms: 500,
+            max_delay_ms: 10000,
+            jitter: 0.5,
+            circuit_failure_threshold: 5,
+            circuit_cooldown_secs: 10,
+        };
+
+        let retry_config = RetryConfig::from(resilience);
+        assert_eq!(retry_config.max_retries, 10);
+        assert_eq!(retry_config.base_delay_ms, 500);
+        assert_eq!(retry_config.max_delay_ms, 10000);
+        assert!((retry_config.jitter - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_retry_config_from_resilience_config_ref() {
+        let resilience = ResilienceConfig {
+            max_retries: 3,
+            base_delay_ms: 2000,
+            max_delay_ms: 20000,
+            jitter: 0.1,
+            circuit_failure_threshold: 3,
+            circuit_cooldown_secs: 5,
+        };
+
+        let retry_config = RetryConfig::from(&resilience);
+        assert_eq!(retry_config.max_retries, 3);
+        assert_eq!(retry_config.base_delay_ms, 2000);
+        assert_eq!(retry_config.max_delay_ms, 20000);
+        assert!((retry_config.jitter - 0.1).abs() < 0.001);
+    }
+
+    #[test]
     fn test_calculate_delay() {
         let config = RetryConfig {
             max_retries: 5,

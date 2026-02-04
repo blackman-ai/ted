@@ -1086,4 +1086,180 @@ mod tests {
             assert!(is_error.is_none());
         }
     }
+
+    // ===== Additional Coverage Tests =====
+
+    #[test]
+    fn test_message_estimate_chars_text() {
+        let msg = Message::user("Hello world");
+        let chars = msg.estimate_chars();
+        assert_eq!(chars, 11);
+    }
+
+    #[test]
+    fn test_message_estimate_chars_blocks() {
+        let msg = Message::assistant_blocks(vec![
+            ContentBlock::Text {
+                text: "Hello".to_string(),
+            },
+            ContentBlock::ToolUse {
+                id: "t1".to_string(),
+                name: "file_read".to_string(),
+                input: serde_json::json!({"path": "/test"}),
+            },
+        ]);
+        let chars = msg.estimate_chars();
+        assert!(chars > 5); // At least "Hello"
+    }
+
+    #[test]
+    fn test_message_estimate_chars_tool_result_text() {
+        let msg = Message::tool_result("t1", "Result content", false);
+        let chars = msg.estimate_chars();
+        assert_eq!(chars, 14); // "Result content" length
+    }
+
+    #[test]
+    fn test_message_estimate_chars_tool_result_blocks() {
+        // Create a message with ToolResult containing Blocks content
+        let msg = Message {
+            id: Uuid::new_v4(),
+            role: Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "t1".to_string(),
+                content: ToolResultContent::Blocks(vec![
+                    ToolResultBlock::Text {
+                        text: "First".to_string(),
+                    },
+                    ToolResultBlock::Text {
+                        text: "Second".to_string(),
+                    },
+                ]),
+                is_error: None,
+            }]),
+            timestamp: Utc::now(),
+            tool_use_id: None,
+            token_count: None,
+        };
+        let chars = msg.estimate_chars();
+        assert_eq!(chars, 11); // "First" (5) + "Second" (6)
+    }
+
+    #[test]
+    fn test_message_estimate_chars_tool_result_with_image() {
+        let msg = Message {
+            id: Uuid::new_v4(),
+            role: Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "t1".to_string(),
+                content: ToolResultContent::Blocks(vec![ToolResultBlock::Image {
+                    source: ImageSource {
+                        source_type: "base64".to_string(),
+                        media_type: "image/png".to_string(),
+                        data: "base64data".to_string(),
+                    },
+                }]),
+                is_error: None,
+            }]),
+            timestamp: Utc::now(),
+            tool_use_id: None,
+            token_count: None,
+        };
+        let chars = msg.estimate_chars();
+        assert_eq!(chars, 1000); // Image estimate
+    }
+
+    #[test]
+    fn test_conversation_with_config() {
+        let config = ConversationConfig {
+            chars_per_token: 3,
+            ..Default::default()
+        };
+        let conv = Conversation::with_config(config.clone());
+
+        assert!(conv.is_empty());
+        assert!(conv.system_prompt.is_none());
+        assert_eq!(conv.config().chars_per_token, 3);
+    }
+
+    #[test]
+    fn test_conversation_with_system_and_config() {
+        let config = ConversationConfig {
+            chars_per_token: 5,
+            ..Default::default()
+        };
+        let conv = Conversation::with_system_and_config("System prompt", config);
+
+        assert!(conv.is_empty());
+        assert_eq!(conv.system_prompt, Some("System prompt".to_string()));
+        assert_eq!(conv.config().chars_per_token, 5);
+    }
+
+    #[test]
+    fn test_conversation_config_accessor() {
+        let config = ConversationConfig {
+            message_overhead_tokens: 30,
+            ..Default::default()
+        };
+        let conv = Conversation::with_config(config);
+
+        assert_eq!(conv.config().message_overhead_tokens, 30);
+    }
+
+    #[test]
+    fn test_tool_result_content_estimate_with_image() {
+        let config = ConversationConfig::default();
+        let content = ToolResultContent::Blocks(vec![ToolResultBlock::Image {
+            source: ImageSource {
+                source_type: "base64".to_string(),
+                media_type: "image/png".to_string(),
+                data: "data".to_string(),
+            },
+        }]);
+
+        let estimate = content.estimate_tokens_with_config(&config);
+        assert_eq!(estimate, config.image_token_estimate as usize);
+    }
+
+    #[test]
+    fn test_tool_result_content_estimate_mixed() {
+        let config = ConversationConfig::default();
+        let content = ToolResultContent::Blocks(vec![
+            ToolResultBlock::Text {
+                text: "Hello".to_string(),
+            },
+            ToolResultBlock::Image {
+                source: ImageSource {
+                    source_type: "base64".to_string(),
+                    media_type: "image/png".to_string(),
+                    data: "data".to_string(),
+                },
+            },
+        ]);
+
+        let estimate = content.estimate_tokens_with_config(&config);
+        assert_eq!(estimate, 5 + config.image_token_estimate as usize);
+    }
+
+    #[test]
+    fn test_message_estimate_tokens_with_tool_result_blocks() {
+        let config = ConversationConfig::default();
+        let msg = Message {
+            id: Uuid::new_v4(),
+            role: Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "t1".to_string(),
+                content: ToolResultContent::Blocks(vec![ToolResultBlock::Text {
+                    text: "Result text".to_string(),
+                }]),
+                is_error: None,
+            }]),
+            timestamp: Utc::now(),
+            tool_use_id: None,
+            token_count: None,
+        };
+
+        let tokens = msg.estimate_tokens_with_config(&config);
+        assert!(tokens > 0);
+    }
 }

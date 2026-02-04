@@ -150,6 +150,10 @@ pub struct ChatArgs {
     #[arg(long, hide = true)]
     pub embedded: bool,
 
+    /// Disable TUI mode (use simple terminal output, useful for piping/scripting)
+    #[arg(long)]
+    pub no_tui: bool,
+
     /// Path to conversation history JSON file (for multi-turn embedded conversations)
     #[arg(long, hide = true)]
     pub history: Option<PathBuf>,

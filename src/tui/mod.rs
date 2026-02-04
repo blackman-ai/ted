@@ -1,17 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2025 Blackman Artificial Intelligence Technologies Inc.
 
-//! TUI settings interface
+//! TUI interfaces for Ted
 //!
-//! A minimalist ASCII-style terminal UI for managing Ted settings.
+//! Contains both the settings TUI and the main chat TUI.
 //! Uses ratatui for rendering and crossterm for input handling.
 
 pub mod app;
+pub mod chat;
 pub mod editor;
 pub mod input;
 pub mod screens;
 pub mod ui;
 pub mod undo;
+
+// Re-export chat TUI for convenience
+pub use chat::{run_chat_tui, ChatTuiConfig};
 
 use std::io;
 

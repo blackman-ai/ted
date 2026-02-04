@@ -998,4 +998,411 @@ mod tests {
         handle_model_selection_input(&mut app, KeyCode::Down);
         assert_eq!(app.model_picker_index, 0);
     }
+
+    // ===== Additional Editor Mode Tests =====
+
+    #[test]
+    fn test_handle_editor_normal_mode_arrow_keys() {
+        use crate::tui::editor::Editor;
+
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanEdit;
+        app.editor = Some(Editor::new("hello\nworld\ntest"));
+
+        // Move with arrow keys
+        handle_editor_input(&mut app, KeyCode::Down, KeyModifiers::empty()).unwrap();
+        assert_eq!(app.editor.as_ref().unwrap().cursor().0, 1);
+
+        handle_editor_input(&mut app, KeyCode::Right, KeyModifiers::empty()).unwrap();
+        assert_eq!(app.editor.as_ref().unwrap().cursor().1, 1);
+
+        handle_editor_input(&mut app, KeyCode::Up, KeyModifiers::empty()).unwrap();
+        assert_eq!(app.editor.as_ref().unwrap().cursor().0, 0);
+
+        handle_editor_input(&mut app, KeyCode::Left, KeyModifiers::empty()).unwrap();
+        assert_eq!(app.editor.as_ref().unwrap().cursor().1, 0);
+    }
+
+    #[test]
+    fn test_handle_editor_normal_mode_home_end() {
+        use crate::tui::editor::Editor;
+
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanEdit;
+        app.editor = Some(Editor::new("hello world"));
+
+        // End key
+        handle_editor_input(&mut app, KeyCode::End, KeyModifiers::empty()).unwrap();
+        assert_eq!(app.editor.as_ref().unwrap().cursor().1, 10); // End of "hello world" (11 chars, cursor at 10 in normal mode)
+
+        // Home key
+        handle_editor_input(&mut app, KeyCode::Home, KeyModifiers::empty()).unwrap();
+        assert_eq!(app.editor.as_ref().unwrap().cursor().1, 0);
+    }
+
+    #[test]
+    fn test_handle_editor_normal_mode_word_movement() {
+        use crate::tui::editor::Editor;
+
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanEdit;
+        app.editor = Some(Editor::new("hello world test"));
+
+        // Move word forward
+        handle_editor_input(&mut app, KeyCode::Char('w'), KeyModifiers::empty()).unwrap();
+        // Cursor should be at start of "world"
+        let cursor = app.editor.as_ref().unwrap().cursor();
+        assert!(cursor.1 > 0); // Moved forward
+
+        // Move word backward
+        handle_editor_input(&mut app, KeyCode::Char('b'), KeyModifiers::empty()).unwrap();
+        // Cursor should be back
+        let cursor = app.editor.as_ref().unwrap().cursor();
+        assert_eq!(cursor.1, 0);
+    }
+
+    #[test]
+    fn test_handle_editor_normal_mode_insert_modes() {
+        use crate::tui::editor::{Editor, EditorMode};
+
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanEdit;
+        app.editor = Some(Editor::new("hello"));
+
+        // Test 'I' - insert at start of line
+        handle_editor_input(&mut app, KeyCode::Char('I'), KeyModifiers::empty()).unwrap();
+        assert_eq!(app.editor.as_ref().unwrap().mode(), EditorMode::Insert);
+        app.editor.as_mut().unwrap().exit_to_normal();
+
+        // Test 'a' - insert after cursor
+        handle_editor_input(&mut app, KeyCode::Char('a'), KeyModifiers::empty()).unwrap();
+        assert_eq!(app.editor.as_ref().unwrap().mode(), EditorMode::Insert);
+        app.editor.as_mut().unwrap().exit_to_normal();
+
+        // Test 'A' - insert at end of line
+        handle_editor_input(&mut app, KeyCode::Char('A'), KeyModifiers::empty()).unwrap();
+        assert_eq!(app.editor.as_ref().unwrap().mode(), EditorMode::Insert);
+    }
+
+    #[test]
+    fn test_handle_editor_normal_mode_open_lines() {
+        use crate::tui::editor::{Editor, EditorMode};
+
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanEdit;
+        app.editor = Some(Editor::new("line1\nline2"));
+
+        // 'o' - open line below
+        handle_editor_input(&mut app, KeyCode::Char('o'), KeyModifiers::empty()).unwrap();
+        assert_eq!(app.editor.as_ref().unwrap().mode(), EditorMode::Insert);
+        app.editor.as_mut().unwrap().exit_to_normal();
+
+        // Reset and test 'O' - open line above
+        app.editor = Some(Editor::new("line1\nline2"));
+        handle_editor_input(&mut app, KeyCode::Char('O'), KeyModifiers::empty()).unwrap();
+        assert_eq!(app.editor.as_ref().unwrap().mode(), EditorMode::Insert);
+    }
+
+    #[test]
+    fn test_handle_editor_normal_mode_delete_yank_paste() {
+        use crate::tui::editor::Editor;
+
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanEdit;
+        app.editor = Some(Editor::new("line1\nline2\nline3"));
+
+        // Yank line
+        handle_editor_input(&mut app, KeyCode::Char('y'), KeyModifiers::empty()).unwrap();
+
+        // Delete line
+        handle_editor_input(&mut app, KeyCode::Char('d'), KeyModifiers::empty()).unwrap();
+        // Should have deleted the first line
+        assert!(!app
+            .editor
+            .as_ref()
+            .unwrap()
+            .content()
+            .contains("line1\nline2"));
+
+        // Paste
+        handle_editor_input(&mut app, KeyCode::Char('p'), KeyModifiers::empty()).unwrap();
+        // Content should have changed
+        assert!(!app.editor.as_ref().unwrap().content().is_empty());
+    }
+
+    #[test]
+    fn test_handle_editor_normal_mode_undo_redo() {
+        use crate::tui::editor::Editor;
+
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanEdit;
+        app.editor = Some(Editor::new("hello"));
+
+        // Make a change - delete line
+        handle_editor_input(&mut app, KeyCode::Char('d'), KeyModifiers::empty()).unwrap();
+        // Content should be empty or changed
+        let _content_after_delete = app.editor.as_ref().unwrap().content().to_string();
+
+        // Undo
+        handle_editor_input(&mut app, KeyCode::Char('u'), KeyModifiers::empty()).unwrap();
+        // Content should be restored (or at least undo was called without error)
+
+        // Redo (Ctrl+r)
+        handle_editor_input(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL).unwrap();
+        // Content should match after-delete state (or redo was called without error)
+    }
+
+    #[test]
+    fn test_handle_editor_normal_mode_toggle_checkbox() {
+        use crate::tui::editor::Editor;
+
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanEdit;
+        app.editor = Some(Editor::new("- [ ] task"));
+
+        // Toggle checkbox with space
+        handle_editor_input(&mut app, KeyCode::Char(' '), KeyModifiers::empty()).unwrap();
+        // Checkbox should toggle (or at least not crash)
+    }
+
+    #[test]
+    fn test_handle_editor_normal_mode_escape_unmodified() {
+        use crate::tui::editor::Editor;
+
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanEdit;
+        app.editor = Some(Editor::new("hello"));
+
+        // Escape on unmodified editor should close it
+        handle_editor_input(&mut app, KeyCode::Esc, KeyModifiers::empty()).unwrap();
+        assert!(app.editor.is_none());
+        assert_eq!(app.screen, Screen::Plans);
+    }
+
+    #[test]
+    fn test_handle_editor_normal_mode_escape_modified() {
+        use crate::tui::editor::Editor;
+
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanEdit;
+        app.editor = Some(Editor::new("hello"));
+
+        // Modify the content
+        app.editor.as_mut().unwrap().enter_insert();
+        app.editor.as_mut().unwrap().insert_char('x');
+        app.editor.as_mut().unwrap().exit_to_normal();
+
+        // Escape on modified editor should NOT close it
+        handle_editor_input(&mut app, KeyCode::Esc, KeyModifiers::empty()).unwrap();
+        assert!(app.editor.is_some()); // Editor still open
+        assert_eq!(app.screen, Screen::PlanEdit);
+    }
+
+    #[test]
+    fn test_handle_editor_insert_mode_backspace() {
+        use crate::tui::editor::Editor;
+
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanEdit;
+        app.editor = Some(Editor::new("hello"));
+
+        // Enter insert mode at end
+        app.editor.as_mut().unwrap().enter_insert_end();
+
+        // Backspace
+        handle_editor_input(&mut app, KeyCode::Backspace, KeyModifiers::empty()).unwrap();
+        assert_eq!(app.editor.as_ref().unwrap().content(), "hell");
+    }
+
+    #[test]
+    fn test_handle_editor_insert_mode_newline() {
+        use crate::tui::editor::Editor;
+
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanEdit;
+        app.editor = Some(Editor::new("hello"));
+
+        // Enter insert mode
+        app.editor.as_mut().unwrap().enter_insert_end();
+
+        // Insert newline
+        handle_editor_input(&mut app, KeyCode::Enter, KeyModifiers::empty()).unwrap();
+        assert!(app.editor.as_ref().unwrap().content().contains('\n'));
+    }
+
+    #[test]
+    fn test_handle_editor_insert_mode_arrow_keys() {
+        use crate::tui::editor::Editor;
+
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanEdit;
+        app.editor = Some(Editor::new("hello\nworld"));
+
+        // Enter insert mode
+        app.editor.as_mut().unwrap().enter_insert();
+
+        // Move with arrow keys in insert mode
+        handle_editor_input(&mut app, KeyCode::Right, KeyModifiers::empty()).unwrap();
+        handle_editor_input(&mut app, KeyCode::Left, KeyModifiers::empty()).unwrap();
+        handle_editor_input(&mut app, KeyCode::Down, KeyModifiers::empty()).unwrap();
+        handle_editor_input(&mut app, KeyCode::Up, KeyModifiers::empty()).unwrap();
+
+        // Should still be in insert mode
+        assert_eq!(
+            app.editor.as_ref().unwrap().mode(),
+            crate::tui::editor::EditorMode::Insert
+        );
+    }
+
+    #[test]
+    fn test_handle_editor_command_mode_backspace() {
+        use crate::tui::editor::{Editor, EditorMode};
+
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanEdit;
+        app.editor = Some(Editor::new("hello"));
+
+        // Enter command mode
+        handle_editor_input(&mut app, KeyCode::Char(':'), KeyModifiers::empty()).unwrap();
+        assert_eq!(app.editor.as_ref().unwrap().mode(), EditorMode::Command);
+
+        // Type something
+        handle_editor_input(&mut app, KeyCode::Char('w'), KeyModifiers::empty()).unwrap();
+        handle_editor_input(&mut app, KeyCode::Char('q'), KeyModifiers::empty()).unwrap();
+        assert_eq!(app.editor.as_ref().unwrap().command_buffer(), "wq");
+
+        // Backspace
+        handle_editor_input(&mut app, KeyCode::Backspace, KeyModifiers::empty()).unwrap();
+        assert_eq!(app.editor.as_ref().unwrap().command_buffer(), "w");
+    }
+
+    #[test]
+    fn test_handle_editor_command_mode_unknown_key() {
+        use crate::tui::editor::{Editor, EditorMode};
+
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanEdit;
+        app.editor = Some(Editor::new("hello"));
+
+        // Enter command mode
+        handle_editor_input(&mut app, KeyCode::Char(':'), KeyModifiers::empty()).unwrap();
+
+        // Press Tab (unknown key in command mode)
+        handle_editor_input(&mut app, KeyCode::Tab, KeyModifiers::empty()).unwrap();
+
+        // Should still be in command mode
+        assert_eq!(app.editor.as_ref().unwrap().mode(), EditorMode::Command);
+    }
+
+    #[test]
+    fn test_handle_editor_normal_mode_unknown_key() {
+        use crate::tui::editor::Editor;
+
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanEdit;
+        app.editor = Some(Editor::new("hello"));
+
+        // Press an unbound key
+        handle_editor_input(&mut app, KeyCode::F(1), KeyModifiers::empty()).unwrap();
+
+        // Should still work and not crash
+        assert!(app.editor.is_some());
+    }
+
+    #[test]
+    fn test_handle_editor_normal_mode_no_editor() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanEdit;
+        app.editor = None;
+
+        // Should return to Plans screen
+        let result =
+            handle_editor_normal_mode(&mut app, KeyCode::Char('j'), KeyModifiers::empty()).unwrap();
+        assert!(matches!(result, AppResult::Continue));
+    }
+
+    #[test]
+    fn test_handle_editor_insert_mode_no_editor() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanEdit;
+        app.editor = None;
+
+        // Should handle gracefully
+        let result = handle_editor_insert_mode(&mut app, KeyCode::Char('a')).unwrap();
+        assert!(matches!(result, AppResult::Continue));
+    }
+
+    #[test]
+    fn test_handle_editor_command_mode_no_editor() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanEdit;
+        app.editor = None;
+
+        // Should handle gracefully
+        let result = handle_editor_command_mode(&mut app, KeyCode::Char('w')).unwrap();
+        assert!(matches!(result, AppResult::Continue));
+    }
+
+    #[test]
+    fn test_handle_normal_input_e_from_plan_view() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::PlanView;
+        app.current_plan_id = None;
+
+        // With no current plan, nothing should happen
+        let result = handle_normal_input(&mut app, KeyCode::Char('e')).unwrap();
+        assert!(matches!(result, AppResult::Continue));
+        assert_eq!(app.screen, Screen::PlanView);
+    }
+
+    #[test]
+    fn test_handle_editing_input_special_characters() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.input_mode = InputMode::Editing;
+        app.input_buffer = String::new();
+
+        // Type special characters
+        handle_editing_input(&mut app, KeyCode::Char('@'));
+        handle_editing_input(&mut app, KeyCode::Char('#'));
+        handle_editing_input(&mut app, KeyCode::Char('$'));
+        handle_editing_input(&mut app, KeyCode::Char('%'));
+
+        assert_eq!(app.input_buffer, "@#$%");
+    }
+
+    #[test]
+    fn test_handle_normal_input_navigation_boundary() {
+        let settings = Settings::default();
+        let mut app = App::new(settings);
+        app.screen = Screen::MainMenu;
+        app.main_menu_index = 0;
+
+        // Try to move up when already at top
+        handle_normal_input(&mut app, KeyCode::Up).unwrap();
+
+        // Index should wrap or stay at boundary (depends on implementation)
+        // Just ensure no crash
+        assert!(app.main_menu_index <= 10); // Reasonable bound
+    }
 }

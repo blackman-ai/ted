@@ -23,4 +23,4 @@ pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use plan::PlanUpdateTool;
 pub use shell::ShellTool;
-pub use spawn_agent::SpawnAgentTool;
+pub use spawn_agent::{new_progress_tracker, AgentProgressState, ProgressTracker, SpawnAgentTool};

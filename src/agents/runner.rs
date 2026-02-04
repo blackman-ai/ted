@@ -26,6 +26,83 @@ use super::context::AgentContext;
 use super::memory::{apply_memory_strategy, compact_to_budget, MemoryAction};
 use super::types::AgentResult;
 
+/// Progress event emitted by an agent during execution
+#[derive(Debug, Clone)]
+pub enum AgentProgressEvent {
+    /// Agent started execution
+    Started {
+        agent_name: String,
+        agent_type: String,
+        max_iterations: u32,
+    },
+    /// Starting a new iteration
+    IterationStart { iteration: u32, max_iterations: u32 },
+    /// About to call a tool
+    ToolStart {
+        tool_name: String,
+        input_summary: String,
+    },
+    /// Tool completed
+    ToolComplete { tool_name: String, success: bool },
+    /// Waiting due to rate limit
+    RateLimited { wait_secs: f64 },
+    /// Agent finished (successfully or not)
+    Completed {
+        success: bool,
+        iterations: u32,
+        summary: String,
+    },
+}
+
+impl AgentProgressEvent {
+    /// Get a short status string for display
+    pub fn status_text(&self) -> String {
+        match self {
+            AgentProgressEvent::Started { agent_type, .. } => {
+                format!("Starting {} agent...", agent_type)
+            }
+            AgentProgressEvent::IterationStart {
+                iteration,
+                max_iterations,
+            } => {
+                format!("Iteration {}/{}", iteration, max_iterations)
+            }
+            AgentProgressEvent::ToolStart {
+                tool_name,
+                input_summary,
+            } => {
+                let summary = if input_summary.len() > 40 {
+                    format!("{}...", &input_summary[..40])
+                } else {
+                    input_summary.clone()
+                };
+                format!("→ {} {}", tool_name, summary)
+            }
+            AgentProgressEvent::ToolComplete { tool_name, success } => {
+                let status = if *success { "✓" } else { "✗" };
+                format!("{} {}", status, tool_name)
+            }
+            AgentProgressEvent::RateLimited { wait_secs } => {
+                format!("Rate limited ({:.1}s)", wait_secs)
+            }
+            AgentProgressEvent::Completed {
+                success,
+                iterations,
+                summary,
+            } => {
+                if *success {
+                    format!("Done ({} iters): {}", iterations, summary)
+                } else {
+                    format!("Failed after {} iters", iterations)
+                }
+            }
+        }
+    }
+}
+
+/// Type alias for progress sender
+pub type ProgressSender = tokio::sync::mpsc::UnboundedSender<AgentProgressEvent>;
+
 /// Configuration for the agent runner
 #[derive(Debug, Clone)]
 pub struct RunnerConfig {
@@ -35,6 +112,8 @@ pub struct RunnerConfig {
     pub temperature: f32,
     /// Whether to print progress
     pub verbose: bool,
+    /// Suppress ALL output (for TUI mode where prints break the display)
+    pub quiet: bool,
     /// Maximum retries for rate-limited requests
     pub max_rate_limit_retries: u32,
     /// Base delay for exponential backoff (when no Retry-After header)
@@ -47,6 +126,7 @@ impl Default for RunnerConfig {
             max_response_tokens: 4096,
             temperature: 0.7,
             verbose: false,
+            quiet: false,
             max_rate_limit_retries: 3,
             base_retry_delay_secs: 2,
         }
@@ -83,25 +163,51 @@ impl AgentRunner {
     }
 
     /// Run a subagent to completion
-    pub async fn run(&self, mut context: AgentContext) -> Result<AgentResult> {
+    pub async fn run(&self, context: AgentContext) -> Result<AgentResult> {
+        self.run_with_progress(context, None).await
+    }
+
+    /// Run a subagent to completion with optional progress reporting
+    pub async fn run_with_progress(
+        &self,
+        mut context: AgentContext,
+        progress: Option<ProgressSender>,
+    ) -> Result<AgentResult> {
         let started_at = Utc::now();
         let agent_id = context.config.id;
         let agent_name = context.config.name.clone();
+        let agent_type = context.config.agent_type.clone();
         let model = context
             .config
             .model
             .clone()
             .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
 
-        // Always log agent start for visibility
-        eprintln!(
-            "  [{}] Starting ({}, max {} iters)",
-            agent_name, context.config.agent_type, context.config.max_iterations
-        );
+        // Helper to send progress events
+        let send_progress = |event: AgentProgressEvent| {
+            if let Some(ref tx) = progress {
+                let _ = tx.send(event);
+            }
+        };
 
-        if self.config.verbose {
-            eprintln!("  [{}] Task: {}", agent_name, context.config.task);
-            eprintln!("  [{}] Model: {}", agent_name, model);
+        // Emit started event
+        send_progress(AgentProgressEvent::Started {
+            agent_name: agent_name.clone(),
+            agent_type: agent_type.clone(),
+            max_iterations: context.config.max_iterations,
+        });
+
+        // Log agent start for visibility (unless in quiet mode for TUI)
+        if !self.config.quiet {
+            eprintln!(
+                "  [{}] Starting ({}, max {} iters)",
+                agent_name, context.config.agent_type, context.config.max_iterations
+            );
+
+            if self.config.verbose {
+                eprintln!("  [{}] Task: {}", agent_name, context.config.task);
+                eprintln!("  [{}] Model: {}", agent_name, model);
+            }
         }
 
         // Get filtered tool definitions based on agent permissions
@@ -122,7 +228,13 @@ impl AgentRunner {
         loop {
             context.increment_iteration();
 
-            if self.config.verbose {
+            // Emit iteration start event
+            send_progress(AgentProgressEvent::IterationStart {
+                iteration: context.iterations(),
+                max_iterations: context.config.max_iterations,
+            });
+
+            if self.config.verbose && !self.config.quiet {
                 eprintln!(
                     "  [{}] Iteration {}/{}",
                     agent_name,
@@ -133,10 +245,12 @@ impl AgentRunner {
 
             // Check limits
             if context.exceeded_iterations() {
-                eprintln!(
-                    "  [{}] Exceeded max iterations ({})",
-                    agent_name, context.config.max_iterations
-                );
+                if !self.config.quiet {
+                    eprintln!(
+                        "  [{}] Exceeded max iterations ({})",
+                        agent_name, context.config.max_iterations
+                    );
+                }
                 errors.push(format!(
                     "Exceeded maximum iterations ({})",
                     context.config.max_iterations
@@ -145,10 +259,12 @@ impl AgentRunner {
             }
 
             if context.exceeded_token_budget() {
-                eprintln!(
-                    "  [{}] Exceeded token budget ({} tokens)",
-                    agent_name, context.config.token_budget
-                );
+                if !self.config.quiet {
+                    eprintln!(
+                        "  [{}] Exceeded token budget ({} tokens)",
+                        agent_name, context.config.token_budget
+                    );
+                }
                 errors.push(format!(
                     "Exceeded token budget ({} tokens)",
                     context.config.token_budget
@@ -160,14 +276,14 @@ impl AgentRunner {
             let memory_strategy = context.config.memory_strategy.clone();
             match apply_memory_strategy(context.conversation_mut(), &memory_strategy)? {
                 MemoryAction::Trimmed { count } => {
-                    if self.config.verbose {
+                    if self.config.verbose && !self.config.quiet {
                         eprintln!("  [{}] Memory: Trimmed {} old messages", agent_name, count);
                     }
                 }
                 MemoryAction::NeedsSummarization { messages } => {
                     // For now, we'll just note this - full summarization would
                     // require another LLM call which we might want to add later
-                    if self.config.verbose {
+                    if self.config.verbose && !self.config.quiet {
                         eprintln!(
                             "  [{}] Memory: {} messages need summarization (skipping)",
                             agent_name,
@@ -186,7 +302,7 @@ impl AgentRunner {
                     context.conversation_mut(),
                     token_budget * 80 / 100, // Target 80% of budget
                 );
-                if self.config.verbose && removed > 0 {
+                if self.config.verbose && !self.config.quiet && removed > 0 {
                     eprintln!(
                         "  [{}] Memory: Compacted {} messages to fit budget",
                         agent_name, removed
@@ -210,7 +326,7 @@ impl AgentRunner {
                 // Estimate tokens for this request (rough estimate based on conversation size)
                 let estimated_tokens = self.estimate_request_tokens(&request);
                 let wait_time = allocation.wait_for_budget(estimated_tokens).await;
-                if wait_time > Duration::from_millis(100) {
+                if wait_time > Duration::from_millis(100) && !self.config.quiet {
                     eprintln!(
                         "  [{}] Rate budget: waited {:.1}s for {} tokens",
                         agent_name,
@@ -223,15 +339,22 @@ impl AgentRunner {
             // Make LLM call with rate limit retry logic
             let current_iter = context.iterations();
             let response = match self
-                .complete_with_retry(&request, &agent_name, current_iter, self.config.verbose)
+                .complete_with_retry(
+                    &request,
+                    &agent_name,
+                    current_iter,
+                    self.config.verbose && !self.config.quiet,
+                )
                 .await
             {
                 Ok(resp) => resp,
                 Err(e) => {
-                    eprintln!(
-                        "  [{}] Failed at iteration {}: {}",
-                        agent_name, current_iter, e
-                    );
+                    if !self.config.quiet {
+                        eprintln!(
+                            "  [{}] Failed at iteration {}: {}",
+                            agent_name, current_iter, e
+                        );
+                    }
                     errors.push(format!("LLM API error: {}", e));
                     break;
                 }
@@ -267,7 +390,7 @@ impl AgentRunner {
             // If there are tool uses, execute them
             if has_tool_use {
                 let tool_results = self
-                    .execute_tools(&response.content, &context, &tool_context)
+                    .execute_tools(&response.content, &context, &tool_context, &progress)
                     .await?;
 
                 // Track file access
@@ -284,20 +407,20 @@ impl AgentRunner {
             match response.stop_reason {
                 Some(StopReason::EndTurn) if !has_tool_use => {
                     // Agent is done
-                    if self.config.verbose {
+                    if self.config.verbose && !self.config.quiet {
                         eprintln!("  [{}] End turn (completing)", agent_name);
                     }
                     break;
                 }
                 Some(StopReason::MaxTokens) => {
                     // Continue, the agent might have more to say
-                    if self.config.verbose {
+                    if self.config.verbose && !self.config.quiet {
                         eprintln!("  [{}] Hit response token limit, continuing...", agent_name);
                     }
                 }
                 Some(StopReason::ToolUse) => {
                     // Continue after tool execution
-                    if self.config.verbose {
+                    if self.config.verbose && !self.config.quiet {
                         eprintln!("  [{}] Tool use completed, continuing...", agent_name);
                     }
                 }
@@ -315,22 +438,31 @@ impl AgentRunner {
             format!("Agent failed: {}", errors.join("; "))
         };
 
-        // Log completion status
+        // Emit completed event
+        send_progress(AgentProgressEvent::Completed {
+            success,
+            iterations: context.iterations(),
+            summary: summary.clone(),
+        });
+
+        // Log completion status (unless in quiet mode)
         let final_iter = context.iterations();
-        if success {
-            eprintln!(
-                "  [{}] Completed successfully ({} iters, {} tokens)",
-                agent_name,
-                final_iter,
-                context.tokens_used()
-            );
-        } else {
-            eprintln!(
-                "  [{}] Failed after {} iters: {}",
-                agent_name,
-                final_iter,
-                errors.join("; ")
-            );
+        if !self.config.quiet {
+            if success {
+                eprintln!(
+                    "  [{}] Completed successfully ({} iters, {} tokens)",
+                    agent_name,
+                    final_iter,
+                    context.tokens_used()
+                );
+            } else {
+                eprintln!(
+                    "  [{}] Failed after {} iters: {}",
+                    agent_name,
+                    final_iter,
+                    errors.join("; ")
+                );
+            }
         }
 
         // Finalize context (store completion marker)
@@ -396,7 +528,7 @@ impl AgentRunner {
 
             match self.provider.complete(request.clone()).await {
                 Ok(response) => {
-                    if attempt > 1 {
+                    if attempt > 1 && !self.config.quiet {
                         eprintln!(
                             "  [{}] Rate limit resolved after {} retries (iter {})",
                             agent_name,
@@ -408,10 +540,12 @@ impl AgentRunner {
                 }
                 Err(TedError::Api(ApiError::RateLimited(retry_after))) => {
                     if attempt > self.config.max_rate_limit_retries {
-                        eprintln!(
-                            "  [{}] Rate limit: exhausted all {} retries (iter {})",
-                            agent_name, self.config.max_rate_limit_retries, iteration
-                        );
+                        if !self.config.quiet {
+                            eprintln!(
+                                "  [{}] Rate limit: exhausted all {} retries (iter {})",
+                                agent_name, self.config.max_rate_limit_retries, iteration
+                            );
+                        }
                         return Err(TedError::Api(ApiError::RateLimited(retry_after)));
                     }
 
@@ -423,21 +557,23 @@ impl AgentRunner {
                     };
 
                     // Provide more context about the rate limit
-                    let source_hint = if retry_after > 0 {
-                        format!("API requested {}s wait", retry_after)
-                    } else {
-                        "using backoff".to_string()
-                    };
+                    if !self.config.quiet {
+                        let source_hint = if retry_after > 0 {
+                            format!("API requested {}s wait", retry_after)
+                        } else {
+                            "using backoff".to_string()
+                        };
 
-                    eprintln!(
-                        "  [{}] Rate limited (iter {}, retry {}/{}) - {} - waiting {}s",
-                        agent_name,
-                        iteration,
-                        attempt,
-                        self.config.max_rate_limit_retries,
-                        source_hint,
-                        delay_secs
-                    );
+                        eprintln!(
+                            "  [{}] Rate limited (iter {}, retry {}/{}) - {} - waiting {}s",
+                            agent_name,
+                            iteration,
+                            attempt,
+                            self.config.max_rate_limit_retries,
+                            source_hint,
+                            delay_secs
+                        );
+                    }
 
                     tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
                 }
@@ -475,13 +611,25 @@ impl AgentRunner {
         content: &[ContentBlockResponse],
         agent_context: &AgentContext,
         tool_context: &ToolContext,
+        progress: &Option<ProgressSender>,
     ) -> Result<Vec<ToolResult>> {
         let mut results = Vec::new();
+
+        // Helper to send progress events
+        let send_progress = |event: AgentProgressEvent| {
+            if let Some(ref tx) = progress {
+                let _ = tx.send(event);
+            }
+        };
 
         for block in content {
             if let ContentBlockResponse::ToolUse { id, name, input } = block {
                 // Check if tool is allowed
                 if !agent_context.is_tool_allowed(name) {
+                    send_progress(AgentProgressEvent::ToolComplete {
+                        tool_name: name.clone(),
+                        success: false,
+                    });
                     results.push(ToolResult {
                         tool_use_id: id.clone(),
                         output: ToolOutput::Error(format!(
@@ -496,6 +644,10 @@ impl AgentRunner {
                 let tool = match self.tool_registry.get(name) {
                     Some(t) => t.clone(),
                     None => {
+                        send_progress(AgentProgressEvent::ToolComplete {
+                            tool_name: name.clone(),
+                            success: false,
+                        });
                         results.push(ToolResult {
                             tool_use_id: id.clone(),
                             output: ToolOutput::Error(format!("Unknown tool: {}", name)),
@@ -504,14 +656,28 @@ impl AgentRunner {
                     }
                 };
 
+                // Create input summary for progress reporting
+                let input_summary = summarize_tool_input(name, input);
+
+                // Emit tool start event
+                send_progress(AgentProgressEvent::ToolStart {
+                    tool_name: name.clone(),
+                    input_summary,
+                });
+
                 // Execute the tool
-                if self.config.verbose {
+                if self.config.verbose && !self.config.quiet {
                     eprintln!("  [{}] → Tool: {}", agent_context.config.name, name);
                 }
 
                 match tool.execute(id.clone(), input.clone(), tool_context).await {
                     Ok(result) => {
-                        if self.config.verbose {
+                        let success = !result.is_error();
+                        send_progress(AgentProgressEvent::ToolComplete {
+                            tool_name: name.clone(),
+                            success,
+                        });
+                        if self.config.verbose && !self.config.quiet {
                             if result.is_error() {
                                 eprintln!(
                                     "  [{}]   ✗ Error: {}",
@@ -525,6 +691,10 @@ impl AgentRunner {
                         results.push(result);
                     }
                     Err(e) => {
+                        send_progress(AgentProgressEvent::ToolComplete {
+                            tool_name: name.clone(),
+                            success: false,
+                        });
                         results.push(ToolResult {
                             tool_use_id: id.clone(),
                             output: ToolOutput::Error(e.to_string()),
@@ -622,6 +792,73 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     } else {
         format!("{}...", s[..max_len].replace('\n', " "))
     }
+}
+
+/// Summarize tool input for progress display
+fn summarize_tool_input(tool_name: &str, input: &serde_json::Value) -> String {
+    match tool_name {
+        "file_read" | "glob" => {
+            if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
+                return path.to_string();
+            }
+            if let Some(pattern) = input.get("pattern").and_then(|v| v.as_str()) {
+                return pattern.to_string();
+            }
+        }
+        "grep" => {
+            if let Some(pattern) = input.get("pattern").and_then(|v| v.as_str()) {
+                return format!("/{}/", pattern);
+            }
+        }
+        "file_write" | "file_edit" => {
+            if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
+                return path.to_string();
+            }
+        }
+        "shell" => {
+            if let Some(cmd) = input.get("command").and_then(|v| v.as_str()) {
+                let short = if cmd.len() > 50 {
+                    format!("{}...", &cmd[..47])
+                } else {
+                    cmd.to_string()
+                };
+                return short;
+            }
+        }
+        "spawn_agent" => {
+            if let Some(agent_type) = input.get("agent_type").and_then(|v| v.as_str()) {
+                if let Some(task) = input.get("task").and_then(|v| v.as_str()) {
+                    let short_task = if task.len() > 40 {
+                        format!("{}...", &task[..37])
+                    } else {
+                        task.to_string()
+                    };
+                    return format!("{}: {}", agent_type, short_task);
+                }
+                return agent_type.to_string();
+            }
+        }
+        _ => {}
+    }
+
+    // Fallback: show first key-value pair
+    if let Some(obj) = input.as_object() {
+        if let Some((key, val)) = obj.iter().next() {
+            let val_str = match val {
+                serde_json::Value::String(s) => {
+                    if s.len() > 40 {
+                        format!("{}...", &s[..37])
+                    } else {
+                        s.clone()
+                    }
+                }
+                _ => val.to_string(),
+            };
+            return format!("{}: {}", key, val_str);
+        }
+    }
+
+    String::new()
 }
 
 /// Handle for a background agent
@@ -818,12 +1055,14 @@ mod tests {
             max_response_tokens: 8192,
             temperature: 0.5,
             verbose: true,
+            quiet: false,
             max_rate_limit_retries: 5,
             base_retry_delay_secs: 3,
         };
         assert_eq!(config.max_response_tokens, 8192);
         assert_eq!(config.temperature, 0.5);
         assert!(config.verbose);
+        assert!(!config.quiet);
         assert_eq!(config.max_rate_limit_retries, 5);
         assert_eq!(config.base_retry_delay_secs, 3);
     }
@@ -1462,6 +1701,7 @@ mod tests {
             max_response_tokens: 16384,
             temperature: 0.5,
             verbose: true,
+            quiet: false,
             max_rate_limit_retries: 5,
             base_retry_delay_secs: 4,
         };
@@ -2122,7 +2362,7 @@ mod tests {
         }];
 
         let results = runner
-            .execute_tools(&content, &context, &tool_context)
+            .execute_tools(&content, &context, &tool_context, &None)
             .await
             .unwrap();
 
@@ -2155,7 +2395,7 @@ mod tests {
         }];
 
         let results = runner
-            .execute_tools(&content, &context, &tool_context)
+            .execute_tools(&content, &context, &tool_context, &None)
             .await
             .unwrap();
 
@@ -2187,7 +2427,7 @@ mod tests {
         ];
 
         let results = runner
-            .execute_tools(&content, &context, &tool_context)
+            .execute_tools(&content, &context, &tool_context, &None)
             .await
             .unwrap();
 

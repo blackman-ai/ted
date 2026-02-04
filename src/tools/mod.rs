@@ -431,6 +431,27 @@ impl ToolRegistry {
         )));
     }
 
+    /// Register the spawn_agent tool with a shared progress tracker
+    ///
+    /// Returns the progress tracker that can be used to monitor agent execution.
+    /// Use this in the TUI to get real-time updates on agent progress.
+    pub fn register_spawn_agent_with_progress(
+        &mut self,
+        provider: Arc<dyn LlmProvider>,
+        skill_registry: Arc<SkillRegistry>,
+        model: String,
+    ) -> builtin::ProgressTracker {
+        let progress_tracker = builtin::new_progress_tracker();
+        let tool = builtin::SpawnAgentTool::with_progress_tracker(
+            provider,
+            skill_registry,
+            model,
+            Arc::clone(&progress_tracker),
+        );
+        self.register(Arc::new(tool));
+        progress_tracker
+    }
+
     /// Load external tools from the default directory (~/.ted/tools/)
     pub fn load_external_tools(&mut self) {
         let tools = external::load_external_tools();
