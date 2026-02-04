@@ -1887,13 +1887,14 @@ async fn process_llm_response(
         // Execute tool calls
         if !tool_uses.is_empty() && stop_reason == StopReason::ToolUse {
             let mut tool_results = Vec::new();
+            let mut cancelled_mid_execution = false;
 
-            for (id, name, input) in tool_uses {
+            for (id, name, input) in &tool_uses {
                 if interrupted.load(Ordering::SeqCst) {
                     break;
                 }
 
-                let parsed_input = if let serde_json::Value::String(s) = &input {
+                let parsed_input = if let serde_json::Value::String(s) = input {
                     serde_json::from_str(s).unwrap_or(serde_json::Value::Null)
                 } else {
                     input.clone()
@@ -1937,16 +1938,17 @@ async fn process_llm_response(
                     if interrupted.load(Ordering::SeqCst) {
                         // Mark tool call as cancelled in UI
                         if let Some(msg) = state.messages.last_mut() {
-                            if let Some(tc) = msg.find_tool_call_mut(&id) {
+                            if let Some(tc) = msg.find_tool_call_mut(id) {
                                 tc.complete_failed("Cancelled by user".to_string());
                             }
                         }
-                        return Ok(()); // Exit early
+                        cancelled_mid_execution = true;
+                        break None; // Signal cancellation
                     }
 
                     tokio::select! {
                         result = &mut tool_future => {
-                            break result?;
+                            break Some(result?);
                         }
                         _ = tokio::time::sleep(Duration::from_millis(100)) => {
                             // Periodic UI refresh while tool is running
@@ -1957,10 +1959,10 @@ async fn process_llm_response(
                                 if let Some(ref tracker) = state.agent_progress_tracker {
                                     // Try to lock and get progress (non-blocking)
                                     if let Ok(guard) = tracker.try_lock() {
-                                        if let Some(progress) = guard.get(&id) {
+                                        if let Some(progress) = guard.get(id) {
                                             // Update the DisplayToolCall's progress display
                                             if let Some(msg) = state.messages.last_mut() {
-                                                if let Some(tc) = msg.find_tool_call_mut(&id) {
+                                                if let Some(tc) = msg.find_tool_call_mut(id) {
                                                     // Use display_status() which shows current tool or last activity
                                                     tc.set_progress_text(&progress.display_status());
                                                 }
@@ -2018,39 +2020,60 @@ async fn process_llm_response(
                     }
                 };
 
-                // Update tool call in UI
-                if let Some(msg) = state.messages.last_mut() {
-                    if let Some(tc) = msg.find_tool_call_mut(&id) {
-                        let output = result.output_text();
-                        if result.is_error() {
-                            tc.complete_failed(output.to_string());
-                        } else {
-                            let preview = if output.chars().count() > 100 {
-                                // Truncate at character boundary, not byte boundary
-                                let truncated: String = output.chars().take(97).collect();
-                                Some(format!("{}...", truncated))
-                            } else {
-                                Some(output.to_string())
-                            };
-                            tc.complete_success(preview, Some(output.to_string()));
-                        }
-                    }
+                // If cancelled mid-execution, break from outer loop
+                if cancelled_mid_execution {
+                    break;
                 }
 
-                // Refresh UI to show tool result
-                state.tick_animation();
-                let _ = terminal.draw(|f| draw_tui(f, state));
+                // Update tool call in UI (only if we got a result)
+                if let Some(result) = result {
+                    if let Some(msg) = state.messages.last_mut() {
+                        if let Some(tc) = msg.find_tool_call_mut(id) {
+                            let output = result.output_text();
+                            if result.is_error() {
+                                tc.complete_failed(output.to_string());
+                            } else {
+                                let preview = if output.chars().count() > 100 {
+                                    // Truncate at character boundary, not byte boundary
+                                    let truncated: String = output.chars().take(97).collect();
+                                    Some(format!("{}...", truncated))
+                                } else {
+                                    Some(output.to_string())
+                                };
+                                tc.complete_success(preview, Some(output.to_string()));
+                            }
+                        }
+                    }
 
-                tool_results.push((id, result));
+                    // Refresh UI to show tool result
+                    state.tick_animation();
+                    let _ = terminal.draw(|f| draw_tui(f, state));
+
+                    tool_results.push((id.clone(), result));
+                }
             }
 
-            // Add tool results to conversation
-            for (id, result) in tool_results {
+            // Collect IDs of tools that completed successfully
+            let completed_ids: std::collections::HashSet<_> =
+                tool_results.iter().map(|(id, _)| id.clone()).collect();
+
+            // Add tool results to conversation for completed tools
+            for (id, result) in &tool_results {
                 conversation.push(Message::tool_result(
-                    &id,
+                    id,
                     result.output_text(),
                     result.is_error(),
                 ));
+            }
+
+            // If interrupted, add cancelled tool_result for any unprocessed tools
+            // This ensures the API gets matching tool_use/tool_result pairs
+            if interrupted.load(Ordering::SeqCst) {
+                for (id, _, _) in &tool_uses {
+                    if !completed_ids.contains(id) {
+                        conversation.push(Message::tool_result(id, "Cancelled by user", true));
+                    }
+                }
             }
 
             // Continue loop to get next response
@@ -4871,5 +4894,165 @@ mod tests {
         state.caps_move_up();
         state.caps_move_down();
         assert_eq!(state.caps_selected_index, 0);
+    }
+
+    // ===== Cancelled Tool Use Tests =====
+
+    /// Tests that cancelled tool_result messages are correctly created with error flag.
+    /// This tests the logic used when Ctrl+C interrupts tool execution - we need to
+    /// add error tool_result blocks for any incomplete tool_uses to maintain API invariant.
+    #[test]
+    fn test_cancelled_tool_result_message() {
+        use crate::llm::message::{ContentBlock, Message, MessageContent};
+
+        let tool_use_id = "toolu_cancelled_123";
+        let msg = Message::tool_result(tool_use_id, "Cancelled by user", true);
+
+        // Verify it's a user message (tool_result is always from user role)
+        assert_eq!(msg.role, crate::llm::message::Role::User);
+
+        // Verify the content contains the tool_result with error flag
+        if let MessageContent::Blocks(blocks) = &msg.content {
+            assert_eq!(blocks.len(), 1);
+            if let ContentBlock::ToolResult {
+                tool_use_id: id,
+                is_error,
+                ..
+            } = &blocks[0]
+            {
+                assert_eq!(id, tool_use_id);
+                assert_eq!(*is_error, Some(true));
+            } else {
+                panic!("Expected ToolResult block");
+            }
+        } else {
+            panic!("Expected Blocks content");
+        }
+    }
+
+    /// Tests the logic for identifying which tool_uses need cancelled results.
+    /// When interrupted, we add cancelled results for any tool_use IDs not in completed set.
+    #[test]
+    fn test_incomplete_tool_uses_detection() {
+        use std::collections::HashSet;
+
+        // Simulate: 3 tool_uses were requested
+        let tool_uses = vec![
+            (
+                "tool_1".to_string(),
+                "grep".to_string(),
+                serde_json::Value::Null,
+            ),
+            (
+                "tool_2".to_string(),
+                "read".to_string(),
+                serde_json::Value::Null,
+            ),
+            (
+                "tool_3".to_string(),
+                "write".to_string(),
+                serde_json::Value::Null,
+            ),
+        ];
+
+        // Simulate: only tool_1 completed before interruption
+        let completed_ids: HashSet<String> = vec!["tool_1".to_string()].into_iter().collect();
+
+        // Find incomplete tools (this is the logic from the fix)
+        let incomplete: Vec<_> = tool_uses
+            .iter()
+            .filter(|(id, _, _)| !completed_ids.contains(id))
+            .map(|(id, _, _)| id.clone())
+            .collect();
+
+        assert_eq!(incomplete.len(), 2);
+        assert!(incomplete.contains(&"tool_2".to_string()));
+        assert!(incomplete.contains(&"tool_3".to_string()));
+        assert!(!incomplete.contains(&"tool_1".to_string()));
+    }
+
+    /// Tests that a conversation maintains valid tool_use/tool_result pairs after cancellation.
+    /// This simulates the fix: when interrupted, we add cancelled results for all incomplete tools.
+    #[test]
+    fn test_conversation_tool_use_result_pairing_after_cancel() {
+        use crate::llm::message::{ContentBlock, Conversation, Message, MessageContent};
+
+        let mut conversation = Conversation::new();
+
+        // Simulate: assistant responds with 2 tool_uses
+        let assistant_msg = Message::assistant_blocks(vec![
+            ContentBlock::Text {
+                text: "I'll help with that.".to_string(),
+            },
+            ContentBlock::ToolUse {
+                id: "tool_1".to_string(),
+                name: "grep".to_string(),
+                input: serde_json::json!({"pattern": "test"}),
+            },
+            ContentBlock::ToolUse {
+                id: "tool_2".to_string(),
+                name: "read".to_string(),
+                input: serde_json::json!({"path": "/test"}),
+            },
+        ]);
+        conversation.push(assistant_msg);
+
+        // Simulate: tool_1 completed, tool_2 was cancelled
+        conversation.push(Message::tool_result("tool_1", "Found 5 matches", false));
+        conversation.push(Message::tool_result("tool_2", "Cancelled by user", true));
+
+        // Verify: all tool_uses have matching tool_results
+        let tool_use_ids: Vec<String> = conversation
+            .messages
+            .iter()
+            .flat_map(|m| {
+                if let MessageContent::Blocks(blocks) = &m.content {
+                    blocks
+                        .iter()
+                        .filter_map(|b| {
+                            if let ContentBlock::ToolUse { id, .. } = b {
+                                Some(id.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![]
+                }
+            })
+            .collect();
+
+        let tool_result_ids: Vec<String> = conversation
+            .messages
+            .iter()
+            .flat_map(|m| {
+                if let MessageContent::Blocks(blocks) = &m.content {
+                    blocks
+                        .iter()
+                        .filter_map(|b| {
+                            if let ContentBlock::ToolResult { tool_use_id, .. } = b {
+                                Some(tool_use_id.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![]
+                }
+            })
+            .collect();
+
+        // Every tool_use_id should have a matching tool_result
+        assert_eq!(tool_use_ids.len(), 2);
+        assert_eq!(tool_result_ids.len(), 2);
+        for id in &tool_use_ids {
+            assert!(
+                tool_result_ids.contains(id),
+                "tool_use {} missing tool_result",
+                id
+            );
+        }
     }
 }

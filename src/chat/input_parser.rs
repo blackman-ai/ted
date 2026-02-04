@@ -1,0 +1,956 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2025 Blackman Artificial Intelligence Technologies Inc.
+
+//! Input parsing for chat commands
+//!
+//! This module provides pure functions for parsing and classifying user input
+//! in the chat interface. All functions are designed to be easily testable
+//! with no side effects.
+
+use crate::llm::provider::ContentBlockResponse;
+
+/// Parse a shell command from user input.
+/// Returns Some(command) if input starts with '>', None otherwise.
+/// Returns Some("") if input is just '>'.
+pub fn parse_shell_command(input: &str) -> Option<&str> {
+    let trimmed = input.trim();
+    if trimmed.starts_with('>') {
+        Some(trimmed.strip_prefix('>').unwrap().trim())
+    } else {
+        None
+    }
+}
+
+/// Truncate a command string for display purposes.
+/// Commands longer than max_len are truncated with "...".
+pub fn truncate_command_display(command: &str, max_len: usize) -> String {
+    if command.len() > max_len {
+        format!("{}...", &command[..max_len.saturating_sub(3)])
+    } else {
+        command.to_string()
+    }
+}
+
+/// Check if user input is an exit command.
+pub fn is_exit_command(input: &str) -> bool {
+    let trimmed = input.trim().to_lowercase();
+    matches!(trimmed.as_str(), "exit" | "quit" | "/exit" | "/quit")
+}
+
+/// Check if user input is a clear command.
+pub fn is_clear_command(input: &str) -> bool {
+    input.trim().to_lowercase() == "/clear"
+}
+
+/// Check if user input is a help command.
+pub fn is_help_command(input: &str) -> bool {
+    input.trim().to_lowercase() == "/help"
+}
+
+/// Check if user input is a stats/context command.
+pub fn is_stats_command(input: &str) -> bool {
+    let trimmed = input.trim().to_lowercase();
+    trimmed == "/stats" || trimmed == "/context"
+}
+
+/// Check if user input is a settings command.
+pub fn is_settings_command(input: &str) -> bool {
+    let trimmed = input.trim().to_lowercase();
+    trimmed == "/settings" || trimmed == "/config"
+}
+
+/// Check if user input is a sessions command.
+pub fn is_sessions_command(input: &str) -> bool {
+    let trimmed = input.trim().to_lowercase();
+    trimmed == "/sessions" || trimmed == "/session"
+}
+
+/// Check if user input is a new session command.
+pub fn is_new_command(input: &str) -> bool {
+    input.trim().to_lowercase() == "/new"
+}
+
+/// Check if user input is a plans command.
+pub fn is_plans_command(input: &str) -> bool {
+    let trimmed = input.trim().to_lowercase();
+    trimmed == "/plans" || trimmed == "/plan"
+}
+
+/// Check if user input is a model command.
+pub fn is_model_command(input: &str) -> bool {
+    let trimmed = input.trim().to_lowercase();
+    trimmed == "/model" || trimmed == "/models"
+}
+
+/// Check if user input is a caps command.
+pub fn is_caps_command(input: &str) -> bool {
+    input.trim().to_lowercase() == "/caps"
+}
+
+/// Parse a switch command argument.
+/// Returns the session identifier if valid.
+pub fn parse_switch_command(input: &str) -> Option<&str> {
+    let trimmed = input.trim().to_lowercase();
+    if trimmed.starts_with("/switch ") {
+        Some(input.trim().strip_prefix("/switch ").unwrap_or("").trim())
+    } else {
+        None
+    }
+}
+
+/// Parse a model switch command argument.
+/// Returns the model name if valid.
+pub fn parse_model_switch_command(input: &str) -> Option<&str> {
+    let trimmed = input.trim();
+    if trimmed.to_lowercase().starts_with("/model ") {
+        Some(trimmed.strip_prefix("/model ").unwrap_or("").trim())
+    } else {
+        None
+    }
+}
+
+/// Parse a cap command argument.
+/// Returns (action, argument) if valid.
+pub fn parse_cap_command(input: &str) -> Option<(&str, Option<&str>)> {
+    let trimmed = input.trim();
+    if !trimmed.to_lowercase().starts_with("/cap ") {
+        return None;
+    }
+
+    let without_prefix = trimmed.strip_prefix("/cap ").unwrap_or("").trim();
+    let parts: Vec<&str> = without_prefix.splitn(2, ' ').collect();
+
+    if parts.is_empty() || parts[0].is_empty() {
+        return None;
+    }
+
+    let action = parts[0];
+    let arg = parts.get(1).copied();
+    Some((action, arg))
+}
+
+/// Provider choice during configuration
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderChoice {
+    Anthropic,
+    Ollama,
+    OpenRouter,
+    Settings,
+    Invalid,
+}
+
+/// Parse provider choice from user input during configuration.
+/// Returns the choice as an enum variant.
+pub fn parse_provider_choice(input: &str) -> ProviderChoice {
+    match input.trim().to_lowercase().as_str() {
+        "1" | "anthropic" => ProviderChoice::Anthropic,
+        "2" | "ollama" => ProviderChoice::Ollama,
+        "3" | "openrouter" => ProviderChoice::OpenRouter,
+        "s" | "settings" => ProviderChoice::Settings,
+        _ => ProviderChoice::Invalid,
+    }
+}
+
+/// Format shell output for display.
+/// Returns (formatted_output, line_count, was_truncated).
+pub fn format_shell_output_lines(
+    stdout: &str,
+    stderr: &str,
+    max_lines: usize,
+) -> (Vec<String>, usize, bool) {
+    let output_lines: Vec<String> = stdout
+        .lines()
+        .chain(stderr.lines())
+        .map(|s| s.to_string())
+        .collect();
+
+    let total_lines = output_lines.len();
+    let was_truncated = total_lines > max_lines;
+
+    let display_lines = if was_truncated {
+        output_lines.into_iter().take(max_lines).collect()
+    } else {
+        output_lines
+    };
+
+    (display_lines, total_lines, was_truncated)
+}
+
+/// Extract tool uses from completion response content blocks.
+pub fn extract_tool_uses(
+    response_content: &[ContentBlockResponse],
+) -> Vec<(String, String, serde_json::Value)> {
+    response_content
+        .iter()
+        .filter_map(|block| {
+            if let ContentBlockResponse::ToolUse { id, name, input } = block {
+                Some((id.clone(), name.clone(), input.clone()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Extract text content from completion response content blocks.
+pub fn extract_text_content(response_content: &[ContentBlockResponse]) -> String {
+    response_content
+        .iter()
+        .filter_map(|block| {
+            if let ContentBlockResponse::Text { text } = block {
+                Some(text.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Calculate target tokens for context trimming.
+/// Returns the target token count (70% of context window).
+pub fn calculate_trim_target(context_window: u32) -> u32 {
+    (context_window as f64 * 0.7) as u32
+}
+
+/// Validate that a model name is in the list of known valid models.
+pub fn is_valid_model(model: &str) -> bool {
+    const VALID_MODELS: &[&str] = &[
+        "claude-sonnet-4-20250514",
+        "claude-3-5-sonnet-20241022",
+        "claude-3-5-haiku-20241022",
+        "claude-opus-4-20250514",
+    ];
+    VALID_MODELS.contains(&model)
+}
+
+/// Parse comma-separated cap names from input.
+pub fn parse_cap_names(input: &str) -> Vec<String> {
+    input
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Truncate a line for display, adding ellipsis if too long.
+pub fn truncate_line(line: &str, max_len: usize) -> String {
+    if line.len() > max_len {
+        format!("{}...", &line[..max_len.saturating_sub(3)])
+    } else {
+        line.to_string()
+    }
+}
+
+/// Check if input looks like a slash command (starts with /).
+pub fn is_slash_command(input: &str) -> bool {
+    input.trim().starts_with('/')
+}
+
+/// Parse the base command name from a slash command.
+/// Returns the command without the leading slash and without arguments.
+pub fn parse_slash_command_name(input: &str) -> Option<&str> {
+    let trimmed = input.trim();
+    if !trimmed.starts_with('/') {
+        return None;
+    }
+
+    let without_slash = &trimmed[1..];
+    // Get the first word (before any space)
+    without_slash.split_whitespace().next()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== parse_shell_command tests ====================
+
+    #[test]
+    fn test_parse_shell_command_valid() {
+        assert_eq!(parse_shell_command(">ls -la"), Some("ls -la"));
+        assert_eq!(parse_shell_command("> git status"), Some("git status"));
+        assert_eq!(parse_shell_command("  >  echo hello  "), Some("echo hello"));
+    }
+
+    #[test]
+    fn test_parse_shell_command_empty() {
+        assert_eq!(parse_shell_command(">"), Some(""));
+        assert_eq!(parse_shell_command(">  "), Some(""));
+    }
+
+    #[test]
+    fn test_parse_shell_command_not_shell() {
+        assert_eq!(parse_shell_command("hello"), None);
+        assert_eq!(parse_shell_command("ls -la"), None);
+        assert_eq!(parse_shell_command(""), None);
+    }
+
+    #[test]
+    fn test_parse_shell_command_complex() {
+        assert_eq!(
+            parse_shell_command(">git commit -m 'test message'"),
+            Some("git commit -m 'test message'")
+        );
+        assert_eq!(
+            parse_shell_command(">echo 'hello > world'"),
+            Some("echo 'hello > world'")
+        );
+    }
+
+    // ==================== truncate_command_display tests ====================
+
+    #[test]
+    fn test_truncate_command_display_short() {
+        assert_eq!(truncate_command_display("ls -la", 60), "ls -la");
+        assert_eq!(truncate_command_display("short", 10), "short");
+    }
+
+    #[test]
+    fn test_truncate_command_display_long() {
+        let long_cmd = "a".repeat(100);
+        let result = truncate_command_display(&long_cmd, 60);
+        assert!(result.ends_with("..."));
+        assert!(result.len() <= 60);
+    }
+
+    #[test]
+    fn test_truncate_command_display_exact() {
+        let cmd = "a".repeat(60);
+        let result = truncate_command_display(&cmd, 60);
+        assert_eq!(result, cmd);
+    }
+
+    #[test]
+    fn test_truncate_command_display_small_max() {
+        let cmd = "hello world";
+        let result = truncate_command_display(cmd, 5);
+        assert_eq!(result, "he...");
+    }
+
+    #[test]
+    fn test_truncate_command_display_empty() {
+        assert_eq!(truncate_command_display("", 10), "");
+    }
+
+    // ==================== is_exit_command tests ====================
+
+    #[test]
+    fn test_is_exit_command_lowercase() {
+        assert!(is_exit_command("exit"));
+        assert!(is_exit_command("quit"));
+        assert!(is_exit_command("/exit"));
+        assert!(is_exit_command("/quit"));
+    }
+
+    #[test]
+    fn test_is_exit_command_uppercase() {
+        assert!(is_exit_command("EXIT"));
+        assert!(is_exit_command("QUIT"));
+        assert!(is_exit_command("/EXIT"));
+        assert!(is_exit_command("/QUIT"));
+    }
+
+    #[test]
+    fn test_is_exit_command_whitespace() {
+        assert!(is_exit_command("  exit  "));
+        assert!(is_exit_command("\texit\n"));
+    }
+
+    #[test]
+    fn test_is_exit_command_invalid() {
+        assert!(!is_exit_command("hello"));
+        assert!(!is_exit_command("exiting"));
+        assert!(!is_exit_command("quitting"));
+        assert!(!is_exit_command(""));
+    }
+
+    // ==================== is_clear_command tests ====================
+
+    #[test]
+    fn test_is_clear_command_valid() {
+        assert!(is_clear_command("/clear"));
+        assert!(is_clear_command("/CLEAR"));
+        assert!(is_clear_command("  /clear  "));
+    }
+
+    #[test]
+    fn test_is_clear_command_invalid() {
+        assert!(!is_clear_command("clear"));
+        assert!(!is_clear_command("/clearall"));
+        assert!(!is_clear_command(""));
+    }
+
+    // ==================== is_help_command tests ====================
+
+    #[test]
+    fn test_is_help_command_valid() {
+        assert!(is_help_command("/help"));
+        assert!(is_help_command("/HELP"));
+        assert!(is_help_command("  /help  "));
+    }
+
+    #[test]
+    fn test_is_help_command_invalid() {
+        assert!(!is_help_command("help"));
+        assert!(!is_help_command("/helper"));
+        assert!(!is_help_command(""));
+    }
+
+    // ==================== is_stats_command tests ====================
+
+    #[test]
+    fn test_is_stats_command_valid() {
+        assert!(is_stats_command("/stats"));
+        assert!(is_stats_command("/context"));
+        assert!(is_stats_command("/STATS"));
+        assert!(is_stats_command("  /context  "));
+    }
+
+    #[test]
+    fn test_is_stats_command_invalid() {
+        assert!(!is_stats_command("stats"));
+        assert!(!is_stats_command("/statistics"));
+        assert!(!is_stats_command(""));
+    }
+
+    // ==================== is_settings_command tests ====================
+
+    #[test]
+    fn test_is_settings_command_valid() {
+        assert!(is_settings_command("/settings"));
+        assert!(is_settings_command("/config"));
+        assert!(is_settings_command("/SETTINGS"));
+        assert!(is_settings_command("  /config  "));
+    }
+
+    #[test]
+    fn test_is_settings_command_invalid() {
+        assert!(!is_settings_command("settings"));
+        assert!(!is_settings_command("/configure"));
+        assert!(!is_settings_command(""));
+    }
+
+    // ==================== is_sessions_command tests ====================
+
+    #[test]
+    fn test_is_sessions_command_valid() {
+        assert!(is_sessions_command("/sessions"));
+        assert!(is_sessions_command("/session"));
+        assert!(is_sessions_command("/SESSIONS"));
+    }
+
+    #[test]
+    fn test_is_sessions_command_invalid() {
+        assert!(!is_sessions_command("sessions"));
+        assert!(!is_sessions_command("/sess"));
+    }
+
+    // ==================== is_new_command tests ====================
+
+    #[test]
+    fn test_is_new_command_valid() {
+        assert!(is_new_command("/new"));
+        assert!(is_new_command("/NEW"));
+        assert!(is_new_command("  /new  "));
+    }
+
+    #[test]
+    fn test_is_new_command_invalid() {
+        assert!(!is_new_command("new"));
+        assert!(!is_new_command("/newone"));
+    }
+
+    // ==================== is_plans_command tests ====================
+
+    #[test]
+    fn test_is_plans_command_valid() {
+        assert!(is_plans_command("/plans"));
+        assert!(is_plans_command("/plan"));
+        assert!(is_plans_command("/PLANS"));
+    }
+
+    #[test]
+    fn test_is_plans_command_invalid() {
+        assert!(!is_plans_command("plans"));
+        assert!(!is_plans_command("/planning"));
+    }
+
+    // ==================== is_model_command tests ====================
+
+    #[test]
+    fn test_is_model_command_valid() {
+        assert!(is_model_command("/model"));
+        assert!(is_model_command("/models"));
+        assert!(is_model_command("/MODEL"));
+    }
+
+    #[test]
+    fn test_is_model_command_invalid() {
+        assert!(!is_model_command("model"));
+        assert!(!is_model_command("/model gpt-4")); // This has an argument
+    }
+
+    // ==================== is_caps_command tests ====================
+
+    #[test]
+    fn test_is_caps_command_valid() {
+        assert!(is_caps_command("/caps"));
+        assert!(is_caps_command("/CAPS"));
+        assert!(is_caps_command("  /caps  "));
+    }
+
+    #[test]
+    fn test_is_caps_command_invalid() {
+        assert!(!is_caps_command("caps"));
+        assert!(!is_caps_command("/cap"));
+    }
+
+    // ==================== parse_switch_command tests ====================
+
+    #[test]
+    fn test_parse_switch_command_valid() {
+        assert_eq!(parse_switch_command("/switch abc123"), Some("abc123"));
+        assert_eq!(parse_switch_command("/switch 1"), Some("1"));
+    }
+
+    #[test]
+    fn test_parse_switch_command_invalid() {
+        assert_eq!(parse_switch_command("/switch"), None);
+        assert_eq!(parse_switch_command("switch abc"), None);
+    }
+
+    // ==================== parse_model_switch_command tests ====================
+
+    #[test]
+    fn test_parse_model_switch_command_valid() {
+        assert_eq!(
+            parse_model_switch_command("/model claude-3-5-sonnet"),
+            Some("claude-3-5-sonnet")
+        );
+        assert_eq!(parse_model_switch_command("/model gpt-4"), Some("gpt-4"));
+    }
+
+    #[test]
+    fn test_parse_model_switch_command_invalid() {
+        assert_eq!(parse_model_switch_command("/model"), None);
+        assert_eq!(parse_model_switch_command("model gpt-4"), None);
+    }
+
+    // ==================== parse_cap_command tests ====================
+
+    #[test]
+    fn test_parse_cap_command_with_action_and_arg() {
+        let result = parse_cap_command("/cap add mycode");
+        assert_eq!(result, Some(("add", Some("mycode"))));
+    }
+
+    #[test]
+    fn test_parse_cap_command_with_action_only() {
+        let result = parse_cap_command("/cap clear");
+        assert_eq!(result, Some(("clear", None)));
+    }
+
+    #[test]
+    fn test_parse_cap_command_with_arg_containing_spaces() {
+        let result = parse_cap_command("/cap set base,code");
+        assert_eq!(result, Some(("set", Some("base,code"))));
+    }
+
+    #[test]
+    fn test_parse_cap_command_invalid() {
+        assert_eq!(parse_cap_command("cap add"), None);
+        assert_eq!(parse_cap_command("/cap"), None);
+        assert_eq!(parse_cap_command("/cap "), None);
+    }
+
+    // ==================== parse_provider_choice tests ====================
+
+    #[test]
+    fn test_parse_provider_choice_anthropic() {
+        assert_eq!(parse_provider_choice("1"), ProviderChoice::Anthropic);
+        assert_eq!(
+            parse_provider_choice("anthropic"),
+            ProviderChoice::Anthropic
+        );
+        assert_eq!(
+            parse_provider_choice("ANTHROPIC"),
+            ProviderChoice::Anthropic
+        );
+    }
+
+    #[test]
+    fn test_parse_provider_choice_ollama() {
+        assert_eq!(parse_provider_choice("2"), ProviderChoice::Ollama);
+        assert_eq!(parse_provider_choice("ollama"), ProviderChoice::Ollama);
+        assert_eq!(parse_provider_choice("OLLAMA"), ProviderChoice::Ollama);
+    }
+
+    #[test]
+    fn test_parse_provider_choice_openrouter() {
+        assert_eq!(parse_provider_choice("3"), ProviderChoice::OpenRouter);
+        assert_eq!(
+            parse_provider_choice("openrouter"),
+            ProviderChoice::OpenRouter
+        );
+    }
+
+    #[test]
+    fn test_parse_provider_choice_settings() {
+        assert_eq!(parse_provider_choice("s"), ProviderChoice::Settings);
+        assert_eq!(parse_provider_choice("settings"), ProviderChoice::Settings);
+        assert_eq!(parse_provider_choice("S"), ProviderChoice::Settings);
+    }
+
+    #[test]
+    fn test_parse_provider_choice_invalid() {
+        assert_eq!(parse_provider_choice(""), ProviderChoice::Invalid);
+        assert_eq!(parse_provider_choice("4"), ProviderChoice::Invalid);
+        assert_eq!(parse_provider_choice("invalid"), ProviderChoice::Invalid);
+    }
+
+    // ==================== format_shell_output_lines tests ====================
+
+    #[test]
+    fn test_format_shell_output_lines_small() {
+        let (lines, total, truncated) = format_shell_output_lines("line1\nline2\nline3", "", 10);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(total, 3);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn test_format_shell_output_lines_truncated() {
+        let stdout = (0..20)
+            .map(|i| format!("line{}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (lines, total, truncated) = format_shell_output_lines(&stdout, "", 10);
+        assert_eq!(lines.len(), 10);
+        assert_eq!(total, 20);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn test_format_shell_output_lines_combined() {
+        let (lines, total, truncated) =
+            format_shell_output_lines("stdout1\nstdout2", "stderr1", 10);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(total, 3);
+        assert!(!truncated);
+        assert!(lines.contains(&"stderr1".to_string()));
+    }
+
+    #[test]
+    fn test_format_shell_output_lines_empty() {
+        let (lines, total, truncated) = format_shell_output_lines("", "", 10);
+        assert!(lines.is_empty());
+        assert_eq!(total, 0);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn test_format_shell_output_lines_stdout_only() {
+        let (lines, total, truncated) = format_shell_output_lines("line1\nline2", "", 5);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(total, 2);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn test_format_shell_output_lines_stderr_only() {
+        let (lines, total, truncated) = format_shell_output_lines("", "error1\nerror2", 5);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(total, 2);
+        assert!(!truncated);
+    }
+
+    // ==================== extract_tool_uses tests ====================
+
+    #[test]
+    fn test_extract_tool_uses_empty() {
+        let content: Vec<ContentBlockResponse> = vec![];
+        let tool_uses = extract_tool_uses(&content);
+        assert!(tool_uses.is_empty());
+    }
+
+    #[test]
+    fn test_extract_tool_uses_text_only() {
+        let content = vec![ContentBlockResponse::Text {
+            text: "Hello".to_string(),
+        }];
+        let tool_uses = extract_tool_uses(&content);
+        assert!(tool_uses.is_empty());
+    }
+
+    #[test]
+    fn test_extract_tool_uses_with_tools() {
+        let content = vec![
+            ContentBlockResponse::Text {
+                text: "I will read the file".to_string(),
+            },
+            ContentBlockResponse::ToolUse {
+                id: "tool_1".to_string(),
+                name: "file_read".to_string(),
+                input: serde_json::json!({"path": "/tmp/test.txt"}),
+            },
+        ];
+        let tool_uses = extract_tool_uses(&content);
+        assert_eq!(tool_uses.len(), 1);
+        assert_eq!(tool_uses[0].0, "tool_1");
+        assert_eq!(tool_uses[0].1, "file_read");
+    }
+
+    #[test]
+    fn test_extract_tool_uses_multiple() {
+        let content = vec![
+            ContentBlockResponse::ToolUse {
+                id: "tool_1".to_string(),
+                name: "file_read".to_string(),
+                input: serde_json::json!({}),
+            },
+            ContentBlockResponse::ToolUse {
+                id: "tool_2".to_string(),
+                name: "shell".to_string(),
+                input: serde_json::json!({"command": "ls"}),
+            },
+        ];
+        let tool_uses = extract_tool_uses(&content);
+        assert_eq!(tool_uses.len(), 2);
+    }
+
+    // ==================== extract_text_content tests ====================
+
+    #[test]
+    fn test_extract_text_content_empty() {
+        let content: Vec<ContentBlockResponse> = vec![];
+        let text = extract_text_content(&content);
+        assert!(text.is_empty());
+    }
+
+    #[test]
+    fn test_extract_text_content_single() {
+        let content = vec![ContentBlockResponse::Text {
+            text: "Hello world".to_string(),
+        }];
+        let text = extract_text_content(&content);
+        assert_eq!(text, "Hello world");
+    }
+
+    #[test]
+    fn test_extract_text_content_multiple() {
+        let content = vec![
+            ContentBlockResponse::Text {
+                text: "First".to_string(),
+            },
+            ContentBlockResponse::Text {
+                text: "Second".to_string(),
+            },
+        ];
+        let text = extract_text_content(&content);
+        assert_eq!(text, "First\nSecond");
+    }
+
+    #[test]
+    fn test_extract_text_content_mixed() {
+        let content = vec![
+            ContentBlockResponse::Text {
+                text: "Text before".to_string(),
+            },
+            ContentBlockResponse::ToolUse {
+                id: "tool_1".to_string(),
+                name: "file_read".to_string(),
+                input: serde_json::json!({}),
+            },
+            ContentBlockResponse::Text {
+                text: "Text after".to_string(),
+            },
+        ];
+        let text = extract_text_content(&content);
+        assert_eq!(text, "Text before\nText after");
+    }
+
+    // ==================== calculate_trim_target tests ====================
+
+    #[test]
+    fn test_calculate_trim_target() {
+        assert_eq!(calculate_trim_target(100000), 70000);
+        assert_eq!(calculate_trim_target(200000), 140000);
+        assert_eq!(calculate_trim_target(0), 0);
+    }
+
+    #[test]
+    fn test_calculate_trim_target_small() {
+        assert_eq!(calculate_trim_target(100), 70);
+        assert_eq!(calculate_trim_target(10), 7);
+    }
+
+    #[test]
+    fn test_calculate_trim_target_rounding() {
+        // Test that we get reasonable rounding behavior
+        assert_eq!(calculate_trim_target(1), 0);
+        assert_eq!(calculate_trim_target(2), 1);
+        assert_eq!(calculate_trim_target(3), 2);
+    }
+
+    // ==================== is_valid_model tests ====================
+
+    #[test]
+    fn test_is_valid_model_valid() {
+        assert!(is_valid_model("claude-sonnet-4-20250514"));
+        assert!(is_valid_model("claude-3-5-sonnet-20241022"));
+        assert!(is_valid_model("claude-3-5-haiku-20241022"));
+    }
+
+    #[test]
+    fn test_is_valid_model_invalid() {
+        assert!(!is_valid_model("gpt-4"));
+        assert!(!is_valid_model("invalid-model"));
+        assert!(!is_valid_model(""));
+    }
+
+    // ==================== parse_cap_names tests ====================
+
+    #[test]
+    fn test_parse_cap_names_single() {
+        let caps = parse_cap_names("base");
+        assert_eq!(caps, vec!["base"]);
+    }
+
+    #[test]
+    fn test_parse_cap_names_multiple() {
+        let caps = parse_cap_names("base, code, debug");
+        assert_eq!(caps, vec!["base", "code", "debug"]);
+    }
+
+    #[test]
+    fn test_parse_cap_names_with_extra_whitespace() {
+        let caps = parse_cap_names("  base  ,  code  ");
+        assert_eq!(caps, vec!["base", "code"]);
+    }
+
+    #[test]
+    fn test_parse_cap_names_empty() {
+        let caps = parse_cap_names("");
+        assert!(caps.is_empty());
+    }
+
+    #[test]
+    fn test_parse_cap_names_with_empty_items() {
+        let caps = parse_cap_names("base,,code,");
+        assert_eq!(caps, vec!["base", "code"]);
+    }
+
+    // ==================== truncate_line tests ====================
+
+    #[test]
+    fn test_truncate_line_short() {
+        assert_eq!(truncate_line("short", 10), "short");
+    }
+
+    #[test]
+    fn test_truncate_line_long() {
+        let long = "a".repeat(100);
+        let result = truncate_line(&long, 20);
+        assert!(result.len() <= 20);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_line_exact() {
+        assert_eq!(truncate_line("exactly10!", 10), "exactly10!");
+    }
+
+    // ==================== is_slash_command tests ====================
+
+    #[test]
+    fn test_is_slash_command_valid() {
+        assert!(is_slash_command("/help"));
+        assert!(is_slash_command("  /clear"));
+        assert!(is_slash_command("/model gpt-4"));
+    }
+
+    #[test]
+    fn test_is_slash_command_invalid() {
+        assert!(!is_slash_command("help"));
+        assert!(!is_slash_command(""));
+        assert!(!is_slash_command(">shell"));
+    }
+
+    // ==================== parse_slash_command_name tests ====================
+
+    #[test]
+    fn test_parse_slash_command_name_simple() {
+        assert_eq!(parse_slash_command_name("/help"), Some("help"));
+        assert_eq!(parse_slash_command_name("/clear"), Some("clear"));
+    }
+
+    #[test]
+    fn test_parse_slash_command_name_with_args() {
+        assert_eq!(parse_slash_command_name("/model gpt-4"), Some("model"));
+        assert_eq!(parse_slash_command_name("/switch abc123"), Some("switch"));
+    }
+
+    #[test]
+    fn test_parse_slash_command_name_invalid() {
+        assert_eq!(parse_slash_command_name("help"), None);
+        assert_eq!(parse_slash_command_name(""), None);
+    }
+
+    #[test]
+    fn test_parse_slash_command_name_empty_command() {
+        assert_eq!(parse_slash_command_name("/"), None);
+        assert_eq!(parse_slash_command_name("/ "), None);
+    }
+
+    // ==================== ProviderChoice tests ====================
+
+    #[test]
+    fn test_provider_choice_debug() {
+        let choice = ProviderChoice::Anthropic;
+        let debug_str = format!("{:?}", choice);
+        assert!(debug_str.contains("Anthropic"));
+    }
+
+    #[test]
+    fn test_provider_choice_clone() {
+        let choice = ProviderChoice::Ollama;
+        let cloned = choice.clone();
+        assert_eq!(choice, cloned);
+    }
+
+    #[test]
+    fn test_provider_choice_eq() {
+        assert_eq!(ProviderChoice::Anthropic, ProviderChoice::Anthropic);
+        assert_ne!(ProviderChoice::Anthropic, ProviderChoice::Ollama);
+    }
+
+    // ==================== Edge cases and regression tests ====================
+
+    #[test]
+    fn test_unicode_input_handling() {
+        assert!(!is_exit_command("退出"));
+        assert!(is_slash_command("/退出"));
+        assert_eq!(parse_slash_command_name("/退出"), Some("退出"));
+    }
+
+    #[test]
+    fn test_whitespace_only_input() {
+        assert!(!is_exit_command("   "));
+        assert!(!is_slash_command("   "));
+        assert_eq!(parse_shell_command("   "), None);
+    }
+
+    #[test]
+    fn test_newline_handling() {
+        assert!(is_exit_command("exit\n"));
+        assert!(is_slash_command("/help\n"));
+    }
+
+    #[test]
+    fn test_mixed_case_commands() {
+        assert!(is_exit_command("ExIt"));
+        assert!(is_clear_command("/CleAr"));
+        assert!(is_help_command("/HelP"));
+    }
+}
