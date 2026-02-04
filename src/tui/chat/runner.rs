@@ -20,6 +20,13 @@ use futures::StreamExt;
 use ratatui::prelude::*;
 
 use crate::caps::available_caps;
+use crate::chat::input_parser::{
+    parse_commit_command, parse_explain_command, parse_fix_command, parse_review_command,
+    parse_test_command,
+};
+use crate::chat::slash_commands::{
+    execute_commit, execute_explain, execute_fix, execute_review, execute_test, SlashCommandResult,
+};
 use crate::config::Settings;
 use crate::context::ContextManager;
 use crate::error::{Result, TedError};
@@ -110,6 +117,10 @@ pub struct SettingsState {
     pub providers: Vec<String>,
     /// Current provider index (for cycling)
     pub provider_index: usize,
+    /// Models available for each provider
+    pub models_by_provider: std::collections::HashMap<String, Vec<String>>,
+    /// Current model index (for cycling within selected provider)
+    pub model_index: usize,
     /// Editable settings values
     pub provider: String,
     pub model: String,
@@ -143,6 +154,53 @@ impl SettingsState {
             .position(|p| p == &config.provider_name)
             .unwrap_or(0);
 
+        // Define available models per provider
+        let mut models_by_provider = std::collections::HashMap::new();
+        models_by_provider.insert(
+            "anthropic".to_string(),
+            vec![
+                "claude-sonnet-4-20250514".to_string(),
+                "claude-opus-4-20250514".to_string(),
+                "claude-3-5-sonnet-20241022".to_string(),
+                "claude-3-5-haiku-20241022".to_string(),
+            ],
+        );
+        models_by_provider.insert(
+            "ollama".to_string(),
+            vec![
+                "llama3.2".to_string(),
+                "llama3.1".to_string(),
+                "mistral".to_string(),
+                "codellama".to_string(),
+                "deepseek-coder".to_string(),
+                "qwen2.5-coder".to_string(),
+            ],
+        );
+        models_by_provider.insert(
+            "openrouter".to_string(),
+            vec![
+                "anthropic/claude-sonnet-4".to_string(),
+                "anthropic/claude-opus-4".to_string(),
+                "openai/gpt-4o".to_string(),
+                "openai/gpt-4-turbo".to_string(),
+                "google/gemini-pro-1.5".to_string(),
+                "meta-llama/llama-3.1-405b".to_string(),
+            ],
+        );
+        models_by_provider.insert(
+            "blackman".to_string(),
+            vec![
+                "claude-sonnet-4-20250514".to_string(),
+                "claude-opus-4-20250514".to_string(),
+            ],
+        );
+
+        // Find current model index for the provider
+        let model_index = models_by_provider
+            .get(&config.provider_name)
+            .and_then(|models| models.iter().position(|m| m == &config.model))
+            .unwrap_or(0);
+
         Self {
             current_section: SettingsSection::General,
             selected_index: 0,
@@ -152,6 +210,8 @@ impl SettingsState {
             edit_buffer: String::new(),
             providers,
             provider_index,
+            models_by_provider,
+            model_index,
             provider: config.provider_name.clone(),
             model: config.model.clone(),
             temperature: settings.defaults.temperature,
@@ -232,10 +292,16 @@ impl SettingsState {
     }
 
     pub fn start_editing(&mut self) {
+        // Provider and Model use cycling, not text editing
+        if matches!(
+            self.selected_field(),
+            SettingsField::Provider | SettingsField::Model
+        ) {
+            return;
+        }
         self.is_editing = true;
         self.edit_buffer = match self.selected_field() {
-            SettingsField::Provider => self.provider.clone(),
-            SettingsField::Model => self.model.clone(),
+            SettingsField::Provider | SettingsField::Model => String::new(),
             SettingsField::Temperature => format!("{:.1}", self.temperature),
             SettingsField::MaxTokens => self.max_tokens.to_string(),
             SettingsField::Stream | SettingsField::TrustMode => String::new(),
@@ -254,14 +320,8 @@ impl SettingsState {
         self.is_editing = false;
 
         match self.selected_field() {
-            SettingsField::Provider => {
-                // Provider is cycled, not typed
-            }
-            SettingsField::Model => {
-                if !self.edit_buffer.is_empty() {
-                    self.model = self.edit_buffer.clone();
-                    self.has_changes = true;
-                }
+            SettingsField::Provider | SettingsField::Model => {
+                // Cycled, not typed
             }
             SettingsField::Temperature => {
                 if let Ok(t) = self.edit_buffer.parse::<f32>() {
@@ -305,13 +365,61 @@ impl SettingsState {
             self.provider_index = self.providers.len() - 1;
         }
         self.provider = self.providers[self.provider_index].clone();
+
+        // Reset model to first available for the new provider
+        self.model_index = 0;
+        if let Some(models) = self.models_by_provider.get(&self.provider) {
+            if let Some(first_model) = models.first() {
+                self.model = first_model.clone();
+            }
+        }
         self.has_changes = true;
+    }
+
+    pub fn cycle_model(&mut self, forward: bool) {
+        let models = match self.models_by_provider.get(&self.provider) {
+            Some(m) if !m.is_empty() => m,
+            _ => return,
+        };
+
+        if forward {
+            self.model_index = (self.model_index + 1) % models.len();
+        } else if self.model_index > 0 {
+            self.model_index -= 1;
+        } else {
+            self.model_index = models.len() - 1;
+        }
+        self.model = models[self.model_index].clone();
+        self.has_changes = true;
+    }
+
+    /// Get the list of available models for the current provider
+    pub fn current_models(&self) -> &[String] {
+        self.models_by_provider
+            .get(&self.provider)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     pub fn current_value(&self, field: SettingsField) -> String {
         match field {
-            SettingsField::Provider => self.provider.clone(),
-            SettingsField::Model => self.model.clone(),
+            SettingsField::Provider => {
+                format!(
+                    "◀ {} ▶  ({}/{})",
+                    self.provider,
+                    self.provider_index + 1,
+                    self.providers.len()
+                )
+            }
+            SettingsField::Model => {
+                let models = self.current_models();
+                let total = models.len();
+                if total > 0 {
+                    format!("◀ {} ▶  ({}/{})", self.model, self.model_index + 1, total)
+                } else {
+                    self.model.clone()
+                }
+            }
             SettingsField::Temperature => format!("{:.1}", self.temperature),
             SettingsField::MaxTokens => self.max_tokens.to_string(),
             SettingsField::Stream => if self.stream { "On" } else { "Off" }.to_string(),
@@ -594,6 +702,76 @@ pub async fn run_chat_tui_loop(
                         // Check for commands (always process immediately)
                         if input_text.trim().starts_with('/') {
                             handle_command(&input_text, &mut state)?;
+
+                            // Check if the command queued an LLM message (e.g., /explain, /commit)
+                            // If so, process it immediately instead of waiting
+                            if !state.pending_messages.is_empty() && !state.is_processing {
+                                let llm_message = state.pending_messages.remove(0);
+
+                                // Add user message to UI (show the command + its generated prompt)
+                                state
+                                    .messages
+                                    .push(DisplayMessage::user(llm_message.clone()));
+                                state.auto_scroll();
+
+                                // Mark as processing and re-render
+                                state.is_processing = true;
+                                terminal
+                                    .draw(|f| draw_tui(f, &state))
+                                    .map_err(|e| TedError::Tui(e.to_string()))?;
+
+                                // Store in context
+                                context_manager
+                                    .store_message("user", &llm_message, None)
+                                    .await?;
+
+                                // Add to conversation
+                                conversation.push(Message::user(&llm_message));
+
+                                // Update history
+                                message_count += 1;
+                                session_info.message_count = message_count;
+                                session_info.touch();
+                                history_store.upsert(session_info.clone())?;
+
+                                // Process with LLM
+                                interrupted.store(false, Ordering::SeqCst);
+
+                                let result = process_llm_response(
+                                    &provider,
+                                    &state.current_model.clone(),
+                                    &mut conversation,
+                                    &mut tool_executor,
+                                    &settings,
+                                    &mut state,
+                                    config.stream_enabled,
+                                    &interrupted,
+                                    &mut terminal,
+                                )
+                                .await;
+
+                                state.is_processing = false;
+                                state.auto_scroll();
+
+                                match result {
+                                    Ok(()) => {
+                                        message_count += 1;
+                                        session_info.message_count = message_count;
+                                        session_info.touch();
+                                        history_store.upsert(session_info.clone())?;
+
+                                        if let Some(last_msg) = state.messages.last() {
+                                            context_manager
+                                                .store_message("assistant", &last_msg.content, None)
+                                                .await?;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        state.set_error(&format!("Error: {}", e));
+                                    }
+                                }
+                            }
+
                             continue;
                         }
 
@@ -924,7 +1102,7 @@ fn draw_chat_area(frame: &mut Frame, state: &TuiState, area: ratatui::layout::Re
         let welcome = Paragraph::new(vec![
             ratatui::text::Line::from(""),
             ratatui::text::Line::from(ratatui::text::Span::styled(
-                "Welcome to Ted TUI!",
+                "Ted - The Coding Assistant you always wanted",
                 Style::default().fg(Color::Cyan).bold(),
             )),
             ratatui::text::Line::from(""),
@@ -1254,7 +1432,7 @@ fn draw_settings_overlay(frame: &mut Frame, state: &TuiState, area: ratatui::lay
     // Help text
     let help_text = match settings.current_section {
         SettingsSection::General if settings.is_editing => "Enter: confirm │ Esc: cancel",
-        SettingsSection::General => "Tab: switch section │ ↑/↓: navigate │ Enter/Space: edit",
+        SettingsSection::General => "Tab: section │ ↑/↓: nav │ ←/→: select │ Enter: edit/cycle",
         SettingsSection::Capabilities => "Tab: switch section │ ↑/↓: navigate │ Space: toggle",
     };
     lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
@@ -1552,26 +1730,32 @@ fn handle_settings_key(state: &mut TuiState, key: crossterm::event::KeyEvent) ->
                 SettingsField::Provider => {
                     settings.cycle_provider(true);
                 }
+                SettingsField::Model => {
+                    settings.cycle_model(true);
+                }
                 _ => {
                     settings.start_editing();
                 }
             },
-            (_, KeyCode::Left) | (_, KeyCode::Char('h')) => {
-                if settings.selected_field() == SettingsField::Provider {
-                    settings.cycle_provider(false);
-                }
-            }
-            (_, KeyCode::Right) | (_, KeyCode::Char('l')) => {
-                if settings.selected_field() == SettingsField::Provider {
-                    settings.cycle_provider(true);
-                }
-            }
+            (_, KeyCode::Left) | (_, KeyCode::Char('h')) => match settings.selected_field() {
+                SettingsField::Provider => settings.cycle_provider(false),
+                SettingsField::Model => settings.cycle_model(false),
+                _ => {}
+            },
+            (_, KeyCode::Right) | (_, KeyCode::Char('l')) => match settings.selected_field() {
+                SettingsField::Provider => settings.cycle_provider(true),
+                SettingsField::Model => settings.cycle_model(true),
+                _ => {}
+            },
             (_, KeyCode::Char(' ')) => match settings.selected_field() {
                 SettingsField::Stream | SettingsField::TrustMode => {
                     settings.toggle_bool();
                 }
                 SettingsField::Provider => {
                     settings.cycle_provider(true);
+                }
+                SettingsField::Model => {
+                    settings.cycle_model(true);
                 }
                 _ => {}
             },
@@ -1681,6 +1865,129 @@ fn handle_command(input: &str, state: &mut TuiState) -> Result<()> {
                 settings.current_section = SettingsSection::Capabilities;
             }
             state.mode = ChatMode::Settings;
+        }
+        // Development slash commands
+        cmd if cmd.starts_with("/commit") => {
+            if let Some(args) = parse_commit_command(trimmed) {
+                let working_dir = std::env::current_dir().unwrap_or_default();
+                match execute_commit(&args, &working_dir) {
+                    SlashCommandResult::SendToLlm(msg) => {
+                        state.pending_messages.push(msg);
+                        state.set_status("Processing /commit...");
+                    }
+                    SlashCommandResult::Message(msg) => {
+                        state.messages.push(DisplayMessage::system(msg));
+                        state.auto_scroll();
+                    }
+                    SlashCommandResult::Error(e) => {
+                        state.set_error(&e);
+                    }
+                    SlashCommandResult::SpawnAgent { task, .. } => {
+                        // Convert to LLM message for now
+                        state.pending_messages.push(task);
+                        state.set_status("Processing...");
+                    }
+                }
+            } else {
+                state.set_error("Failed to parse /commit command");
+            }
+        }
+        cmd if cmd.starts_with("/test") => {
+            if let Some(args) = parse_test_command(trimmed) {
+                let working_dir = std::env::current_dir().unwrap_or_default();
+                match execute_test(&args, &working_dir) {
+                    SlashCommandResult::SendToLlm(msg) => {
+                        state.pending_messages.push(msg);
+                        state.set_status("Processing /test...");
+                    }
+                    SlashCommandResult::Message(msg) => {
+                        state.messages.push(DisplayMessage::system(msg));
+                        state.auto_scroll();
+                    }
+                    SlashCommandResult::Error(e) => {
+                        state.set_error(&e);
+                    }
+                    SlashCommandResult::SpawnAgent { task, .. } => {
+                        state.pending_messages.push(task);
+                        state.set_status("Processing...");
+                    }
+                }
+            } else {
+                state.set_error("Failed to parse /test command");
+            }
+        }
+        cmd if cmd.starts_with("/review") => {
+            if let Some(args) = parse_review_command(trimmed) {
+                let working_dir = std::env::current_dir().unwrap_or_default();
+                match execute_review(&args, &working_dir) {
+                    SlashCommandResult::SendToLlm(msg) => {
+                        state.pending_messages.push(msg);
+                        state.set_status("Processing /review...");
+                    }
+                    SlashCommandResult::Message(msg) => {
+                        state.messages.push(DisplayMessage::system(msg));
+                        state.auto_scroll();
+                    }
+                    SlashCommandResult::Error(e) => {
+                        state.set_error(&e);
+                    }
+                    SlashCommandResult::SpawnAgent { task, .. } => {
+                        // Convert agent task to LLM message
+                        state.pending_messages.push(task);
+                        state.set_status("Starting code review...");
+                    }
+                }
+            } else {
+                state.set_error("Failed to parse /review command");
+            }
+        }
+        cmd if cmd.starts_with("/fix") => {
+            if let Some(args) = parse_fix_command(trimmed) {
+                let working_dir = std::env::current_dir().unwrap_or_default();
+                match execute_fix(&args, &working_dir) {
+                    SlashCommandResult::SendToLlm(msg) => {
+                        state.pending_messages.push(msg);
+                        state.set_status("Processing /fix...");
+                    }
+                    SlashCommandResult::Message(msg) => {
+                        state.messages.push(DisplayMessage::system(msg));
+                        state.auto_scroll();
+                    }
+                    SlashCommandResult::Error(e) => {
+                        state.set_error(&e);
+                    }
+                    SlashCommandResult::SpawnAgent { task, .. } => {
+                        // Convert agent task to LLM message
+                        state.pending_messages.push(task);
+                        state.set_status("Fixing issues...");
+                    }
+                }
+            } else {
+                state.set_error("Failed to parse /fix command");
+            }
+        }
+        cmd if cmd.starts_with("/explain") => {
+            if let Some(args) = parse_explain_command(trimmed) {
+                match execute_explain(&args) {
+                    SlashCommandResult::SendToLlm(msg) => {
+                        state.pending_messages.push(msg);
+                        state.set_status("Processing /explain...");
+                    }
+                    SlashCommandResult::Message(msg) => {
+                        state.messages.push(DisplayMessage::system(msg));
+                        state.auto_scroll();
+                    }
+                    SlashCommandResult::Error(e) => {
+                        state.set_error(&e);
+                    }
+                    SlashCommandResult::SpawnAgent { task, .. } => {
+                        state.pending_messages.push(task);
+                        state.set_status("Processing...");
+                    }
+                }
+            } else {
+                state.set_error("Failed to parse /explain command");
+            }
         }
         _ => {
             state.set_error(&format!("Unknown command: {}. Try /help", trimmed));
@@ -2263,19 +2570,23 @@ mod tests {
     }
 
     #[test]
-    fn test_settings_state_editing_model() {
+    fn test_settings_state_cycling_model() {
         let mut state = create_test_settings_state();
         state.selected_index = 1; // Model field
 
+        // Model field uses cycling, not text editing
         state.start_editing();
-        assert!(state.is_editing);
-        assert_eq!(state.edit_buffer, "claude-sonnet-4-5-20250514");
+        assert!(!state.is_editing); // Should NOT enter editing mode
 
-        state.edit_buffer = "new-model".to_string();
-        state.confirm_editing();
-        assert!(!state.is_editing);
-        assert_eq!(state.model, "new-model");
+        // Test cycling forward through models (anthropic has 4 models)
+        let initial_index = state.model_index;
+        state.cycle_model(true);
+        assert_eq!(state.model_index, initial_index + 1);
         assert!(state.has_changes);
+
+        // Cycle back
+        state.cycle_model(false);
+        assert_eq!(state.model_index, initial_index);
     }
 
     #[test]
@@ -2413,8 +2724,16 @@ mod tests {
         state.stream = true;
         state.trust_mode = false;
 
-        assert_eq!(state.current_value(SettingsField::Provider), "anthropic");
-        assert_eq!(state.current_value(SettingsField::Model), "test-model");
+        // Provider and Model now show cycling UI with arrows and index
+        assert_eq!(
+            state.current_value(SettingsField::Provider),
+            "◀ anthropic ▶  (1/4)"
+        );
+        // Model shows the current model with cycling UI (models list has 4 anthropic models)
+        assert_eq!(
+            state.current_value(SettingsField::Model),
+            "◀ test-model ▶  (1/4)"
+        );
         assert_eq!(state.current_value(SettingsField::Temperature), "0.7");
         assert_eq!(state.current_value(SettingsField::MaxTokens), "2048");
         assert_eq!(state.current_value(SettingsField::Stream), "On");
@@ -2702,13 +3021,22 @@ mod tests {
     }
 
     #[test]
-    fn test_settings_state_start_editing_provider_field() {
+    fn test_settings_state_cycling_provider_field() {
         let mut state = create_test_settings_state();
         state.selected_index = 0; // Provider field
 
+        // Provider field uses cycling, not text editing
         state.start_editing();
-        assert!(state.is_editing);
-        assert_eq!(state.edit_buffer, "anthropic");
+        assert!(!state.is_editing); // Should NOT enter editing mode
+
+        // Test cycling forward through providers
+        assert_eq!(state.provider, "anthropic");
+        state.cycle_provider(true);
+        assert_eq!(state.provider, "ollama");
+        assert!(state.has_changes);
+
+        state.cycle_provider(true);
+        assert_eq!(state.provider, "openrouter");
     }
 
     // ===== handle_command Tests =====
@@ -4003,6 +4331,7 @@ mod tests {
         if let Some(ref mut settings) = state.settings_state {
             settings.selected_index = 1; // Model
         }
+        let initial_model = state.settings_state.as_ref().unwrap().model.clone();
 
         let key = crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Enter,
@@ -4010,8 +4339,10 @@ mod tests {
         );
         handle_settings_key(&mut state, key).unwrap();
 
-        // Enter on Model starts editing
-        assert!(state.settings_state.as_ref().unwrap().is_editing);
+        // Enter on Model cycles it (not editing)
+        let settings = state.settings_state.as_ref().unwrap();
+        assert!(!settings.is_editing);
+        assert_ne!(settings.model, initial_model);
     }
 
     #[test]
@@ -4245,9 +4576,9 @@ mod tests {
         let mut state = create_test_tui_state();
         state.mode = ChatMode::Settings;
         if let Some(ref mut settings) = state.settings_state {
-            settings.selected_index = 1; // Model
+            settings.selected_index = 2; // Temperature (uses text editing)
             settings.is_editing = true;
-            settings.edit_buffer = "new-model".to_string();
+            settings.edit_buffer = "0.8".to_string();
         }
 
         let key = crossterm::event::KeyEvent::new(
@@ -4258,8 +4589,7 @@ mod tests {
 
         let settings = state.settings_state.as_ref().unwrap();
         assert!(!settings.is_editing);
-        assert_eq!(settings.model, "new-model");
-        assert_eq!(state.current_model, "new-model");
+        assert!((settings.temperature - 0.8).abs() < 0.01);
     }
 
     #[test]
@@ -4858,13 +5188,14 @@ mod tests {
     }
 
     #[test]
-    fn test_settings_state_editing_provider_field() {
+    fn test_settings_state_provider_field_no_editing() {
         let mut state = create_test_settings_state();
         state.selected_index = 0; // Provider field
 
         state.start_editing();
-        // Provider is cycled, not typed - edit buffer should be set to current provider
-        assert_eq!(state.edit_buffer, "anthropic");
+        // Provider uses cycling, not text editing - should NOT enter editing mode
+        assert!(!state.is_editing);
+        assert!(state.edit_buffer.is_empty());
     }
 
     #[test]

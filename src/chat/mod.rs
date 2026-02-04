@@ -14,6 +14,7 @@
 //! - `input_parser` - Pure input parsing functions
 //! - `provider_config` - Provider configuration and validation
 //! - `session` - Chat session state management
+//! - `slash_commands` - Development slash command execution
 //! - `streaming` - Streaming response handling
 
 pub mod agent;
@@ -22,6 +23,7 @@ pub mod display;
 pub mod input_parser;
 pub mod provider_config;
 mod session;
+pub mod slash_commands;
 pub mod streaming;
 
 pub use session::{ChatSession, ChatSessionBuilder};

@@ -8,6 +8,57 @@
 
 use super::input_parser;
 
+// === Slash Command Argument Structs ===
+
+/// Arguments for /commit command
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CommitArgs {
+    /// Optional manual commit message (-m flag)
+    pub message: Option<String>,
+    /// Whether to amend the last commit (--amend flag)
+    pub amend: bool,
+    /// Specific files to commit
+    pub files: Vec<String>,
+}
+
+/// Arguments for /test command
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TestArgs {
+    /// Watch mode (--watch flag)
+    pub watch: bool,
+    /// Specific test pattern or file
+    pub pattern: Option<String>,
+    /// Coverage mode (--coverage flag)
+    pub coverage: bool,
+}
+
+/// Arguments for /review command
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ReviewArgs {
+    /// PR number, URL, or path to review
+    pub target: Option<String>,
+    /// Focus area (security, performance, etc.)
+    pub focus: Option<String>,
+}
+
+/// Arguments for /fix command
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FixArgs {
+    /// Type of fixes (lint, types, all)
+    pub fix_type: Option<String>,
+    /// Specific file or pattern
+    pub pattern: Option<String>,
+}
+
+/// Arguments for /explain command
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ExplainArgs {
+    /// Target to explain (file path, code selection, or inline code)
+    pub target: Option<String>,
+    /// Verbosity level (brief, detailed)
+    pub verbosity: Option<String>,
+}
+
 /// Represents the different types of commands that can be issued in chat
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatCommand {
@@ -57,6 +108,18 @@ pub enum ChatCommand {
     Empty,
     /// Unknown slash command
     Unknown(String),
+
+    // === Development Slash Commands ===
+    /// Stage and commit changes with AI-generated message
+    Commit(CommitArgs),
+    /// Run project tests
+    Test(TestArgs),
+    /// Review code changes or PR
+    Review(ReviewArgs),
+    /// Fix linting/type errors
+    Fix(FixArgs),
+    /// Explain code or file
+    Explain(ExplainArgs),
 }
 
 /// Parse user input into a ChatCommand
@@ -166,6 +229,23 @@ pub fn parse_command(input: &str) -> ChatCommand {
         return ChatCommand::Switch(session_id.to_string());
     }
 
+    // Check for development slash commands
+    if let Some(args) = input_parser::parse_commit_command(trimmed) {
+        return ChatCommand::Commit(args);
+    }
+    if let Some(args) = input_parser::parse_test_command(trimmed) {
+        return ChatCommand::Test(args);
+    }
+    if let Some(args) = input_parser::parse_review_command(trimmed) {
+        return ChatCommand::Review(args);
+    }
+    if let Some(args) = input_parser::parse_fix_command(trimmed) {
+        return ChatCommand::Fix(args);
+    }
+    if let Some(args) = input_parser::parse_explain_command(trimmed) {
+        return ChatCommand::Explain(args);
+    }
+
     // Check for unknown slash command
     if input_parser::is_slash_command(trimmed) {
         return ChatCommand::Unknown(trimmed.to_string());
@@ -232,6 +312,7 @@ pub fn validate_session_id(session_id: &str) -> Result<(), String> {
 pub fn format_help_text() -> String {
     r#"Ted Commands:
 
+Session & Navigation:
   /help       - Show this help message
   /clear      - Clear conversation context
   /stats      - Show context statistics
@@ -239,6 +320,16 @@ pub fn format_help_text() -> String {
   /sessions   - List recent sessions
   /new        - Start a new session
   /switch <id> - Switch to a different session
+  exit, quit  - Exit Ted
+
+Development Commands:
+  /commit [-m "msg"] [--amend]  - Commit changes with AI message
+  /test [--watch] [pattern]    - Run project tests
+  /review [target] [--focus X] - Review changes or PR
+  /fix [lint|types|all]        - Fix linting/type errors
+  /explain [file] [--brief]    - Explain code
+
+Model & Capabilities:
   /model      - Show current and available models
   /model <name> - Switch to a different model
   /caps       - Show active caps
@@ -248,9 +339,10 @@ pub fn format_help_text() -> String {
   /cap clear  - Remove all caps
   /cap create <name> - Create a new cap
   /cap list   - List available caps
+
+Plans:
   /plans      - Open plans browser
   /plans list - List all plans
-  exit, quit  - Exit Ted
 
 Shell Commands:
   >command    - Execute a shell command directly

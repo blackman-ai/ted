@@ -17,6 +17,7 @@ pub mod chunk;
 pub mod cold;
 pub mod filetree;
 pub mod memory;
+pub mod project_context;
 pub mod recall;
 pub mod store;
 pub mod summarizer;
@@ -30,6 +31,7 @@ use uuid::Uuid;
 use crate::error::{Result, TedError};
 use chunk::{Chunk, ChunkType};
 pub use filetree::{FileTree, FileTreeConfig};
+pub use project_context::{ProjectContext, ProjectContextConfig};
 use store::ContextStore;
 
 /// Session ID for identifying context storage
@@ -91,6 +93,8 @@ pub struct ContextManager {
     sequence: Arc<RwLock<u64>>,
     /// Cached project file tree
     file_tree: Arc<RwLock<Option<FileTree>>>,
+    /// Cached project context (CLAUDE.md, AGENTS.md, .cursorrules, etc.)
+    project_context: Arc<RwLock<Option<ProjectContext>>>,
     /// Project root (for file tree generation)
     project_root: Option<PathBuf>,
 }
@@ -110,6 +114,7 @@ impl ContextManager {
             store: Arc::new(RwLock::new(store)),
             sequence: Arc::new(RwLock::new(sequence)),
             file_tree: Arc::new(RwLock::new(None)),
+            project_context: Arc::new(RwLock::new(None)),
             project_root: None,
         })
     }
@@ -161,6 +166,45 @@ impl ContextManager {
     pub async fn has_file_tree(&self) -> bool {
         let guard = self.file_tree.read().await;
         guard.is_some()
+    }
+
+    /// Generate or refresh project context (CLAUDE.md, AGENTS.md, .cursorrules, etc.)
+    pub async fn refresh_project_context(&self) -> Result<()> {
+        if let Some(ref root) = self.project_root {
+            let config = ProjectContextConfig::default();
+            match ProjectContext::discover(root, &config) {
+                Ok(context) => {
+                    if !context.is_empty() {
+                        tracing::debug!(
+                            "Loaded {} project context files ({} bytes)",
+                            context.file_count(),
+                            context.total_size()
+                        );
+                    }
+                    let mut guard = self.project_context.write().await;
+                    *guard = Some(context);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to load project context: {}", e);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Get the project context as a string for system prompt
+    pub async fn project_context_string(&self) -> Option<String> {
+        let guard = self.project_context.read().await;
+        guard
+            .as_ref()
+            .filter(|ctx| !ctx.is_empty())
+            .map(|ctx| ctx.to_context_string().to_string())
+    }
+
+    /// Get whether project context is available
+    pub async fn has_project_context(&self) -> bool {
+        let guard = self.project_context.read().await;
+        guard.as_ref().is_some_and(|ctx| !ctx.is_empty())
     }
 
     /// Get project root

@@ -9,6 +9,8 @@
 
 use crate::llm::provider::ContentBlockResponse;
 
+use super::commands::{CommitArgs, ExplainArgs, FixArgs, ReviewArgs, TestArgs};
+
 /// Parse a shell command from user input.
 /// Returns Some(command) if input starts with '>', None otherwise.
 /// Returns Some("") if input is just '>'.
@@ -258,6 +260,252 @@ pub fn parse_slash_command_name(input: &str) -> Option<&str> {
     let without_slash = &trimmed[1..];
     // Get the first word (before any space)
     without_slash.split_whitespace().next()
+}
+
+// === Development Slash Command Parsers ===
+
+/// Parse /commit command and arguments.
+/// Supports: /commit, /commit -m "message", /commit --amend, /commit file1 file2
+pub fn parse_commit_command(input: &str) -> Option<CommitArgs> {
+    let trimmed = input.trim();
+    let lower = trimmed.to_lowercase();
+
+    if !lower.starts_with("/commit") {
+        return None;
+    }
+
+    // Check if it's exactly "/commit" or starts with "/commit "
+    if lower != "/commit" && !lower.starts_with("/commit ") {
+        return None;
+    }
+
+    let args_str = trimmed.get(7..).unwrap_or("").trim();
+    let mut args = CommitArgs::default();
+
+    if args_str.is_empty() {
+        return Some(args);
+    }
+
+    // Parse arguments
+    let mut i = 0;
+    let chars: Vec<char> = args_str.chars().collect();
+
+    while i < chars.len() {
+        // Skip whitespace
+        while i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+        }
+
+        if i >= chars.len() {
+            break;
+        }
+
+        // Check for flags
+        if chars[i] == '-' {
+            // Find the end of this argument
+            let start = i;
+            while i < chars.len() && !chars[i].is_whitespace() {
+                i += 1;
+            }
+            let flag: String = chars[start..i].iter().collect();
+
+            match flag.as_str() {
+                "-m" | "--message" => {
+                    // Skip whitespace
+                    while i < chars.len() && chars[i].is_whitespace() {
+                        i += 1;
+                    }
+                    // Extract message (quoted or until next flag)
+                    if i < chars.len() {
+                        let msg = extract_quoted_string_or_word(&chars, &mut i);
+                        args.message = Some(msg);
+                    }
+                }
+                "--amend" => {
+                    args.amend = true;
+                }
+                _ => {
+                    // Unknown flag, skip
+                }
+            }
+        } else {
+            // It's a file path
+            let word = extract_word(&chars, &mut i);
+            if !word.is_empty() {
+                args.files.push(word);
+            }
+        }
+    }
+
+    Some(args)
+}
+
+/// Parse /test command and arguments.
+/// Supports: /test, /test --watch, /test --coverage, /test pattern
+pub fn parse_test_command(input: &str) -> Option<TestArgs> {
+    let trimmed = input.trim();
+    let lower = trimmed.to_lowercase();
+
+    if !lower.starts_with("/test") {
+        return None;
+    }
+
+    if lower != "/test" && !lower.starts_with("/test ") {
+        return None;
+    }
+
+    let args_str = trimmed.get(5..).unwrap_or("").trim();
+    let mut args = TestArgs::default();
+
+    for part in args_str.split_whitespace() {
+        match part.to_lowercase().as_str() {
+            "--watch" | "-w" => args.watch = true,
+            "--coverage" | "-c" => args.coverage = true,
+            other if !other.starts_with('-') => {
+                args.pattern = Some(other.to_string());
+            }
+            _ => {}
+        }
+    }
+
+    Some(args)
+}
+
+/// Parse /review command and arguments.
+/// Supports: /review, /review PR#, /review URL, /review --focus security
+pub fn parse_review_command(input: &str) -> Option<ReviewArgs> {
+    let trimmed = input.trim();
+    let lower = trimmed.to_lowercase();
+
+    if !lower.starts_with("/review") {
+        return None;
+    }
+
+    if lower != "/review" && !lower.starts_with("/review ") {
+        return None;
+    }
+
+    let args_str = trimmed.get(7..).unwrap_or("").trim();
+    let mut args = ReviewArgs::default();
+
+    let parts: Vec<&str> = args_str.split_whitespace().collect();
+    let mut i = 0;
+
+    while i < parts.len() {
+        match parts[i].to_lowercase().as_str() {
+            "--focus" | "-f" => {
+                if i + 1 < parts.len() {
+                    args.focus = Some(parts[i + 1].to_string());
+                    i += 2;
+                    continue;
+                }
+            }
+            other if !other.starts_with('-') => {
+                // Could be PR number, URL, or path
+                args.target = Some(other.to_string());
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    Some(args)
+}
+
+/// Parse /fix command and arguments.
+/// Supports: /fix, /fix lint, /fix types, /fix all, /fix lint src/
+pub fn parse_fix_command(input: &str) -> Option<FixArgs> {
+    let trimmed = input.trim();
+    let lower = trimmed.to_lowercase();
+
+    if !lower.starts_with("/fix") {
+        return None;
+    }
+
+    if lower != "/fix" && !lower.starts_with("/fix ") {
+        return None;
+    }
+
+    let args_str = trimmed.get(4..).unwrap_or("").trim();
+    let mut args = FixArgs::default();
+
+    for part in args_str.split_whitespace() {
+        match part.to_lowercase().as_str() {
+            "lint" | "types" | "all" => {
+                args.fix_type = Some(part.to_lowercase());
+            }
+            other if !other.starts_with('-') => {
+                args.pattern = Some(other.to_string());
+            }
+            _ => {}
+        }
+    }
+
+    Some(args)
+}
+
+/// Parse /explain command and arguments.
+/// Supports: /explain, /explain file.rs, /explain --brief, /explain --detailed
+pub fn parse_explain_command(input: &str) -> Option<ExplainArgs> {
+    let trimmed = input.trim();
+    let lower = trimmed.to_lowercase();
+
+    if !lower.starts_with("/explain") {
+        return None;
+    }
+
+    if lower != "/explain" && !lower.starts_with("/explain ") {
+        return None;
+    }
+
+    let args_str = trimmed.get(8..).unwrap_or("").trim();
+    let mut args = ExplainArgs::default();
+
+    for part in args_str.split_whitespace() {
+        match part.to_lowercase().as_str() {
+            "--brief" | "-b" => args.verbosity = Some("brief".to_string()),
+            "--detailed" | "-d" => args.verbosity = Some("detailed".to_string()),
+            other if !other.starts_with('-') => {
+                args.target = Some(other.to_string());
+            }
+            _ => {}
+        }
+    }
+
+    Some(args)
+}
+
+// === Helper Functions for Argument Parsing ===
+
+/// Extract a quoted string or single word from character array.
+fn extract_quoted_string_or_word(chars: &[char], i: &mut usize) -> String {
+    let mut result = String::new();
+
+    if *i < chars.len() && (chars[*i] == '"' || chars[*i] == '\'') {
+        let quote = chars[*i];
+        *i += 1;
+        while *i < chars.len() && chars[*i] != quote {
+            result.push(chars[*i]);
+            *i += 1;
+        }
+        if *i < chars.len() {
+            *i += 1; // Skip closing quote
+        }
+    } else {
+        result = extract_word(chars, i);
+    }
+
+    result
+}
+
+/// Extract a word (non-whitespace sequence) from character array.
+fn extract_word(chars: &[char], i: &mut usize) -> String {
+    let mut result = String::new();
+    while *i < chars.len() && !chars[*i].is_whitespace() {
+        result.push(chars[*i]);
+        *i += 1;
+    }
+    result
 }
 
 #[cfg(test)]

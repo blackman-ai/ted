@@ -418,8 +418,27 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
             eprintln!("[verbose] Setting project root: {}", root.display());
         }
         context_manager.set_project_root(root.clone(), true).await?;
+
+        // Also load project context files (CLAUDE.md, AGENTS.md, .cursorrules, etc.)
+        context_manager.refresh_project_context().await?;
     } else if verbose > 0 {
         eprintln!("[verbose] No project root found");
+    }
+
+    // Append project context to system prompt (higher priority than file tree)
+    if let Some(project_context) = context_manager.project_context_string().await {
+        if verbose > 0 {
+            eprintln!("[verbose] Project context: {} chars", project_context.len());
+        }
+        let current_system = conversation.system_prompt.clone().unwrap_or_default();
+        let enhanced_system = if current_system.is_empty() {
+            project_context
+        } else {
+            format!("{}\n\n{}", current_system, project_context)
+        };
+        conversation.set_system(&enhanced_system);
+    } else if verbose > 0 {
+        eprintln!("[verbose] No project context files found");
     }
 
     // Append file tree to system prompt for LLM awareness
