@@ -651,4 +651,57 @@ mod tests {
             assert!(text.contains("\u{1F600}"));
         }
     }
+
+    #[test]
+    fn test_accumulator_message_start() {
+        let mut acc = StreamAccumulator::new();
+        let result = acc.process_event(StreamEvent::MessageStart {
+            id: "msg_123".to_string(),
+            model: "claude-3".to_string(),
+        });
+        assert!(matches!(result, StreamEventResult::MessageStart));
+    }
+
+    #[test]
+    fn test_accumulator_text_flushed_on_block_stop() {
+        let mut acc = StreamAccumulator::new();
+
+        // Start a text block - this initializes the block with empty text
+        acc.process_event(StreamEvent::ContentBlockStart {
+            index: 0,
+            content_block: ContentBlockResponse::Text {
+                text: "initial text ".to_string(), // Start with some text
+            },
+        });
+
+        // Add a text delta - this goes to current_text buffer
+        acc.process_event(StreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: ContentBlockDelta::TextDelta {
+                text: "appended text".to_string(),
+            },
+        });
+
+        // Stop the block - this should flush current_text to the block
+        let result = acc.process_event(StreamEvent::ContentBlockStop { index: 0 });
+        assert!(matches!(result, StreamEventResult::BlockStopped));
+
+        // Verify the text was flushed
+        let (blocks, _) = acc.finish();
+        if let ContentBlockResponse::Text { text } = &blocks[0] {
+            assert!(text.contains("appended text"));
+        } else {
+            panic!("Expected Text block");
+        }
+    }
+
+    #[test]
+    fn test_accumulator_block_stop_with_nonexistent_index() {
+        let mut acc = StreamAccumulator::new();
+
+        // Try to stop a block that doesn't exist
+        let result = acc.process_event(StreamEvent::ContentBlockStop { index: 99 });
+        // Should still return BlockStopped, just nothing to finalize
+        assert!(matches!(result, StreamEventResult::BlockStopped));
+    }
 }

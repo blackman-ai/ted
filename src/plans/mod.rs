@@ -75,4 +75,15 @@ mod tests {
             .to_string_lossy()
             .contains("550e8400-e29b-41d4-a716-446655440000.md"));
     }
+
+    #[test]
+    fn test_ensure_plans_dir() {
+        // Call ensure_plans_dir - it will create ~/.ted/plans if it doesn't exist
+        // or do nothing if it already exists
+        let result = ensure_plans_dir();
+        assert!(result.is_ok());
+
+        // Verify the directory exists after the call
+        assert!(plans_dir().exists());
+    }
 }

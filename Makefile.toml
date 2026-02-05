@@ -94,13 +94,22 @@ command = "cargo"
 args = ["fmt", "--", "--check"]
 
 [tasks.clippy]
-description = "Run clippy lints"
+description = "Run clippy lints (default features)"
+command = "cargo"
+args = ["clippy", "--all-targets", "--", "-D", "warnings"]
+
+[tasks.clippy-all]
+description = "Run clippy lints with all features (requires cmake for local-llm)"
 command = "cargo"
 args = ["clippy", "--all-targets", "--all-features", "--", "-D", "warnings"]
 
 [tasks.lint]
 description = "Run all lints (fmt + clippy)"
 dependencies = ["fmt-check", "clippy"]
+
+[tasks.lint-all]
+description = "Run all lints with all features (requires cmake for local-llm)"
+dependencies = ["fmt-check", "clippy-all"]
 
 # ==================== Documentation ====================
 

@@ -622,4 +622,100 @@ max_tokens = 4096
         let cloned = model.clone();
         assert_eq!(cloned.preferred_model, Some("test".to_string()));
     }
+
+    #[test]
+    fn test_tool_permissions_merge_blocked_commands() {
+        let base = CapToolPermissions {
+            blocked_commands: vec!["rm -rf".to_string(), "dd".to_string()],
+            ..Default::default()
+        };
+
+        let other = CapToolPermissions {
+            blocked_commands: vec!["dd".to_string(), "mkfs".to_string()], // dd is duplicate
+            ..Default::default()
+        };
+
+        let merged = base.merge(&other);
+
+        // Should have all unique blocked commands
+        assert!(merged.blocked_commands.contains(&"rm -rf".to_string()));
+        assert!(merged.blocked_commands.contains(&"dd".to_string()));
+        assert!(merged.blocked_commands.contains(&"mkfs".to_string()));
+        // dd should only appear once
+        assert_eq!(
+            merged
+                .blocked_commands
+                .iter()
+                .filter(|c| *c == "dd")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn test_tool_permissions_merge_auto_approve_paths() {
+        let base = CapToolPermissions {
+            auto_approve_paths: vec!["/tmp".to_string(), "/var/log".to_string()],
+            ..Default::default()
+        };
+
+        let other = CapToolPermissions {
+            auto_approve_paths: vec!["/var/log".to_string(), "/home".to_string()], // /var/log is duplicate
+            ..Default::default()
+        };
+
+        let merged = base.merge(&other);
+
+        assert!(merged.auto_approve_paths.contains(&"/tmp".to_string()));
+        assert!(merged.auto_approve_paths.contains(&"/var/log".to_string()));
+        assert!(merged.auto_approve_paths.contains(&"/home".to_string()));
+        // /var/log should only appear once
+        assert_eq!(
+            merged
+                .auto_approve_paths
+                .iter()
+                .filter(|p| *p == "/var/log")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn test_tool_permissions_merge_all_fields() {
+        let base = CapToolPermissions {
+            enable: vec!["tool_a".to_string()],
+            disable: vec!["tool_x".to_string()],
+            require_edit_confirmation: true,
+            require_shell_confirmation: true,
+            auto_approve_paths: vec!["/tmp".to_string()],
+            blocked_commands: vec!["cmd1".to_string()],
+        };
+
+        let other = CapToolPermissions {
+            enable: vec!["tool_b".to_string()],
+            disable: vec!["tool_y".to_string()],
+            require_edit_confirmation: false,
+            require_shell_confirmation: false,
+            auto_approve_paths: vec!["/home".to_string()],
+            blocked_commands: vec!["cmd2".to_string()],
+        };
+
+        let merged = base.merge(&other);
+
+        // Enable/disable lists are merged (union)
+        assert!(merged.enable.contains(&"tool_a".to_string()));
+        assert!(merged.enable.contains(&"tool_b".to_string()));
+        assert!(merged.disable.contains(&"tool_x".to_string()));
+        assert!(merged.disable.contains(&"tool_y".to_string()));
+
+        // Booleans take the other cap's value
+        assert!(!merged.require_edit_confirmation);
+        assert!(!merged.require_shell_confirmation);
+
+        // Paths and commands are merged
+        assert!(merged.auto_approve_paths.contains(&"/tmp".to_string()));
+        assert!(merged.auto_approve_paths.contains(&"/home".to_string()));
+        assert!(merged.blocked_commands.contains(&"cmd1".to_string()));
+        assert!(merged.blocked_commands.contains(&"cmd2".to_string()));
+    }
 }

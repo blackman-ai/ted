@@ -749,4 +749,28 @@ mod tests {
         assert_eq!(response.content.len(), 2);
         assert_eq!(response.stop_reason, Some(StopReason::ToolUse));
     }
+
+    // ===== LlmProvider default get_model_info Tests =====
+    // Test the default implementation of get_model_info via a concrete provider
+
+    #[tokio::test]
+    async fn test_get_model_info_default_impl() {
+        use crate::llm::providers::ollama::OllamaProvider;
+
+        // OllamaProvider uses the default get_model_info implementation
+        let provider = OllamaProvider::new();
+
+        // Test finding a model that exists
+        let models = provider.available_models();
+        if !models.is_empty() {
+            let first_model = &models[0];
+            let found = provider.get_model_info(&first_model.id);
+            assert!(found.is_some());
+            assert_eq!(found.unwrap().id, first_model.id);
+        }
+
+        // Test finding a model that doesn't exist
+        let not_found = provider.get_model_info("nonexistent-model-xyz123");
+        assert!(not_found.is_none());
+    }
 }

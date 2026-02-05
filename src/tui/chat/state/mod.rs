@@ -6,7 +6,9 @@
 pub mod agents;
 pub mod input;
 pub mod messages;
+pub mod scroll;
 
 pub use agents::{AgentStatus, AgentTracker, TrackedAgent};
 pub use input::InputState;
 pub use messages::{truncate_string, DisplayMessage, DisplayToolCall, MessageRole, ToolCallStatus};
+pub use scroll::ScrollState;

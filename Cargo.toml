@@ -8,6 +8,11 @@ repository = "https://github.com/blackman-ai/ted"
 keywords = ["ai", "cli", "coding-assistant", "llm"]
 categories = ["command-line-utilities", "development-tools"]
 
+[features]
+default = ["bundled-embeddings"]
+bundled-embeddings = ["fastembed"]
+local-llm = ["llama-cpp-2"]
+
 [dependencies]
 # Async runtime
 tokio = { version = "1.0", features = ["full"] }
@@ -87,6 +92,18 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # LSP server (for IDE integration)
 # Note: tower-lsp 0.20 re-exports lsp-types 0.94, use that instead of direct dependency
 tower-lsp = "0.20"
+
+# Bundled embeddings (optional, default enabled)
+fastembed = { version = "4", optional = true }
+
+# Local LLM inference (optional, opt-in)
+llama-cpp-2 = { version = "0.1", optional = true }
+
+# SHA256 for model verification
+sha2 = "0.10"
+
+# Progress bars for downloads
+indicatif = "0.17"
 
 [dev-dependencies]
 tempfile = "3.23.0"

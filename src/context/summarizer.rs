@@ -646,4 +646,131 @@ mod tests {
         assert_eq!(msg.role, Role::User);
         assert!(matches!(msg.content, MessageContent::Text(ref s) if s == "Test content"));
     }
+
+    #[tokio::test]
+    async fn test_summarize_conversation_with_system_role() {
+        use crate::llm::providers::ollama::OllamaProvider;
+
+        // Test that System role messages are skipped in summarize_conversation
+        let messages = vec![
+            Message {
+                id: Uuid::new_v4(),
+                role: Role::System,
+                content: MessageContent::Text("You are a helpful assistant.".to_string()),
+                timestamp: Utc::now(),
+                tool_use_id: None,
+                token_count: None,
+            },
+            create_test_message(Role::User, "Hello"),
+            create_test_message(Role::Assistant, "Hi"),
+        ];
+
+        let provider = OllamaProvider::new();
+        let summary = summarize_conversation(&messages, &provider).await.unwrap();
+
+        // Summary should not include the system message content
+        assert!(!summary.contains("You are a helpful assistant"));
+        // But should include user/assistant messages
+        assert!(summary.contains("User") || summary.contains("Hello") || summary.contains("Hi"));
+    }
+
+    #[tokio::test]
+    async fn test_summarize_conversation_long_with_many_lines() {
+        use crate::llm::providers::ollama::OllamaProvider;
+
+        // Create a long conversation with many lines (> 5 lines after processing)
+        // This tests the first/middle/last extraction logic (lines 52, 54-56)
+        let messages = vec![
+            create_test_message(
+                Role::User,
+                "First user message that is reasonably long to generate content",
+            ),
+            create_test_message(
+                Role::Assistant,
+                "First assistant response that adds more content to the conversation",
+            ),
+            create_test_message(
+                Role::User,
+                "Second user message continuing the discussion with more details",
+            ),
+            create_test_message(
+                Role::Assistant,
+                "Second assistant response providing additional information",
+            ),
+            create_test_message(
+                Role::User,
+                "Third user message asking follow-up questions about the topic",
+            ),
+            create_test_message(
+                Role::Assistant,
+                "Third assistant response with comprehensive answers",
+            ),
+            create_test_message(
+                Role::User,
+                "Fourth user message wrapping up the conversation",
+            ),
+            create_test_message(
+                Role::Assistant,
+                "Final assistant response summarizing everything discussed",
+            ),
+        ];
+
+        let provider = OllamaProvider::new();
+        let summary = summarize_conversation(&messages, &provider).await.unwrap();
+
+        // Summary should be truncated to 300 chars
+        assert!(summary.len() <= 300);
+    }
+
+    #[tokio::test]
+    async fn test_summarize_conversation_exactly_5_lines() {
+        use crate::llm::providers::ollama::OllamaProvider;
+
+        // Test the boundary case of exactly 5 lines (goes to else branch: lines.join(" "))
+        // Need content > 500 chars with exactly 5 non-empty lines
+        let messages = vec![
+            create_test_message(Role::User, "First line with a lot of content to make sure we exceed the 500 character limit that triggers the longer processing path in the summarization function"),
+            create_test_message(Role::Assistant, "Second line also needs substantial content for the same reason"),
+            create_test_message(Role::User, "Third line continues"),
+            create_test_message(Role::Assistant, "Fourth line here"),
+            create_test_message(Role::User, "Fifth and final line"),
+        ];
+
+        let provider = OllamaProvider::new();
+        let summary = summarize_conversation(&messages, &provider).await.unwrap();
+
+        // Summary should be generated without error
+        assert!(summary.len() <= 300);
+    }
+
+    #[tokio::test]
+    async fn test_summarize_conversation_only_system_messages() {
+        use crate::llm::providers::ollama::OllamaProvider;
+
+        // Test that only system messages results in empty summary
+        let messages = vec![
+            Message {
+                id: Uuid::new_v4(),
+                role: Role::System,
+                content: MessageContent::Text("System message 1".to_string()),
+                timestamp: Utc::now(),
+                tool_use_id: None,
+                token_count: None,
+            },
+            Message {
+                id: Uuid::new_v4(),
+                role: Role::System,
+                content: MessageContent::Text("System message 2".to_string()),
+                timestamp: Utc::now(),
+                tool_use_id: None,
+                token_count: None,
+            },
+        ];
+
+        let provider = OllamaProvider::new();
+        let summary = summarize_conversation(&messages, &provider).await.unwrap();
+
+        // Should be empty since system messages are ignored
+        assert!(summary.is_empty());
+    }
 }

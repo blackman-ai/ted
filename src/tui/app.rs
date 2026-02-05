@@ -105,6 +105,10 @@ pub enum ProviderItem {
     AnthropicModel,
     OllamaBaseUrl,
     OllamaModel,
+    OpenRouterApiKey,
+    OpenRouterModel,
+    BlackmanApiKey,
+    BlackmanModel,
     TestConnection,
     Back,
 }
@@ -117,6 +121,10 @@ impl ProviderItem {
             ProviderItem::AnthropicModel,
             ProviderItem::OllamaBaseUrl,
             ProviderItem::OllamaModel,
+            ProviderItem::OpenRouterApiKey,
+            ProviderItem::OpenRouterModel,
+            ProviderItem::BlackmanApiKey,
+            ProviderItem::BlackmanModel,
             ProviderItem::TestConnection,
             ProviderItem::Back,
         ]
@@ -129,6 +137,10 @@ impl ProviderItem {
             ProviderItem::AnthropicModel => "Anthropic Model",
             ProviderItem::OllamaBaseUrl => "Ollama Base URL",
             ProviderItem::OllamaModel => "Ollama Model",
+            ProviderItem::OpenRouterApiKey => "OpenRouter API Key",
+            ProviderItem::OpenRouterModel => "OpenRouter Model",
+            ProviderItem::BlackmanApiKey => "Blackman API Key",
+            ProviderItem::BlackmanModel => "Blackman Model",
             ProviderItem::TestConnection => "Test Connection",
             ProviderItem::Back => "← Back",
         }
@@ -936,6 +948,36 @@ impl App {
                         // Open model picker for Ollama
                         self.start_model_selection(ModelSelectionTarget::Ollama);
                     }
+                    ProviderItem::OpenRouterApiKey => {
+                        // Start editing OpenRouter API key
+                        let current = self
+                            .settings
+                            .providers
+                            .openrouter
+                            .api_key
+                            .clone()
+                            .unwrap_or_default();
+                        self.start_editing(&current);
+                    }
+                    ProviderItem::OpenRouterModel => {
+                        // Open model picker for OpenRouter
+                        self.start_model_selection(ModelSelectionTarget::OpenRouter);
+                    }
+                    ProviderItem::BlackmanApiKey => {
+                        // Start editing Blackman API key
+                        let current = self
+                            .settings
+                            .providers
+                            .blackman
+                            .api_key
+                            .clone()
+                            .unwrap_or_default();
+                        self.start_editing(&current);
+                    }
+                    ProviderItem::BlackmanModel => {
+                        // Open model picker for Blackman
+                        self.start_model_selection(ModelSelectionTarget::Blackman);
+                    }
                     ProviderItem::TestConnection => {
                         // Test connection based on current provider
                         self.start_connection_test();
@@ -1031,6 +1073,34 @@ impl App {
                     ProviderItem::OllamaModel => {
                         if !value.is_empty() {
                             self.settings.providers.ollama.default_model = value;
+                            self.mark_modified();
+                        }
+                    }
+                    ProviderItem::OpenRouterApiKey => {
+                        if value.is_empty() {
+                            self.settings.providers.openrouter.api_key = None;
+                        } else {
+                            self.settings.providers.openrouter.api_key = Some(value);
+                        }
+                        self.mark_modified();
+                    }
+                    ProviderItem::OpenRouterModel => {
+                        if !value.is_empty() {
+                            self.settings.providers.openrouter.default_model = value;
+                            self.mark_modified();
+                        }
+                    }
+                    ProviderItem::BlackmanApiKey => {
+                        if value.is_empty() {
+                            self.settings.providers.blackman.api_key = None;
+                        } else {
+                            self.settings.providers.blackman.api_key = Some(value);
+                        }
+                        self.mark_modified();
+                    }
+                    ProviderItem::BlackmanModel => {
+                        if !value.is_empty() {
+                            self.settings.providers.blackman.default_model = value;
                             self.mark_modified();
                         }
                     }
@@ -1276,14 +1346,18 @@ mod tests {
     #[test]
     fn test_provider_item_all() {
         let items = ProviderItem::all();
-        assert_eq!(items.len(), 7);
+        assert_eq!(items.len(), 11);
         assert_eq!(items[0], ProviderItem::DefaultProvider);
         assert_eq!(items[1], ProviderItem::AnthropicApiKey);
         assert_eq!(items[2], ProviderItem::AnthropicModel);
         assert_eq!(items[3], ProviderItem::OllamaBaseUrl);
         assert_eq!(items[4], ProviderItem::OllamaModel);
-        assert_eq!(items[5], ProviderItem::TestConnection);
-        assert_eq!(items[6], ProviderItem::Back);
+        assert_eq!(items[5], ProviderItem::OpenRouterApiKey);
+        assert_eq!(items[6], ProviderItem::OpenRouterModel);
+        assert_eq!(items[7], ProviderItem::BlackmanApiKey);
+        assert_eq!(items[8], ProviderItem::BlackmanModel);
+        assert_eq!(items[9], ProviderItem::TestConnection);
+        assert_eq!(items[10], ProviderItem::Back);
     }
 
     #[test]
@@ -1670,7 +1744,7 @@ mod tests {
         let mut app = App::new(settings);
         app.screen = Screen::Providers;
 
-        app.provider_index = 6; // Back
+        app.provider_index = 10; // Back
         app.select();
         assert_eq!(app.screen, Screen::MainMenu);
     }
@@ -1751,7 +1825,7 @@ mod tests {
         let mut app = App::new(settings);
         app.screen = Screen::Providers;
 
-        app.provider_index = 5; // Test Connection
+        app.provider_index = 9; // Test Connection
         app.select();
         // Should set a status message
         assert!(app.status_message.is_some());

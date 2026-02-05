@@ -14,11 +14,14 @@ use super::widgets::message::render_messages;
 use super::widgets::{AgentPane, InputArea, StatusBar};
 
 /// Main draw function for the chat TUI
-pub fn draw(frame: &mut Frame, app: &ChatApp) {
+pub fn draw(frame: &mut Frame, app: &mut ChatApp) {
     let area = frame.area();
 
     // Calculate layout
     let layout = calculate_layout(area, app);
+
+    // Update scroll state with current viewport height
+    app.scroll_state.update_viewport_height(layout.chat.height);
 
     // Render title bar
     render_title_bar(frame, app, layout.title_bar);
@@ -118,15 +121,21 @@ fn render_title_bar(frame: &mut Frame, app: &ChatApp, area: Rect) {
     frame.render_widget(bar, area);
 }
 
-fn render_chat_area(frame: &mut Frame, app: &ChatApp, area: Rect) {
+fn render_chat_area(frame: &mut Frame, app: &mut ChatApp, area: Rect) {
     let block = Block::default().borders(Borders::NONE);
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Render messages
+    // Update scroll state with current dimensions
+    app.scroll_state.update_viewport_height(inner.height);
+    let total_height = app
+        .scroll_state
+        .calculate_total_height(&app.messages, inner.width);
+
+    // Render messages with improved scrolling
     let buf = frame.buffer_mut();
-    render_messages(&app.messages, inner, buf, app.scroll_offset);
+    render_messages(&app.messages, inner, buf, app.scroll_state.scroll_offset);
 
     // If no messages, show welcome text
     if app.messages.is_empty() {
@@ -173,6 +182,43 @@ fn render_chat_area(frame: &mut Frame, app: &ChatApp, area: Rect) {
         };
 
         frame.render_widget(welcome, welcome_area);
+    }
+
+    // Render scroll indicator if needed
+    if !app.messages.is_empty() {
+        render_scroll_indicator(frame, app, area, total_height);
+    }
+}
+
+/// Render a scroll indicator showing current position
+fn render_scroll_indicator(frame: &mut Frame, app: &mut ChatApp, area: Rect, total_height: usize) {
+    if let Some((current_line, _viewport_end, total_lines)) =
+        app.scroll_state.scroll_indicator(total_height)
+    {
+        // Only show indicator if there's content to scroll
+        if total_lines > app.scroll_state.viewport_height as usize {
+            let indicator_text = if app.scroll_state.is_at_top() {
+                "⬆ Top".to_string()
+            } else if app.scroll_state.is_at_bottom(total_height) {
+                "⬇ Bottom".to_string()
+            } else {
+                format!("↕ {}/{}", current_line, total_lines)
+            };
+
+            let indicator = Paragraph::new(indicator_text)
+                .style(Style::default().fg(Color::DarkGray).bg(Color::Black))
+                .alignment(Alignment::Right);
+
+            // Position indicator in bottom-right corner
+            let indicator_area = Rect {
+                x: area.x + area.width.saturating_sub(15),
+                y: area.y + area.height.saturating_sub(1),
+                width: 15,
+                height: 1,
+            };
+
+            frame.render_widget(indicator, indicator_area);
+        }
     }
 }
 
@@ -677,12 +723,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_draw_basic() {
-        let app = create_test_chat_app().await;
+        let mut app = create_test_chat_app().await;
         let mut terminal = create_test_terminal(80, 24);
 
         terminal
             .draw(|frame| {
-                draw(frame, &app);
+                draw(frame, &mut app);
             })
             .unwrap();
 
@@ -706,7 +752,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                draw(frame, &app);
+                draw(frame, &mut app);
             })
             .unwrap();
     }
@@ -727,7 +773,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                draw(frame, &app);
+                draw(frame, &mut app);
             })
             .unwrap();
     }
@@ -741,7 +787,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                draw(frame, &app);
+                draw(frame, &mut app);
             })
             .unwrap();
     }
@@ -756,7 +802,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                draw(frame, &app);
+                draw(frame, &mut app);
             })
             .unwrap();
     }
@@ -772,7 +818,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                draw(frame, &app);
+                draw(frame, &mut app);
             })
             .unwrap();
 
@@ -788,7 +834,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                draw(frame, &app);
+                draw(frame, &mut app);
             })
             .unwrap();
     }
@@ -811,7 +857,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                draw(frame, &app);
+                draw(frame, &mut app);
             })
             .unwrap();
     }
@@ -826,7 +872,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                draw(frame, &app);
+                draw(frame, &mut app);
             })
             .unwrap();
     }
@@ -841,7 +887,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                draw(frame, &app);
+                draw(frame, &mut app);
             })
             .unwrap();
     }
@@ -855,7 +901,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                draw(frame, &app);
+                draw(frame, &mut app);
             })
             .unwrap();
     }
@@ -910,13 +956,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_render_chat_area_empty() {
-        let app = create_test_chat_app().await;
+        let mut app = create_test_chat_app().await;
         let mut terminal = create_test_terminal(80, 20);
 
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_chat_area(frame, &app, area);
+                render_chat_area(frame, &mut app, area);
             })
             .unwrap();
 
@@ -941,7 +987,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_chat_area(frame, &app, area);
+                render_chat_area(frame, &mut app, area);
             })
             .unwrap();
     }
@@ -959,14 +1005,14 @@ mod tests {
                 )));
         }
 
-        app.scroll_offset = 5;
+        app.scroll_state.scroll_offset = 5;
 
         let mut terminal = create_test_terminal(80, 20);
 
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_chat_area(frame, &app, area);
+                render_chat_area(frame, &mut app, area);
             })
             .unwrap();
     }
@@ -982,7 +1028,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_chat_area(frame, &app, area);
+                render_chat_area(frame, &mut app, area);
             })
             .unwrap();
     }
@@ -1239,36 +1285,36 @@ mod tests {
 
     #[tokio::test]
     async fn test_draw_tiny_terminal() {
-        let app = create_test_chat_app().await;
+        let mut app = create_test_chat_app().await;
         let mut terminal = create_test_terminal(10, 5);
 
         terminal
             .draw(|frame| {
-                draw(frame, &app);
+                draw(frame, &mut app);
             })
             .unwrap();
     }
 
     #[tokio::test]
     async fn test_draw_very_wide_terminal() {
-        let app = create_test_chat_app().await;
+        let mut app = create_test_chat_app().await;
         let mut terminal = create_test_terminal(300, 24);
 
         terminal
             .draw(|frame| {
-                draw(frame, &app);
+                draw(frame, &mut app);
             })
             .unwrap();
     }
 
     #[tokio::test]
     async fn test_draw_very_tall_terminal() {
-        let app = create_test_chat_app().await;
+        let mut app = create_test_chat_app().await;
         let mut terminal = create_test_terminal(80, 100);
 
         terminal
             .draw(|frame| {
-                draw(frame, &app);
+                draw(frame, &mut app);
             })
             .unwrap();
     }
@@ -1294,7 +1340,7 @@ mod tests {
             let mut terminal = create_test_terminal(80, 24);
             terminal
                 .draw(|frame| {
-                    draw(frame, &app);
+                    draw(frame, &mut app);
                 })
                 .unwrap();
         }
@@ -1320,7 +1366,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                draw(frame, &app);
+                draw(frame, &mut app);
             })
             .unwrap();
     }
@@ -1348,7 +1394,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                draw(frame, &app);
+                draw(frame, &mut app);
             })
             .unwrap();
     }
@@ -1372,7 +1418,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                draw(frame, &app);
+                draw(frame, &mut app);
             })
             .unwrap();
     }

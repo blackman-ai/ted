@@ -24,18 +24,49 @@ impl<'a> MessageWidget<'a> {
         Self { message, width }
     }
 
-    /// Calculate the height needed to render this message
+    /// Calculate the height needed to render this message with proper text wrapping
     pub fn height(&self) -> u16 {
-        let content_lines = self.message.content.lines().count().max(1);
-        let tool_call_lines: usize = self
+        calculate_message_height_with_wrapping(self.message, self.width)
+    }
+
+    /// Calculate height accounting for actual text wrapping
+    pub fn height_with_wrapping(&self, width: u16) -> u16 {
+        let content_width = width.saturating_sub(4); // Account for indentation and margins
+
+        // Calculate wrapped content height
+        let content_height = if self.message.content.is_empty() {
+            1
+        } else {
+            self.message
+                .content
+                .lines()
+                .map(|line| {
+                    if line.is_empty() {
+                        1
+                    } else {
+                        let chars = line.chars().count();
+                        if chars == 0 {
+                            1
+                        } else {
+                            // Calculate wrapped lines for this line
+                            ((chars - 1) / content_width as usize) + 1
+                        }
+                    }
+                })
+                .sum::<usize>()
+                .max(1)
+        };
+
+        // Calculate tool call heights
+        let tool_call_height: usize = self
             .message
             .tool_calls
             .iter()
             .map(|tc| if tc.expanded { 5 } else { 2 })
             .sum();
 
-        // Header (1) + content + tool calls + spacing
-        (1 + content_lines + tool_call_lines + 1) as u16
+        // Header (1) + content + tool calls + spacing (1)
+        (1 + content_height + tool_call_height + 1) as u16
     }
 }
 
@@ -184,47 +215,155 @@ fn render_tool_call(tool_call: &DisplayToolCall, area: Rect, buf: &mut Buffer) {
     }
 }
 
-/// Render a list of messages
+/// Render a list of messages with improved scrolling support
 pub fn render_messages(
     messages: &[DisplayMessage],
     area: Rect,
     buf: &mut Buffer,
     scroll_offset: usize,
 ) {
-    let mut y = area.y;
+    render_messages_with_scroll_state(messages, area, buf, scroll_offset, None)
+}
 
-    // Skip messages based on scroll offset
-    let mut skip_lines = scroll_offset;
+/// Render a list of messages with advanced scrolling and viewport tracking
+pub fn render_messages_with_scroll_state(
+    messages: &[DisplayMessage],
+    area: Rect,
+    buf: &mut Buffer,
+    scroll_offset: usize,
+    scroll_state: Option<&mut crate::tui::chat::state::ScrollState>,
+) {
+    if messages.is_empty() {
+        return;
+    }
 
-    for message in messages {
-        if y >= area.y + area.height {
+    let mut current_y = area.y;
+    let mut lines_skipped = 0;
+    let viewport_end = area.y + area.height;
+
+    for message in messages.iter() {
+        if current_y >= viewport_end {
             break;
         }
 
         let widget = MessageWidget::new(message, area.width);
-        let msg_height = widget.height();
+        let msg_height = calculate_message_height_with_wrapping(message, area.width);
 
-        // Handle scroll offset
-        if skip_lines > 0 {
-            if skip_lines >= msg_height as usize {
-                skip_lines -= msg_height as usize;
-                continue;
-            }
-            // Partial visibility - skip some lines at the top
-            // For simplicity, we just skip entire messages for now
-            skip_lines = 0;
+        // Check if we need to skip this message entirely
+        if lines_skipped + msg_height as usize <= scroll_offset {
+            lines_skipped += msg_height as usize;
+            continue;
         }
 
-        let remaining_height = (area.y + area.height).saturating_sub(y);
+        // Calculate how many lines of this message to skip from the top
+        let lines_to_skip_in_message = scroll_offset.saturating_sub(lines_skipped);
+        lines_skipped += msg_height as usize;
+
+        // Handle partial message rendering
+        if lines_to_skip_in_message > 0 {
+            render_partial_message(
+                message,
+                area.width,
+                area,
+                buf,
+                &mut current_y,
+                lines_to_skip_in_message,
+                viewport_end,
+            );
+        } else {
+            // Render full message
+            let remaining_height = viewport_end.saturating_sub(current_y);
+            let msg_area = Rect {
+                x: area.x,
+                y: current_y,
+                width: area.width,
+                height: msg_height.min(remaining_height),
+            };
+
+            widget.render(msg_area, buf);
+            current_y += msg_height;
+        }
+    }
+
+    // Update scroll state if provided
+    if let Some(state) = scroll_state {
+        state.update_viewport_height(area.height);
+    }
+}
+
+/// Calculate message height with proper text wrapping consideration
+fn calculate_message_height_with_wrapping(message: &DisplayMessage, width: u16) -> u16 {
+    let content_width = width.saturating_sub(4); // Account for indentation and margins
+
+    // Calculate wrapped content height
+    let content_height = if message.content.is_empty() {
+        1
+    } else {
+        message
+            .content
+            .lines()
+            .map(|line| {
+                if line.is_empty() {
+                    1
+                } else {
+                    let chars = line.chars().count();
+                    if chars == 0 {
+                        1
+                    } else {
+                        ((chars - 1) / content_width as usize) + 1
+                    }
+                }
+            })
+            .sum::<usize>()
+            .max(1)
+    };
+
+    // Calculate tool call heights
+    let tool_call_height: usize = message
+        .tool_calls
+        .iter()
+        .map(|tc| if tc.expanded { 5 } else { 2 })
+        .sum();
+
+    // Header (1) + content + tool calls + spacing (1)
+    (1 + content_height + tool_call_height + 1) as u16
+}
+
+/// Render a message that is partially clipped by the scroll offset
+fn render_partial_message(
+    message: &DisplayMessage,
+    width: u16,
+    area: Rect,
+    buf: &mut Buffer,
+    current_y: &mut u16,
+    lines_to_skip: usize,
+    viewport_end: u16,
+) {
+    // For now, implement simple partial rendering by adjusting the render area
+    // This is a simplified approach - full implementation would need to track
+    // which specific lines within the message to skip
+
+    let widget = MessageWidget::new(message, width);
+    let msg_height = calculate_message_height_with_wrapping(message, width);
+
+    let visible_height = msg_height.saturating_sub(lines_to_skip as u16);
+    let remaining_viewport = viewport_end.saturating_sub(*current_y);
+    let render_height = visible_height.min(remaining_viewport);
+
+    if render_height > 0 {
+        // Create a clipped render area
         let msg_area = Rect {
             x: area.x,
-            y,
-            width: area.width,
-            height: msg_height.min(remaining_height),
+            y: *current_y,
+            width,
+            height: render_height,
         };
 
+        // Render the widget but with adjusted positioning to account for skipped lines
+        // This is a simplified approach - ideally we'd modify the widget to handle
+        // partial rendering internally
         widget.render(msg_area, buf);
-        y += msg_height;
+        *current_y += render_height;
     }
 }
 

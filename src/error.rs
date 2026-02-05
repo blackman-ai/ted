@@ -472,4 +472,42 @@ mod tests {
             assert!(ted_err.to_string().contains("IO error"));
         }
     }
+
+    #[test]
+    fn test_ted_error_from_toml_ser_error() {
+        // Create a TOML serialization error using a custom struct that will fail
+        // TOML cannot serialize top-level arrays or certain nested structures
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        struct NonSerializable {
+            #[serde(serialize_with = "fail_serialize")]
+            value: String,
+        }
+
+        fn fail_serialize<S>(_: &String, _: S) -> std::result::Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            Err(serde::ser::Error::custom("intentional failure"))
+        }
+
+        let data = NonSerializable {
+            value: "test".to_string(),
+        };
+
+        let toml_ser_result = toml::to_string(&data);
+        assert!(toml_ser_result.is_err());
+
+        let toml_ser_err = toml_ser_result.unwrap_err();
+        let ted_err: TedError = toml_ser_err.into();
+        assert!(ted_err.to_string().contains("TOML error"));
+    }
+
+    #[test]
+    fn test_ted_error_tui() {
+        let err = TedError::Tui("tui error".to_string());
+        assert!(err.to_string().contains("TUI error"));
+        assert!(err.to_string().contains("tui error"));
+    }
 }

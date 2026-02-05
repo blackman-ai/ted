@@ -853,4 +853,105 @@ mod tests {
             ChatCommand::Message(content.to_string())
         );
     }
+
+    // ==================== Development slash commands tests ====================
+
+    #[test]
+    fn test_parse_command_commit() {
+        // Basic commit
+        let result = parse_command("/commit");
+        assert!(matches!(result, ChatCommand::Commit(_)));
+
+        // Commit with message
+        let result = parse_command("/commit -m \"fix typo\"");
+        if let ChatCommand::Commit(args) = result {
+            assert!(args.message.is_some() || !args.files.is_empty());
+        } else {
+            panic!("Expected Commit command");
+        }
+    }
+
+    #[test]
+    fn test_parse_command_test() {
+        // Basic test
+        let result = parse_command("/test");
+        assert!(matches!(result, ChatCommand::Test(_)));
+
+        // Test with pattern
+        let result = parse_command("/test src/main.rs");
+        if let ChatCommand::Test(args) = result {
+            assert!(args.pattern.is_some() || args.watch || args.coverage);
+        } else {
+            panic!("Expected Test command");
+        }
+    }
+
+    #[test]
+    fn test_parse_command_review() {
+        // Basic review
+        let result = parse_command("/review");
+        assert!(matches!(result, ChatCommand::Review(_)));
+
+        // Review with target
+        let result = parse_command("/review changes.diff");
+        if let ChatCommand::Review(args) = result {
+            assert!(args.target.is_some() || args.focus.is_some());
+        } else {
+            panic!("Expected Review command");
+        }
+    }
+
+    #[test]
+    fn test_parse_command_fix() {
+        // Basic fix
+        let result = parse_command("/fix");
+        assert!(matches!(result, ChatCommand::Fix(_)));
+
+        // Fix with pattern
+        let result = parse_command("/fix lint");
+        if let ChatCommand::Fix(args) = result {
+            assert!(args.fix_type.is_some() || args.pattern.is_some());
+        } else {
+            panic!("Expected Fix command");
+        }
+    }
+
+    #[test]
+    fn test_parse_command_explain() {
+        // Basic explain
+        let result = parse_command("/explain");
+        assert!(matches!(result, ChatCommand::Explain(_)));
+
+        // Explain with target
+        let result = parse_command("/explain this function");
+        if let ChatCommand::Explain(args) = result {
+            assert!(args.target.is_some() || args.verbosity.is_some());
+        } else {
+            panic!("Expected Explain command");
+        }
+    }
+
+    #[test]
+    fn test_parse_command_cap_create_without_name() {
+        assert_eq!(
+            parse_command("/cap create"),
+            ChatCommand::Unknown("/cap create".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_command_cap_unknown_action() {
+        assert_eq!(
+            parse_command("/cap unknown_action"),
+            ChatCommand::Unknown("/cap unknown_action".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_command_switch_empty() {
+        assert_eq!(
+            parse_command("/switch"),
+            ChatCommand::Unknown("/switch".to_string())
+        );
+    }
 }

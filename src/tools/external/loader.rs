@@ -330,4 +330,52 @@ mod tests {
         // Should only find the top-level manifest
         assert_eq!(manifests.len(), 1);
     }
+
+    #[test]
+    fn test_loader_ensure_dir_error() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a file that will block directory creation
+        let file_path = temp_dir.path().join("blocker");
+        std::fs::write(&file_path, "I'm a file").unwrap();
+
+        // Try to create a directory inside the file (should fail)
+        let impossible_dir = file_path.join("subdir");
+        let loader = ToolLoader::with_dir(impossible_dir);
+
+        // ensure_dir should fail because we can't create a directory inside a file
+        let result = loader.ensure_dir();
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Failed to create tools directory"));
+    }
+
+    #[test]
+    fn test_loader_ensure_dir_already_exists() {
+        let temp_dir = TempDir::new().unwrap();
+        let loader = ToolLoader::with_dir(temp_dir.path().to_path_buf());
+
+        // Directory already exists, ensure_dir should succeed
+        let result = loader.ensure_dir();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_loader_discover_with_files_without_extension() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a file without extension
+        std::fs::write(temp_dir.path().join("no_extension"), "content").unwrap();
+
+        // Create valid manifest
+        create_test_manifest(temp_dir.path(), "valid");
+
+        let loader = ToolLoader::with_dir(temp_dir.path().to_path_buf());
+        let manifests = loader.discover();
+
+        // Should only find the .json file
+        assert_eq!(manifests.len(), 1);
+    }
 }

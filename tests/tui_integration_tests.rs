@@ -345,7 +345,9 @@ fn test_main_menu_items_exhaustive() {
 #[test]
 fn test_provider_items_exhaustive() {
     let items = ProviderItem::all();
-    assert_eq!(items.len(), 7); // DefaultProvider, AnthropicApiKey, AnthropicModel, OllamaBaseUrl, OllamaModel, TestConnection, Back
+    // DefaultProvider, AnthropicApiKey, AnthropicModel, OllamaBaseUrl, OllamaModel,
+    // OpenRouterApiKey, OpenRouterModel, BlackmanApiKey, BlackmanModel, TestConnection, Back
+    assert_eq!(items.len(), 11);
 
     for item in items {
         assert!(!item.label().is_empty());

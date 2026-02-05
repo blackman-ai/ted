@@ -358,4 +358,24 @@ mod tests {
         assert_eq!(cb.failure_count(), 1000);
         assert_eq!(cb.state(), CircuitState::Open);
     }
+
+    #[test]
+    fn test_circuit_breaker_from_owned_config() {
+        // Test From<ResilienceConfig> (owned) impl
+        let config = ResilienceConfig::default();
+        let cb: CircuitBreaker = config.into();
+
+        assert_eq!(cb.state(), CircuitState::Closed);
+        assert!(cb.allow_request());
+    }
+
+    #[test]
+    fn test_circuit_breaker_from_ref_config() {
+        // Test From<&ResilienceConfig> (reference) impl
+        let config = ResilienceConfig::default();
+        let cb = CircuitBreaker::from(&config);
+
+        assert_eq!(cb.state(), CircuitState::Closed);
+        assert!(cb.allow_request());
+    }
 }

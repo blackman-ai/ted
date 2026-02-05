@@ -18,7 +18,7 @@ use crate::llm::provider::LlmProvider;
 use crate::tools::ToolExecutor;
 
 use super::events::{ChatEvent, EventReceiver, EventSender};
-use super::state::{AgentTracker, DisplayMessage, InputState};
+use super::state::{AgentTracker, DisplayMessage, InputState, ScrollState};
 use super::ChatTuiConfig;
 
 /// Type alias for confirmation dialog callback
@@ -66,7 +66,7 @@ pub struct ChatApp {
 
     // === UI State ===
     pub mode: ChatMode,
-    pub scroll_offset: usize,
+    pub scroll_state: ScrollState,
     pub agent_pane_visible: bool,
     pub agent_pane_height: u16,
     pub agent_pane_expanded: bool,
@@ -117,7 +117,7 @@ impl ChatApp {
             stream_enabled: config.stream_enabled,
 
             mode: ChatMode::Input,
-            scroll_offset: 0,
+            scroll_state: ScrollState::new(),
             agent_pane_visible: true,
             agent_pane_height: 4,
             agent_pane_expanded: false,
@@ -399,22 +399,25 @@ impl ChatApp {
             }
             // Scrolling
             (KeyModifiers::NONE, KeyCode::Up) | (KeyModifiers::NONE, KeyCode::Char('k')) => {
-                self.scroll_up(1);
+                self.scroll_state.scroll_up(1);
             }
             (KeyModifiers::NONE, KeyCode::Down) | (KeyModifiers::NONE, KeyCode::Char('j')) => {
-                self.scroll_down(1);
+                let total_height = self.scroll_state.calculate_total_height(&self.messages, 80); // Width will be updated in render
+                self.scroll_state.scroll_down(1, total_height);
             }
             (KeyModifiers::NONE, KeyCode::PageUp) => {
-                self.scroll_up(10);
+                self.scroll_state.page_up();
             }
             (KeyModifiers::NONE, KeyCode::PageDown) => {
-                self.scroll_down(10);
+                let total_height = self.scroll_state.calculate_total_height(&self.messages, 80); // Width will be updated in render
+                self.scroll_state.page_down(total_height);
             }
             (KeyModifiers::NONE, KeyCode::Char('g')) => {
-                self.scroll_offset = 0;
+                self.scroll_state.scroll_to_top();
             }
             (KeyModifiers::SHIFT, KeyCode::Char('G')) => {
-                self.scroll_to_bottom();
+                let total_height = self.scroll_state.calculate_total_height(&self.messages, 80); // Width will be updated in render
+                self.scroll_state.scroll_to_bottom(total_height);
             }
             // Toggle agent pane
             (KeyModifiers::NONE, KeyCode::Tab) => {
@@ -527,20 +530,31 @@ impl ChatApp {
 
     fn add_user_message(&mut self, text: String) {
         self.messages.push(DisplayMessage::user(text));
-        self.scroll_to_bottom();
+        self.scroll_state.invalidate_cache();
+        let total_height = self.scroll_state.calculate_total_height(&self.messages, 80); // TODO: Get actual width
+        self.scroll_state.maybe_auto_scroll(total_height);
     }
 
     fn start_assistant_message(&mut self) {
         self.messages
             .push(DisplayMessage::assistant_streaming(self.caps.clone()));
         self.is_processing = true;
-        self.scroll_to_bottom();
+        self.scroll_state.invalidate_cache();
+        let total_height = self.scroll_state.calculate_total_height(&self.messages, 80); // TODO: Get actual width
+        self.scroll_state.maybe_auto_scroll(total_height);
     }
 
     fn append_to_current_message(&mut self, text: &str) {
         if let Some(msg) = self.messages.last_mut() {
             if msg.is_streaming {
                 msg.append_content(text);
+                // Invalidate cache since message content changed
+                self.scroll_state.invalidate_cache();
+                // Auto-scroll if enabled to follow the streaming content
+                if self.scroll_state.auto_scroll_enabled {
+                    let total_height = self.scroll_state.calculate_total_height(&self.messages, 80); // TODO: Get actual width
+                    self.scroll_state.maybe_auto_scroll(total_height);
+                }
             }
         }
     }
@@ -618,22 +632,10 @@ impl ChatApp {
 
     // === UI helpers ===
 
-    fn scroll_up(&mut self, lines: usize) {
-        self.scroll_offset = self.scroll_offset.saturating_sub(lines);
-    }
-
-    fn scroll_down(&mut self, lines: usize) {
-        // TODO: Implement proper max scroll calculation
-        self.scroll_offset += lines;
-    }
-
-    fn scroll_to_bottom(&mut self) {
-        // TODO: Calculate proper max scroll
-        self.scroll_offset = 0; // For now, 0 means "at bottom"
-    }
-
     fn toggle_agent_pane(&mut self) {
         self.agent_pane_visible = !self.agent_pane_visible;
+        // Update scroll state viewport when layout changes
+        // This will be properly updated in the UI rendering
     }
 
     fn set_status(&mut self, msg: &str) {
@@ -832,7 +834,8 @@ mod tests {
         let app = create_test_chat_app().await;
 
         // Verify initial state
-        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.scroll_state.scroll_offset, 0);
+        assert!(app.scroll_state.auto_scroll_enabled);
         assert!(app.agent_pane_visible);
         assert!(!app.agent_pane_expanded);
         assert_eq!(app.agent_pane_height, 4);
@@ -881,41 +884,46 @@ mod tests {
     async fn test_scroll_up() {
         let mut app = create_test_chat_app().await;
 
-        app.scroll_offset = 10;
-        app.scroll_up(3);
-        assert_eq!(app.scroll_offset, 7);
+        app.scroll_state.scroll_offset = 10;
+        app.scroll_state.scroll_up(3);
+        assert_eq!(app.scroll_state.scroll_offset, 7);
 
-        app.scroll_up(10);
-        assert_eq!(app.scroll_offset, 0);
+        app.scroll_state.scroll_up(10);
+        assert_eq!(app.scroll_state.scroll_offset, 0);
     }
 
     #[tokio::test]
     async fn test_scroll_up_at_zero() {
         let mut app = create_test_chat_app().await;
 
-        app.scroll_offset = 0;
-        app.scroll_up(5);
-        assert_eq!(app.scroll_offset, 0);
+        app.scroll_state.scroll_offset = 0;
+        app.scroll_state.scroll_up(5);
+        assert_eq!(app.scroll_state.scroll_offset, 0);
     }
 
     #[tokio::test]
     async fn test_scroll_down() {
         let mut app = create_test_chat_app().await;
+        let total_height = 100; // Simulate a reasonable total content height
 
-        app.scroll_down(5);
-        assert_eq!(app.scroll_offset, 5);
+        app.scroll_state.scroll_down(5, total_height);
+        assert_eq!(app.scroll_state.scroll_offset, 5);
 
-        app.scroll_down(3);
-        assert_eq!(app.scroll_offset, 8);
+        app.scroll_state.scroll_down(3, total_height);
+        assert_eq!(app.scroll_state.scroll_offset, 8);
     }
 
     #[tokio::test]
     async fn test_scroll_to_bottom() {
         let mut app = create_test_chat_app().await;
+        let total_height = 100;
 
-        app.scroll_offset = 100;
-        app.scroll_to_bottom();
-        assert_eq!(app.scroll_offset, 0); // 0 means "at bottom" in current impl
+        app.scroll_state.scroll_offset = 10;
+        app.scroll_state.scroll_to_bottom(total_height);
+        // scroll_to_bottom sets offset to max_offset = total_height - viewport_height
+        let expected = total_height - app.scroll_state.viewport_height as usize;
+        assert_eq!(app.scroll_state.scroll_offset, expected);
+        assert!(app.scroll_state.auto_scroll_enabled);
     }
 
     // ==================== Agent Pane Tests ====================

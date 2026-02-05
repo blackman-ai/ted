@@ -67,6 +67,7 @@ impl SettingsSection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsField {
     Provider,
+    ApiKey,
     Model,
     Temperature,
     MaxTokens,
@@ -78,6 +79,7 @@ impl SettingsField {
     fn all() -> &'static [SettingsField] {
         &[
             SettingsField::Provider,
+            SettingsField::ApiKey,
             SettingsField::Model,
             SettingsField::Temperature,
             SettingsField::MaxTokens,
@@ -89,6 +91,7 @@ impl SettingsField {
     fn label(&self) -> &'static str {
         match self {
             SettingsField::Provider => "Provider",
+            SettingsField::ApiKey => "API Key",
             SettingsField::Model => "Model",
             SettingsField::Temperature => "Temperature",
             SettingsField::MaxTokens => "Max Tokens",
@@ -123,6 +126,9 @@ pub struct SettingsState {
     pub model_index: usize,
     /// Editable settings values
     pub provider: String,
+    pub api_key: String,
+    /// API keys per provider (for cycling)
+    pub api_keys_by_provider: std::collections::HashMap<String, String>,
     pub model: String,
     pub temperature: f32,
     pub max_tokens: u32,
@@ -201,6 +207,43 @@ impl SettingsState {
             .and_then(|models| models.iter().position(|m| m == &config.model))
             .unwrap_or(0);
 
+        // Get API keys for all providers
+        let mut api_keys_by_provider = std::collections::HashMap::new();
+        api_keys_by_provider.insert(
+            "anthropic".to_string(),
+            settings
+                .providers
+                .anthropic
+                .api_key
+                .clone()
+                .unwrap_or_default(),
+        );
+        api_keys_by_provider.insert(
+            "openrouter".to_string(),
+            settings
+                .providers
+                .openrouter
+                .api_key
+                .clone()
+                .unwrap_or_default(),
+        );
+        api_keys_by_provider.insert(
+            "blackman".to_string(),
+            settings
+                .providers
+                .blackman
+                .api_key
+                .clone()
+                .unwrap_or_default(),
+        );
+        api_keys_by_provider.insert("ollama".to_string(), String::new()); // ollama doesn't need API key
+
+        // Get API key for current provider
+        let api_key = api_keys_by_provider
+            .get(&config.provider_name)
+            .cloned()
+            .unwrap_or_default();
+
         Self {
             current_section: SettingsSection::General,
             selected_index: 0,
@@ -213,6 +256,8 @@ impl SettingsState {
             models_by_provider,
             model_index,
             provider: config.provider_name.clone(),
+            api_key,
+            api_keys_by_provider,
             model: config.model.clone(),
             temperature: settings.defaults.temperature,
             max_tokens: settings.defaults.max_tokens,
@@ -299,9 +344,14 @@ impl SettingsState {
         ) {
             return;
         }
+        // Don't allow editing API key for ollama (not needed)
+        if self.selected_field() == SettingsField::ApiKey && self.provider == "ollama" {
+            return;
+        }
         self.is_editing = true;
         self.edit_buffer = match self.selected_field() {
             SettingsField::Provider | SettingsField::Model => String::new(),
+            SettingsField::ApiKey => self.api_key.clone(),
             SettingsField::Temperature => format!("{:.1}", self.temperature),
             SettingsField::MaxTokens => self.max_tokens.to_string(),
             SettingsField::Stream | SettingsField::TrustMode => String::new(),
@@ -322,6 +372,13 @@ impl SettingsState {
         match self.selected_field() {
             SettingsField::Provider | SettingsField::Model => {
                 // Cycled, not typed
+            }
+            SettingsField::ApiKey => {
+                self.api_key = self.edit_buffer.trim().to_string();
+                // Also save to the per-provider map
+                self.api_keys_by_provider
+                    .insert(self.provider.clone(), self.api_key.clone());
+                self.has_changes = true;
             }
             SettingsField::Temperature => {
                 if let Ok(t) = self.edit_buffer.parse::<f32>() {
@@ -357,6 +414,10 @@ impl SettingsState {
     }
 
     pub fn cycle_provider(&mut self, forward: bool) {
+        // Save current API key before switching
+        self.api_keys_by_provider
+            .insert(self.provider.clone(), self.api_key.clone());
+
         if forward {
             self.provider_index = (self.provider_index + 1) % self.providers.len();
         } else if self.provider_index > 0 {
@@ -365,6 +426,13 @@ impl SettingsState {
             self.provider_index = self.providers.len() - 1;
         }
         self.provider = self.providers[self.provider_index].clone();
+
+        // Load API key for new provider
+        self.api_key = self
+            .api_keys_by_provider
+            .get(&self.provider)
+            .cloned()
+            .unwrap_or_default();
 
         // Reset model to first available for the new provider
         self.model_index = 0;
@@ -410,6 +478,21 @@ impl SettingsState {
                     self.provider_index + 1,
                     self.providers.len()
                 )
+            }
+            SettingsField::ApiKey => {
+                if self.provider == "ollama" {
+                    "(not required)".to_string()
+                } else if self.api_key.is_empty() {
+                    "(not set)".to_string()
+                } else {
+                    // Show masked key with first 4 and last 4 chars
+                    let len = self.api_key.len();
+                    if len <= 10 {
+                        "••••••••••".to_string()
+                    } else {
+                        format!("{}••••{}", &self.api_key[..4], &self.api_key[len - 4..])
+                    }
+                }
             }
             SettingsField::Model => {
                 let models = self.current_models();
@@ -645,8 +728,8 @@ pub async fn run_chat_tui_loop(
     let mut message_count = session_info.message_count;
     let interrupted = Arc::new(AtomicBool::new(false));
 
-    // Main loop
-    let result: Result<()> = loop {
+    // Main loop - returns (result, needs_restart)
+    let result: (Result<()>, bool) = loop {
         // Update chat height based on terminal size before render
         let terminal_size = terminal.size().map(|s| s.height).unwrap_or(24);
         state.update_chat_height(terminal_size);
@@ -677,7 +760,7 @@ pub async fn run_chat_tui_loop(
                             state.is_processing = false;
                             state.set_status("Interrupted");
                         } else {
-                            break Ok(());
+                            break (Ok(()), false);
                         }
                         continue;
                     }
@@ -696,7 +779,7 @@ pub async fn run_chat_tui_loop(
                             || trimmed == "/exit"
                             || trimmed == "/quit"
                         {
-                            break Ok(());
+                            break (Ok(()), false);
                         }
 
                         // Check for commands (always process immediately)
@@ -956,9 +1039,11 @@ pub async fn run_chat_tui_loop(
         }
 
         if state.should_quit {
-            break Ok(());
+            break (Ok(()), state.needs_restart);
         }
     };
+
+    let (result, needs_restart) = result;
 
     // Restore terminal (and reset panic hook)
     let _ = std::panic::take_hook(); // Remove our custom panic hook
@@ -969,6 +1054,29 @@ pub async fn run_chat_tui_loop(
     terminal
         .show_cursor()
         .map_err(|e| TedError::Tui(e.to_string()))?;
+
+    // If provider changed, restart ted
+    if needs_restart {
+        println!("\nRestarting with new provider...\n");
+
+        // Get the current executable path
+        let exe = std::env::current_exe().map_err(|e| TedError::Tui(e.to_string()))?;
+
+        // Restart by exec'ing ourselves
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            let err = std::process::Command::new(&exe).exec();
+            return Err(TedError::Tui(format!("Failed to restart: {}", err)));
+        }
+
+        #[cfg(not(unix))]
+        {
+            // On Windows, spawn a new process and exit
+            let _ = std::process::Command::new(&exe).spawn();
+            std::process::exit(0);
+        }
+    }
 
     println!("\nGoodbye!");
 
@@ -1652,6 +1760,11 @@ fn handle_settings_key(state: &mut TuiState, key: crossterm::event::KeyEvent) ->
                 let new_temp = settings.temperature;
                 let new_max_tokens = settings.max_tokens;
                 let new_caps = settings.caps_enabled.clone();
+                // Save current API key to the map before saving
+                settings
+                    .api_keys_by_provider
+                    .insert(settings.provider.clone(), settings.api_key.clone());
+                let api_keys = settings.api_keys_by_provider.clone();
                 let provider_changed = new_provider != state.config.provider_name;
                 settings.has_changes = false;
 
@@ -1674,7 +1787,7 @@ fn handle_settings_key(state: &mut TuiState, key: crossterm::event::KeyEvent) ->
                     file_settings.defaults.stream = new_stream;
                     file_settings.defaults.caps = new_caps.clone();
 
-                    // Update model based on provider
+                    // Update model and API keys based on provider
                     match new_provider.as_str() {
                         "anthropic" => {
                             file_settings.providers.anthropic.default_model = new_model.clone()
@@ -1691,6 +1804,29 @@ fn handle_settings_key(state: &mut TuiState, key: crossterm::event::KeyEvent) ->
                         _ => {}
                     }
 
+                    // Save API keys for all providers
+                    if let Some(key) = api_keys.get("anthropic") {
+                        if !key.is_empty() {
+                            file_settings.providers.anthropic.api_key = Some(key.clone());
+                        } else {
+                            file_settings.providers.anthropic.api_key = None;
+                        }
+                    }
+                    if let Some(key) = api_keys.get("openrouter") {
+                        if !key.is_empty() {
+                            file_settings.providers.openrouter.api_key = Some(key.clone());
+                        } else {
+                            file_settings.providers.openrouter.api_key = None;
+                        }
+                    }
+                    if let Some(key) = api_keys.get("blackman") {
+                        if !key.is_empty() {
+                            file_settings.providers.blackman.api_key = Some(key.clone());
+                        } else {
+                            file_settings.providers.blackman.api_key = None;
+                        }
+                    }
+
                     if provider_changed {
                         file_settings.defaults.provider = new_provider;
                     }
@@ -1704,7 +1840,8 @@ fn handle_settings_key(state: &mut TuiState, key: crossterm::event::KeyEvent) ->
                 // Check if provider changed (requires restart)
                 if provider_changed {
                     state.needs_restart = true;
-                    state.set_status("Settings saved. Provider changed - restart required.");
+                    state.should_quit = true;
+                    state.set_status("Provider changed. Restarting...");
                 } else {
                     state.set_status("Settings saved to ~/.ted/settings.json");
                 }
@@ -1846,7 +1983,7 @@ fn handle_command(input: &str, state: &mut TuiState) -> Result<()> {
             // Show current model and available models
             let info = format!(
                 "Current: {} ({})\n\nAvailable models for {}:\n\
-                • claude-sonnet-4-5-20250514 (default)\n\
+                • claude-sonnet-4-20250514 (default)\n\
                 • claude-opus-4-5-20250514\n\
                 • claude-haiku-3-5-20241022\n\n\
                 Use /model <name> to switch",
@@ -2420,18 +2557,20 @@ mod tests {
     #[test]
     fn test_settings_field_all() {
         let fields = SettingsField::all();
-        assert_eq!(fields.len(), 6);
+        assert_eq!(fields.len(), 7);
         assert_eq!(fields[0], SettingsField::Provider);
-        assert_eq!(fields[1], SettingsField::Model);
-        assert_eq!(fields[2], SettingsField::Temperature);
-        assert_eq!(fields[3], SettingsField::MaxTokens);
-        assert_eq!(fields[4], SettingsField::Stream);
-        assert_eq!(fields[5], SettingsField::TrustMode);
+        assert_eq!(fields[1], SettingsField::ApiKey);
+        assert_eq!(fields[2], SettingsField::Model);
+        assert_eq!(fields[3], SettingsField::Temperature);
+        assert_eq!(fields[4], SettingsField::MaxTokens);
+        assert_eq!(fields[5], SettingsField::Stream);
+        assert_eq!(fields[6], SettingsField::TrustMode);
     }
 
     #[test]
     fn test_settings_field_labels() {
         assert_eq!(SettingsField::Provider.label(), "Provider");
+        assert_eq!(SettingsField::ApiKey.label(), "API Key");
         assert_eq!(SettingsField::Model.label(), "Model");
         assert_eq!(SettingsField::Temperature.label(), "Temperature");
         assert_eq!(SettingsField::MaxTokens.label(), "Max Tokens");
@@ -2446,7 +2585,7 @@ mod tests {
         let config = ChatTuiConfig {
             session_id: Uuid::new_v4(),
             provider_name: "anthropic".to_string(),
-            model: "claude-sonnet-4-5-20250514".to_string(),
+            model: "claude-sonnet-4-20250514".to_string(),
             caps: vec!["base".to_string()],
             stream_enabled: true,
             trust_mode: false,
@@ -2468,7 +2607,7 @@ mod tests {
         assert!(!state.is_editing);
         assert!(state.edit_buffer.is_empty());
         assert_eq!(state.provider, "anthropic");
-        assert_eq!(state.model, "claude-sonnet-4-5-20250514");
+        assert_eq!(state.model, "claude-sonnet-4-20250514");
         assert!(state.stream);
         assert!(!state.trust_mode);
         assert!(!state.has_changes);
@@ -2554,8 +2693,13 @@ mod tests {
 
         state.move_down();
         assert_eq!(state.selected_index, 1);
+        assert_eq!(state.selected_field(), SettingsField::ApiKey);
+
+        state.move_down();
+        assert_eq!(state.selected_index, 2);
         assert_eq!(state.selected_field(), SettingsField::Model);
 
+        state.move_up();
         state.move_up();
         assert_eq!(state.selected_index, 0);
 
@@ -2566,13 +2710,13 @@ mod tests {
         for _ in 0..10 {
             state.move_down();
         }
-        assert_eq!(state.selected_index, 5); // Max index is 5 (TrustMode)
+        assert_eq!(state.selected_index, 6); // Max index is 6 (TrustMode)
     }
 
     #[test]
     fn test_settings_state_cycling_model() {
         let mut state = create_test_settings_state();
-        state.selected_index = 1; // Model field
+        state.selected_index = 2; // Model field
 
         // Model field uses cycling, not text editing
         state.start_editing();
@@ -2592,7 +2736,7 @@ mod tests {
     #[test]
     fn test_settings_state_editing_temperature() {
         let mut state = create_test_settings_state();
-        state.selected_index = 2; // Temperature field
+        state.selected_index = 3; // Temperature field
 
         state.start_editing();
         state.edit_buffer = "0.5".to_string();
@@ -2622,7 +2766,7 @@ mod tests {
     #[test]
     fn test_settings_state_editing_max_tokens() {
         let mut state = create_test_settings_state();
-        state.selected_index = 3; // MaxTokens field
+        state.selected_index = 4; // MaxTokens field
 
         state.start_editing();
         state.edit_buffer = "4096".to_string();
@@ -2645,37 +2789,37 @@ mod tests {
     #[test]
     fn test_settings_state_cancel_editing() {
         let mut state = create_test_settings_state();
-        state.selected_index = 1;
-        let original_model = state.model.clone();
+        state.selected_index = 3; // Temperature field
+        let original_temp = state.temperature;
 
         state.start_editing();
-        state.edit_buffer = "changed-model".to_string();
+        state.edit_buffer = "999".to_string();
         state.cancel_editing();
 
         assert!(!state.is_editing);
         assert!(state.edit_buffer.is_empty());
-        assert_eq!(state.model, original_model);
+        assert!((state.temperature - original_temp).abs() < 0.01);
     }
 
     #[test]
     fn test_settings_state_toggle_bool() {
         let mut state = create_test_settings_state();
 
-        // Toggle stream
-        state.selected_index = 4;
+        // Toggle stream (index 5)
+        state.selected_index = 5;
         assert!(state.stream);
         state.toggle_bool();
         assert!(!state.stream);
         assert!(state.has_changes);
 
-        // Toggle trust mode
-        state.selected_index = 5;
+        // Toggle trust mode (index 6)
+        state.selected_index = 6;
         assert!(!state.trust_mode);
         state.toggle_bool();
         assert!(state.trust_mode);
 
         // Toggle on non-bool field should do nothing
-        state.selected_index = 1; // Model
+        state.selected_index = 2; // Model
         let old_model = state.model.clone();
         state.toggle_bool();
         assert_eq!(state.model, old_model);
@@ -2773,7 +2917,7 @@ mod tests {
         let config = ChatTuiConfig {
             session_id: Uuid::new_v4(),
             provider_name: "anthropic".to_string(),
-            model: "claude-sonnet-4-5-20250514".to_string(),
+            model: "claude-sonnet-4-20250514".to_string(),
             caps: vec!["base".to_string()],
             stream_enabled: true,
             trust_mode: false,
@@ -3012,7 +3156,7 @@ mod tests {
     #[test]
     fn test_settings_state_start_editing_stream_field() {
         let mut state = create_test_settings_state();
-        state.selected_index = 4; // Stream field
+        state.selected_index = 5; // Stream field
 
         state.start_editing();
         assert!(state.is_editing);
@@ -3738,7 +3882,7 @@ mod tests {
         let config = ChatTuiConfig {
             session_id: Uuid::new_v4(),
             provider_name: "anthropic".to_string(),
-            model: "claude-sonnet-4-5-20250514".to_string(),
+            model: "claude-sonnet-4-20250514".to_string(),
             caps: vec!["base".to_string(), "rust-expert".to_string()],
             stream_enabled: true,
             trust_mode: false,
@@ -4329,7 +4473,7 @@ mod tests {
         let mut state = create_test_tui_state();
         state.mode = ChatMode::Settings;
         if let Some(ref mut settings) = state.settings_state {
-            settings.selected_index = 1; // Model
+            settings.selected_index = 2; // Model
         }
         let initial_model = state.settings_state.as_ref().unwrap().model.clone();
 
@@ -4350,7 +4494,7 @@ mod tests {
         let mut state = create_test_tui_state();
         state.mode = ChatMode::Settings;
         if let Some(ref mut settings) = state.settings_state {
-            settings.selected_index = 4; // Stream
+            settings.selected_index = 5; // Stream
         }
         let initial_stream = state.settings_state.as_ref().unwrap().stream;
 
@@ -4372,7 +4516,7 @@ mod tests {
         let mut state = create_test_tui_state();
         state.mode = ChatMode::Settings;
         if let Some(ref mut settings) = state.settings_state {
-            settings.selected_index = 5; // TrustMode
+            settings.selected_index = 6; // TrustMode
         }
         let initial_trust = state.settings_state.as_ref().unwrap().trust_mode;
 
@@ -4394,7 +4538,7 @@ mod tests {
         let mut state = create_test_tui_state();
         state.mode = ChatMode::Settings;
         if let Some(ref mut settings) = state.settings_state {
-            settings.selected_index = 4; // Stream
+            settings.selected_index = 5; // Stream
         }
         let initial_stream = state.settings_state.as_ref().unwrap().stream;
 
@@ -4576,7 +4720,7 @@ mod tests {
         let mut state = create_test_tui_state();
         state.mode = ChatMode::Settings;
         if let Some(ref mut settings) = state.settings_state {
-            settings.selected_index = 2; // Temperature (uses text editing)
+            settings.selected_index = 3; // Temperature (uses text editing)
             settings.is_editing = true;
             settings.edit_buffer = "0.8".to_string();
         }
@@ -5201,7 +5345,7 @@ mod tests {
     #[test]
     fn test_settings_state_editing_stream_field() {
         let mut state = create_test_settings_state();
-        state.selected_index = 4; // Stream field
+        state.selected_index = 5; // Stream field
 
         state.start_editing();
         // Boolean fields have empty edit buffer

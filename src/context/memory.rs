@@ -398,10 +398,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = EmbeddingConfig {
-            base_url: mock_server.uri(),
-            model: "test-model".to_string(),
-        };
+        let config = EmbeddingConfig::ollama(&mock_server.uri(), "test-model");
         let generator = EmbeddingGenerator::with_config(config);
 
         (mock_server, generator)

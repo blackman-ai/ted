@@ -437,4 +437,69 @@ mod tests {
         assert!(serialized.contains("\"name\":\"test\""));
         assert!(serialized.contains("\"description\":\"Test\""));
     }
+
+    #[test]
+    fn test_manifest_from_file_not_found() {
+        // Test from_file when file doesn't exist
+        let result =
+            ToolManifest::from_file(std::path::Path::new("/nonexistent/path/manifest.json"));
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Failed to read manifest"));
+    }
+
+    #[test]
+    fn test_manifest_from_file_valid() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let manifest_path = temp_dir.path().join("test_tool.json");
+
+        // Write a valid manifest file
+        let json = r#"{
+            "name": "test_tool",
+            "description": "A test tool",
+            "command": ["echo", "hello"],
+            "input_schema": {"type": "object", "properties": {}}
+        }"#;
+        std::fs::write(&manifest_path, json).unwrap();
+
+        // Read it back
+        let manifest = ToolManifest::from_file(&manifest_path).unwrap();
+        assert_eq!(manifest.name, "test_tool");
+    }
+
+    #[test]
+    fn test_manifest_validate_empty_description() {
+        let json = r#"{
+            "name": "test",
+            "description": "",
+            "command": ["echo"],
+            "input_schema": {"type": "object", "properties": {}}
+        }"#;
+
+        let result = ToolManifest::parse(json);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("description cannot be empty"));
+    }
+
+    #[test]
+    fn test_manifest_from_file_invalid_json() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let manifest_path = temp_dir.path().join("invalid.json");
+
+        // Write invalid JSON
+        std::fs::write(&manifest_path, "{ not valid json }").unwrap();
+
+        // Should fail to parse
+        let result = ToolManifest::from_file(&manifest_path);
+        assert!(result.is_err());
+    }
 }

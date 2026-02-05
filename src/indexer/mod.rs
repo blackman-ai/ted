@@ -47,6 +47,7 @@ pub mod memory;
 pub mod persistence;
 pub mod recall;
 pub mod scorer;
+pub mod vector;
 
 use std::path::{Path, PathBuf};
 
@@ -64,8 +65,33 @@ pub use recall::{
     RecallProcessor, RecallReceiver, RecallSender,
 };
 pub use scorer::{Scorer, ScoringConfig};
+pub use vector::{cosine_similarity, reciprocal_rank_fusion, HybridSearchResult, VectorIndex};
 
 use crate::error::{Result, TedError};
+
+/// Configuration for semantic search
+#[derive(Debug, Clone)]
+pub struct SemanticSearchConfig {
+    /// Enable semantic search indexing (requires embeddings)
+    pub enabled: bool,
+    /// Embedding dimension (depends on model used)
+    pub embedding_dimension: usize,
+    /// Minimum similarity threshold for search results
+    pub similarity_threshold: f32,
+    /// Maximum results to return
+    pub max_results: usize,
+}
+
+impl Default for SemanticSearchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            embedding_dimension: 384, // all-MiniLM-L6-v2 default
+            similarity_threshold: 0.3,
+            max_results: 20,
+        }
+    }
+}
 
 /// Configuration for the indexer.
 #[derive(Debug, Clone)]
@@ -80,6 +106,8 @@ pub struct IndexerConfig {
     pub extensions: Vec<String>,
     /// Patterns to ignore.
     pub ignore_patterns: Vec<String>,
+    /// Semantic search configuration
+    pub semantic_search: SemanticSearchConfig,
 }
 
 impl Default for IndexerConfig {
@@ -99,6 +127,7 @@ impl Default for IndexerConfig {
                 ".venv".into(),
                 "vendor".into(),
             ],
+            semantic_search: SemanticSearchConfig::default(),
         }
     }
 }
@@ -148,6 +177,8 @@ pub struct Indexer {
     graph: DependencyGraph,
     /// Language parser registry.
     parsers: ParserRegistry,
+    /// Vector index for semantic search (optional, enabled via config)
+    vector_index: Option<VectorIndex>,
 }
 
 impl Indexer {
@@ -164,6 +195,13 @@ impl Indexer {
         let graph = DependencyGraph::new(root.clone());
         let parsers = ParserRegistry::new();
 
+        // Initialize vector index if semantic search is enabled
+        let vector_index = if config.semantic_search.enabled {
+            Some(VectorIndex::new(config.semantic_search.embedding_dimension))
+        } else {
+            None
+        };
+
         Ok(Self {
             root,
             config,
@@ -173,6 +211,7 @@ impl Indexer {
             store,
             graph,
             parsers,
+            vector_index,
         })
     }
 
@@ -459,6 +498,148 @@ impl Indexer {
 
         Ok(files)
     }
+
+    // ===== Semantic Search Methods =====
+
+    /// Check if semantic search is enabled
+    pub fn has_semantic_search(&self) -> bool {
+        self.vector_index.is_some()
+    }
+
+    /// Enable semantic search (creates vector index if not already enabled)
+    pub fn enable_semantic_search(&mut self, dimension: usize) {
+        if self.vector_index.is_none() {
+            self.vector_index = Some(VectorIndex::new(dimension));
+        }
+    }
+
+    /// Get the vector index (if enabled)
+    pub fn vector_index(&self) -> Option<&VectorIndex> {
+        self.vector_index.as_ref()
+    }
+
+    /// Get mutable access to the vector index (if enabled)
+    pub fn vector_index_mut(&mut self) -> Option<&mut VectorIndex> {
+        self.vector_index.as_mut()
+    }
+
+    /// Add an embedding for a chunk
+    ///
+    /// Returns true if the embedding was added, false if semantic search is disabled.
+    pub fn add_chunk_embedding(&mut self, chunk_id: uuid::Uuid, embedding: Vec<f32>) -> bool {
+        if let Some(ref mut vector_index) = self.vector_index {
+            vector_index.insert(chunk_id, embedding);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Add embeddings for multiple chunks
+    pub fn add_chunk_embeddings(
+        &mut self,
+        embeddings: impl IntoIterator<Item = (uuid::Uuid, Vec<f32>)>,
+    ) {
+        if let Some(ref mut vector_index) = self.vector_index {
+            vector_index.insert_batch(embeddings);
+        }
+    }
+
+    /// Remove a chunk's embedding
+    pub fn remove_chunk_embedding(&mut self, chunk_id: &uuid::Uuid) -> Option<Vec<f32>> {
+        self.vector_index.as_mut()?.remove(chunk_id)
+    }
+
+    /// Perform semantic search for chunks similar to a query embedding
+    ///
+    /// Returns chunk IDs with their similarity scores, sorted by descending similarity.
+    pub fn semantic_search(&self, query_embedding: &[f32], k: usize) -> Vec<(uuid::Uuid, f32)> {
+        if let Some(ref vector_index) = self.vector_index {
+            let max_results = k.min(self.config.semantic_search.max_results);
+            vector_index.search_with_threshold(
+                query_embedding,
+                max_results,
+                self.config.semantic_search.similarity_threshold,
+            )
+        } else {
+            vec![]
+        }
+    }
+
+    /// Perform hybrid search combining semantic similarity with importance scores
+    ///
+    /// Returns chunks with combined scores using Reciprocal Rank Fusion.
+    pub fn hybrid_search(
+        &self,
+        query_embedding: &[f32],
+        k: usize,
+        semantic_weight: f32,
+    ) -> Vec<HybridSearchResult> {
+        // Get semantic results
+        let semantic_results = self.semantic_search(query_embedding, k * 2);
+
+        // Get top chunks by importance score (based on access patterns and centrality)
+        // This serves as a "relevance from usage" signal
+        let mut importance_results: Vec<(uuid::Uuid, f32)> = self
+            .index
+            .chunk_memory
+            .iter()
+            .map(|(id, memory)| {
+                // Calculate importance score from available fields
+                let recency_factor = memory
+                    .session_last_accessed
+                    .or(Some(memory.global_last_accessed))
+                    .map(|t| {
+                        let hours_ago = (Utc::now() - t).num_hours() as f32;
+                        1.0 / (1.0 + hours_ago.max(0.0) / 24.0) // Decay over days
+                    })
+                    .unwrap_or(0.0);
+
+                let access_factor = (memory.global_access_count as f32
+                    + memory.session_access_count as f32 * 2.0)
+                    .ln_1p();
+
+                let centrality_factor = memory.centrality_score as f32;
+
+                // Combine factors
+                let score = recency_factor * 0.3 + access_factor * 0.4 + centrality_factor * 0.3;
+
+                (*id, score)
+            })
+            .collect();
+
+        importance_results
+            .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        importance_results.truncate(k * 2);
+
+        // Combine using RRF with configurable constant
+        // Higher constant = smoother combination, lower = more emphasis on top ranks
+        let k_constant = 60.0 * (1.0 - semantic_weight) + 1.0;
+
+        let mut results = reciprocal_rank_fusion(semantic_results, importance_results, k_constant);
+        results.truncate(k);
+        results
+    }
+
+    /// Get statistics about the vector index
+    pub fn vector_index_stats(&self) -> Option<VectorIndexStats> {
+        self.vector_index.as_ref().map(|vi| VectorIndexStats {
+            vector_count: vi.len(),
+            dimension: vi.dimension(),
+            memory_usage_bytes: vi.memory_usage(),
+        })
+    }
+}
+
+/// Statistics about the vector index
+#[derive(Debug, Clone)]
+pub struct VectorIndexStats {
+    /// Number of vectors in the index
+    pub vector_count: usize,
+    /// Embedding dimension
+    pub dimension: usize,
+    /// Estimated memory usage in bytes
+    pub memory_usage_bytes: usize,
 }
 
 /// Statistics from a full scan.

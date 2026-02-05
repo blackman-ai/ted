@@ -73,10 +73,10 @@ impl ModelRegistry {
                     .with_context(200000)
                     .with_description("Newest flagship - best for multi-day projects")
                     .with_vision(),
-                ModelInfo::new("claude-sonnet-4-5-20250514", ModelTier::High)
-                    .with_name("Claude Sonnet 4.5")
-                    .with_context(1000000) // 1M with beta header
-                    .with_description("Best coding model, 1M context available")
+                ModelInfo::new("claude-sonnet-4-20250514", ModelTier::High)
+                    .with_name("Claude Sonnet 4")
+                    .with_context(200000)
+                    .with_description("Fast and capable coding model")
                     .with_vision()
                     .recommended(),
                 ModelInfo::new("claude-haiku-4-5-20251022", ModelTier::Low)
@@ -89,11 +89,6 @@ impl ModelRegistry {
                     .with_name("Claude Opus 4.1")
                     .with_context(200000)
                     .with_description("Deep thinker for complex code review")
-                    .with_vision(),
-                ModelInfo::new("claude-sonnet-4-20250514", ModelTier::Medium)
-                    .with_name("Claude Sonnet 4")
-                    .with_context(200000)
-                    .with_description("Fast and capable, good default")
                     .with_vision(),
             ],
         );
@@ -262,10 +257,10 @@ impl ModelRegistry {
         self.models.insert(
             Provider::Blackman,
             vec![
-                ModelInfo::new("claude-sonnet-4-5-20250514", ModelTier::High)
-                    .with_name("Claude Sonnet 4.5")
-                    .with_context(1000000)
-                    .with_description("Best coding model")
+                ModelInfo::new("claude-sonnet-4-20250514", ModelTier::High)
+                    .with_name("Claude Sonnet 4")
+                    .with_context(200000)
+                    .with_description("Fast and capable coding model")
                     .with_vision()
                     .recommended(),
                 ModelInfo::new("claude-opus-4-5-20251124", ModelTier::High)
@@ -277,10 +272,6 @@ impl ModelRegistry {
                     .with_name("Claude Haiku 4.5")
                     .with_context(200000)
                     .with_description("Fast, matches Sonnet 4")
-                    .with_vision(),
-                ModelInfo::new("claude-sonnet-4-20250514", ModelTier::Medium)
-                    .with_name("Claude Sonnet 4")
-                    .with_context(200000)
                     .with_vision(),
             ],
         );
@@ -459,7 +450,7 @@ mod tests {
     fn test_registry_find_model() {
         let registry = ModelRegistry::with_defaults_only();
 
-        let (provider, model) = registry.find_model("claude-sonnet-4-5-20250514").unwrap();
+        let (provider, model) = registry.find_model("claude-sonnet-4-20250514").unwrap();
         // Model exists in both Anthropic and Blackman, so just check it's one of them
         assert!(
             *provider == Provider::Anthropic || *provider == Provider::Blackman,

@@ -193,6 +193,12 @@ fn draw_providers(frame: &mut Frame, area: Rect, app: &App) {
                 ProviderItem::OllamaBaseUrl | ProviderItem::OllamaModel => {
                     current_provider == "ollama"
                 }
+                ProviderItem::OpenRouterApiKey | ProviderItem::OpenRouterModel => {
+                    current_provider == "openrouter"
+                }
+                ProviderItem::BlackmanApiKey | ProviderItem::BlackmanModel => {
+                    current_provider == "blackman"
+                }
                 ProviderItem::TestConnection | ProviderItem::Back => true,
             };
 
@@ -216,6 +222,26 @@ fn draw_providers(frame: &mut Frame, area: Rect, app: &App) {
                 }
                 ProviderItem::OllamaBaseUrl => app.settings.providers.ollama.base_url.clone(),
                 ProviderItem::OllamaModel => app.settings.providers.ollama.default_model.clone(),
+                ProviderItem::OpenRouterApiKey => {
+                    if app.settings.get_openrouter_api_key().is_some() {
+                        "••••••••••••••••".to_string()
+                    } else {
+                        "(not set)".to_string()
+                    }
+                }
+                ProviderItem::OpenRouterModel => {
+                    app.settings.providers.openrouter.default_model.clone()
+                }
+                ProviderItem::BlackmanApiKey => {
+                    if app.settings.get_blackman_api_key().is_some() {
+                        "••••••••••••••••".to_string()
+                    } else {
+                        "(not set)".to_string()
+                    }
+                }
+                ProviderItem::BlackmanModel => {
+                    app.settings.providers.blackman.default_model.clone()
+                }
                 ProviderItem::TestConnection => String::new(),
                 ProviderItem::Back => String::new(),
             };

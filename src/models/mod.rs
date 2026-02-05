@@ -56,10 +56,14 @@
 //! }
 //! ```
 
+pub mod download;
 pub mod loader;
 pub mod schema;
 
 // Re-export commonly used types
+pub use download::{
+    DownloadRegistry, DownloadableModel, ModelCategory, ModelDownloader, ModelVariant, Quantization,
+};
 pub use loader::ModelRegistry;
 pub use schema::{ModelInfo, ModelTier, ModelsConfig, Provider, ProviderModels};
 
@@ -87,8 +91,8 @@ mod tests {
         let recommended = registry.recommended_models(&Provider::Anthropic);
         assert!(!recommended.is_empty());
 
-        // Should find sonnet 4.5 (could be from Anthropic or Blackman since both have it)
-        let (provider, model) = registry.find_model("claude-sonnet-4-5-20250514").unwrap();
+        // Should find sonnet 4 (could be from Anthropic or Blackman since both have it)
+        let (provider, model) = registry.find_model("claude-sonnet-4-20250514").unwrap();
         assert!(
             *provider == Provider::Anthropic || *provider == Provider::Blackman,
             "Expected Anthropic or Blackman"

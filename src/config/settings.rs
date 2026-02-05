@@ -46,6 +46,10 @@ pub struct Settings {
     /// Hardware profile and tier information
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hardware: Option<HardwareConfig>,
+
+    /// Embeddings configuration (for semantic search)
+    #[serde(default)]
+    pub embeddings: EmbeddingsConfig,
 }
 
 /// Configuration for LLM providers
@@ -240,6 +244,42 @@ pub struct AppearanceConfig {
     pub theme: String,
 }
 
+/// Embeddings configuration for semantic search
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingsConfig {
+    /// Backend to use: "bundled" (default, no deps) or "ollama"
+    #[serde(default = "default_embeddings_backend")]
+    pub backend: String,
+
+    /// Model name (interpretation depends on backend)
+    /// Bundled: "all-minilm-l6-v2", "nomic-embed-text-v1.5", "bge-small-en-v1.5"
+    /// Ollama: "nomic-embed-text", "mxbai-embed-large", etc.
+    #[serde(default = "default_embeddings_model")]
+    pub model: String,
+
+    /// Enable semantic search in indexer
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for EmbeddingsConfig {
+    fn default() -> Self {
+        Self {
+            backend: default_embeddings_backend(),
+            model: default_embeddings_model(),
+            enabled: true,
+        }
+    }
+}
+
+fn default_embeddings_backend() -> String {
+    "bundled".to_string()
+}
+
+fn default_embeddings_model() -> String {
+    "all-minilm-l6-v2".to_string()
+}
+
 /// Hardware-specific configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HardwareConfig {
@@ -427,7 +467,7 @@ fn default_anthropic_api_key_env() -> String {
 }
 
 fn default_anthropic_model() -> String {
-    "claude-sonnet-4-5-20250514".to_string()
+    "claude-sonnet-4-20250514".to_string()
 }
 
 fn default_ollama_base_url() -> String {
@@ -451,7 +491,7 @@ fn default_blackman_api_key_env() -> String {
 }
 
 fn default_blackman_model() -> String {
-    "claude-sonnet-4-5-20250514".to_string()
+    "claude-sonnet-4-20250514".to_string()
 }
 
 fn default_blackman_base_url() -> String {

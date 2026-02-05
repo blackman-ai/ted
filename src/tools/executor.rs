@@ -773,4 +773,96 @@ mod tests {
             assert_eq!(def.input_schema.schema_type, "object");
         }
     }
+
+    #[tokio::test]
+    async fn test_process_tool_uses_with_error_result() {
+        let temp_dir = TempDir::new().unwrap();
+        let context = create_test_context(&temp_dir);
+        let mut executor = ToolExecutor::new(context, true);
+
+        // Create a tool use that will fail (reading a nonexistent file)
+        let blocks = vec![ContentBlockResponse::ToolUse {
+            id: "tool-error-123".to_string(),
+            name: "file_read".to_string(),
+            input: serde_json::json!({
+                "path": "/nonexistent/path/that/does/not/exist.txt"
+            }),
+        }];
+
+        let results = executor.process_tool_uses(&blocks).await.unwrap();
+
+        // Should have one result
+        assert_eq!(results.len(), 1);
+
+        // The result should be an error
+        assert!(results[0].is_error());
+    }
+
+    #[tokio::test]
+    async fn test_process_tool_uses_mixed_success_and_error() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a file that exists
+        let existing_file = temp_dir.path().join("exists.txt");
+        std::fs::write(&existing_file, "content").unwrap();
+
+        let context = create_test_context(&temp_dir);
+        let mut executor = ToolExecutor::new(context, true);
+
+        let blocks = vec![
+            ContentBlockResponse::ToolUse {
+                id: "tool-1".to_string(),
+                name: "file_read".to_string(),
+                input: serde_json::json!({
+                    "path": existing_file.to_string_lossy().to_string()
+                }),
+            },
+            ContentBlockResponse::ToolUse {
+                id: "tool-2".to_string(),
+                name: "file_read".to_string(),
+                input: serde_json::json!({
+                    "path": "/nonexistent/file.txt"
+                }),
+            },
+        ];
+
+        let results = executor.process_tool_uses(&blocks).await.unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(!results[0].is_error()); // First should succeed
+        assert!(results[1].is_error()); // Second should fail
+    }
+
+    #[tokio::test]
+    async fn test_execute_tool_returns_error_for_failed_execution() {
+        let temp_dir = TempDir::new().unwrap();
+        let context = create_test_context(&temp_dir);
+        let mut executor = ToolExecutor::new(context, true);
+
+        // This should fail because the file doesn't exist
+        let result = executor
+            .execute_tool_use(
+                "test-id",
+                "file_read",
+                serde_json::json!({
+                    "path": "/definitely/nonexistent/path/12345.txt"
+                }),
+            )
+            .await
+            .unwrap();
+
+        // The tool execution should have failed, but the function should return Ok
+        assert!(result.is_error());
+    }
+
+    #[test]
+    fn test_registry_mut_returns_mutable_reference() {
+        let temp_dir = TempDir::new().unwrap();
+        let context = create_test_context(&temp_dir);
+        let mut executor = ToolExecutor::new(context, true);
+
+        // Should be able to get a mutable reference to the registry
+        let registry = executor.registry_mut();
+        assert!(!registry.is_empty());
+    }
 }

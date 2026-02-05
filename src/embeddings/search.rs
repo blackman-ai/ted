@@ -678,10 +678,7 @@ mod tests {
 
     #[test]
     fn test_semantic_search_with_custom_config() {
-        let config = super::super::EmbeddingConfig {
-            base_url: "http://custom:8080".to_string(),
-            model: "custom-model".to_string(),
-        };
+        let config = super::super::EmbeddingConfig::ollama("http://custom:8080", "custom-model");
         let generator = EmbeddingGenerator::with_config(config);
         let search = SemanticSearch::new(generator);
 
@@ -830,10 +827,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = super::super::EmbeddingConfig {
-            base_url: mock_server.uri(),
-            model: "test-model".to_string(),
-        };
+        let config = super::super::EmbeddingConfig::ollama(&mock_server.uri(), "test-model");
         let generator = EmbeddingGenerator::with_config(config);
         let search = SemanticSearch::new(generator);
 
@@ -863,10 +857,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = super::super::EmbeddingConfig {
-            base_url: mock_server.uri(),
-            model: "test-model".to_string(),
-        };
+        let config = super::super::EmbeddingConfig::ollama(&mock_server.uri(), "test-model");
         let generator = EmbeddingGenerator::with_config(config);
         let search = SemanticSearch::new(generator);
 
@@ -896,10 +887,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = super::super::EmbeddingConfig {
-            base_url: mock_server.uri(),
-            model: "test-model".to_string(),
-        };
+        let config = super::super::EmbeddingConfig::ollama(&mock_server.uri(), "test-model");
         let generator = EmbeddingGenerator::with_config(config);
         let search = SemanticSearch::new(generator);
 
@@ -923,10 +911,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = super::super::EmbeddingConfig {
-            base_url: mock_server.uri(),
-            model: "test-model".to_string(),
-        };
+        let config = super::super::EmbeddingConfig::ollama(&mock_server.uri(), "test-model");
         let generator = EmbeddingGenerator::with_config(config);
         let search = SemanticSearch::new(generator);
 
@@ -957,10 +942,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = super::super::EmbeddingConfig {
-            base_url: mock_server.uri(),
-            model: "test-model".to_string(),
-        };
+        let config = super::super::EmbeddingConfig::ollama(&mock_server.uri(), "test-model");
         let generator = EmbeddingGenerator::with_config(config);
         let search = SemanticSearch::new(generator);
 
@@ -988,10 +970,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = super::super::EmbeddingConfig {
-            base_url: mock_server.uri(),
-            model: "test-model".to_string(),
-        };
+        let config = super::super::EmbeddingConfig::ollama(&mock_server.uri(), "test-model");
         let generator = EmbeddingGenerator::with_config(config);
         let search = SemanticSearch::new(generator);
 
@@ -1020,10 +999,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = super::super::EmbeddingConfig {
-            base_url: mock_server.uri(),
-            model: "test-model".to_string(),
-        };
+        let config = super::super::EmbeddingConfig::ollama(&mock_server.uri(), "test-model");
         let generator = EmbeddingGenerator::with_config(config);
         let search = SemanticSearch::new(generator);
 
@@ -1048,10 +1024,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = super::super::EmbeddingConfig {
-            base_url: mock_server.uri(),
-            model: "test-model".to_string(),
-        };
+        let config = super::super::EmbeddingConfig::ollama(&mock_server.uri(), "test-model");
         let generator = EmbeddingGenerator::with_config(config);
         let search = SemanticSearch::new(generator);
 
@@ -1074,10 +1047,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = super::super::EmbeddingConfig {
-            base_url: mock_server.uri(),
-            model: "test-model".to_string(),
-        };
+        let config = super::super::EmbeddingConfig::ollama(&mock_server.uri(), "test-model");
         let generator = EmbeddingGenerator::with_config(config);
         let search = SemanticSearch::new(generator);
 
@@ -1106,10 +1076,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = super::super::EmbeddingConfig {
-            base_url: mock_server.uri(),
-            model: "test-model".to_string(),
-        };
+        let config = super::super::EmbeddingConfig::ollama(&mock_server.uri(), "test-model");
         let generator = EmbeddingGenerator::with_config(config);
         let search = SemanticSearch::new(generator);
 
@@ -1133,10 +1100,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let config = super::super::EmbeddingConfig {
-            base_url: mock_server.uri(),
-            model: "test-model".to_string(),
-        };
+        let config = super::super::EmbeddingConfig::ollama(&mock_server.uri(), "test-model");
         let generator = EmbeddingGenerator::with_config(config);
         let search = SemanticSearch::new(generator);
 

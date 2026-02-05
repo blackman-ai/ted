@@ -350,4 +350,103 @@ mod tests {
         // Should read from both files
         assert_eq!(chunks.len(), 2);
     }
+
+    #[tokio::test]
+    async fn test_reader_skips_corrupted_checksum() {
+        let dir = tempdir().unwrap();
+        let wal_dir = dir.path().join("wal");
+        std::fs::create_dir_all(&wal_dir).unwrap();
+
+        // Write a valid entry using the writer
+        let mut writer = WalWriter::new(wal_dir.clone()).await.unwrap();
+        let chunk = Chunk::new_message("user", "test", None, 0);
+        writer.append(&chunk).await.unwrap();
+        writer.sync().await.unwrap();
+
+        // Read the file and corrupt the checksum
+        let wal_file = wal_dir.join("00000000.wal");
+        let content = std::fs::read_to_string(&wal_file).unwrap();
+        // Modify the checksum in the JSON (the checksum field)
+        let corrupted =
+            content.replace("\"checksum\":", "\"checksum\":999999999,\"old_checksum\":");
+        std::fs::write(&wal_file, corrupted).unwrap();
+
+        let reader = WalReader::new(wal_dir);
+        let chunks = reader.read_all().await.unwrap();
+
+        // Entry with bad checksum should be skipped (warning logged)
+        assert!(chunks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_reader_has_data_with_nonexistent_dir() {
+        // Test has_data when the directory doesn't exist
+        let reader = WalReader::new(PathBuf::from("/nonexistent/wal/dir"));
+        assert!(!reader.has_data().await);
+    }
+
+    #[tokio::test]
+    async fn test_reader_read_file_error() {
+        let dir = tempdir().unwrap();
+        let wal_dir = dir.path().join("wal");
+        std::fs::create_dir_all(&wal_dir).unwrap();
+
+        // Create a WAL file that's actually a directory (to cause read error)
+        let fake_wal = wal_dir.join("00000001.wal");
+        std::fs::create_dir(&fake_wal).unwrap();
+
+        let reader = WalReader::new(wal_dir);
+        // read_all should handle the error gracefully
+        let chunks = reader.read_all().await.unwrap();
+        assert!(chunks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_reader_ignores_non_wal_files() {
+        let dir = tempdir().unwrap();
+        let wal_dir = dir.path().join("wal");
+        std::fs::create_dir_all(&wal_dir).unwrap();
+
+        // Write a valid WAL entry
+        let mut writer = WalWriter::new(wal_dir.clone()).await.unwrap();
+        let chunk = Chunk::new_message("user", "test", None, 0);
+        writer.append(&chunk).await.unwrap();
+        writer.sync().await.unwrap();
+
+        // Create some non-WAL files (should be ignored)
+        std::fs::write(wal_dir.join("readme.txt"), "not a wal file").unwrap();
+        std::fs::write(wal_dir.join("data.json"), "{}").unwrap();
+        std::fs::write(wal_dir.join("backup.wal.bak"), "old backup").unwrap();
+
+        let reader = WalReader::new(wal_dir);
+        let chunks = reader.read_all().await.unwrap();
+
+        // Should only find the valid WAL entry
+        assert_eq!(chunks.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_reader_preserves_wal_sequence_order() {
+        let dir = tempdir().unwrap();
+        let wal_dir = dir.path().join("wal");
+        std::fs::create_dir_all(&wal_dir).unwrap();
+
+        let mut writer = WalWriter::new(wal_dir.clone()).await.unwrap();
+
+        // Write chunks with specific sequences (out of order)
+        let chunk1 = Chunk::new_message("user", "third", None, 30);
+        let chunk2 = Chunk::new_message("user", "first", None, 10);
+        let chunk3 = Chunk::new_message("user", "second", None, 20);
+
+        writer.append(&chunk1).await.unwrap();
+        writer.append(&chunk2).await.unwrap();
+        writer.append(&chunk3).await.unwrap();
+        writer.sync().await.unwrap();
+
+        let reader = WalReader::new(wal_dir);
+        let chunks = reader.read_all().await.unwrap();
+
+        // All chunks should be read
+        assert_eq!(chunks.len(), 3);
+    }
 }
