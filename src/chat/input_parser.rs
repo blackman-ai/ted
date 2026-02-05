@@ -9,7 +9,11 @@
 
 use crate::llm::provider::ContentBlockResponse;
 
-use super::commands::{CommitArgs, ExplainArgs, FixArgs, ReviewArgs, TestArgs};
+use crate::beads::BeadStatus;
+
+use super::commands::{
+    BeadsArgs, CommitArgs, ExplainArgs, FixArgs, ReviewArgs, SkillsArgs, TestArgs,
+};
 
 /// Parse a shell command from user input.
 /// Returns Some(command) if input starts with '>', None otherwise.
@@ -473,6 +477,178 @@ pub fn parse_explain_command(input: &str) -> Option<ExplainArgs> {
     }
 
     Some(args)
+}
+
+// === Skills & Beads Command Parsers ===
+
+/// Parse /skills command and arguments.
+/// Supports: /skills, /skills list, /skills show <name>, /skills create <name>
+pub fn parse_skills_command(input: &str) -> Option<SkillsArgs> {
+    let trimmed = input.trim();
+    let lower = trimmed.to_lowercase();
+
+    // Handle both /skill and /skills
+    if !lower.starts_with("/skills") && !lower.starts_with("/skill") {
+        return None;
+    }
+
+    let prefix_len = if lower.starts_with("/skills") { 7 } else { 6 };
+
+    // Check if it's exactly "/skill(s)" or starts with "/skill(s) "
+    if trimmed.len() > prefix_len && !trimmed[prefix_len..].starts_with(' ') {
+        return None;
+    }
+
+    let args_str = trimmed.get(prefix_len..).unwrap_or("").trim();
+    let mut args = SkillsArgs::default();
+
+    if args_str.is_empty() {
+        // /skills with no args = list
+        return Some(args);
+    }
+
+    let parts: Vec<&str> = args_str.split_whitespace().collect();
+
+    if parts.is_empty() {
+        return Some(args);
+    }
+
+    match parts[0].to_lowercase().as_str() {
+        "list" => {
+            args.subcommand = Some("list".to_string());
+        }
+        "show" => {
+            args.subcommand = Some("show".to_string());
+            if parts.len() > 1 {
+                args.name = Some(parts[1..].join(" "));
+            }
+        }
+        "create" => {
+            args.subcommand = Some("create".to_string());
+            if parts.len() > 1 {
+                args.name = Some(parts[1..].join(" "));
+            }
+        }
+        _ => {
+            // Unknown subcommand - treat as skill name for show
+            args.subcommand = Some("show".to_string());
+            args.name = Some(parts.join(" "));
+        }
+    }
+
+    Some(args)
+}
+
+/// Parse /beads command and arguments.
+/// Supports: /beads, /beads list, /beads add <title>, /beads show <id>,
+///           /beads status <id> <status>, /beads stats
+pub fn parse_beads_command(input: &str) -> Option<BeadsArgs> {
+    let trimmed = input.trim();
+    let lower = trimmed.to_lowercase();
+
+    // Handle both /bead and /beads
+    if !lower.starts_with("/beads") && !lower.starts_with("/bead") {
+        return None;
+    }
+
+    let prefix_len = if lower.starts_with("/beads") { 6 } else { 5 };
+
+    // Check if it's exactly "/bead(s)" or starts with "/bead(s) "
+    if trimmed.len() > prefix_len && !trimmed[prefix_len..].starts_with(' ') {
+        return None;
+    }
+
+    let args_str = trimmed.get(prefix_len..).unwrap_or("").trim();
+    let mut args = BeadsArgs::default();
+
+    if args_str.is_empty() {
+        // /beads with no args = list
+        return Some(args);
+    }
+
+    let parts: Vec<&str> = args_str.split_whitespace().collect();
+
+    if parts.is_empty() {
+        return Some(args);
+    }
+
+    match parts[0].to_lowercase().as_str() {
+        "list" => {
+            args.subcommand = Some("list".to_string());
+        }
+        "add" => {
+            args.subcommand = Some("add".to_string());
+            if parts.len() > 1 {
+                args.value = Some(parts[1..].join(" "));
+            }
+        }
+        "show" => {
+            args.subcommand = Some("show".to_string());
+            if parts.len() > 1 {
+                args.id = Some(parts[1].to_string());
+            }
+        }
+        "status" => {
+            args.subcommand = Some("status".to_string());
+            if parts.len() > 1 {
+                args.id = Some(parts[1].to_string());
+            }
+            if parts.len() > 2 {
+                args.value = Some(parts[2..].join(" "));
+            }
+        }
+        "stats" => {
+            args.subcommand = Some("stats".to_string());
+        }
+        _ => {
+            // Unknown subcommand - treat as bead ID for show
+            args.subcommand = Some("show".to_string());
+            args.id = Some(parts[0].to_string());
+        }
+    }
+
+    Some(args)
+}
+
+/// Parse a status string into BeadStatus
+pub fn parse_bead_status(status: &str) -> Option<BeadStatus> {
+    match status.to_lowercase().as_str() {
+        "pending" => Some(BeadStatus::Pending),
+        "ready" => Some(BeadStatus::Ready),
+        "in-progress" | "inprogress" | "in_progress" | "wip" => Some(BeadStatus::InProgress),
+        "done" | "complete" | "completed" => Some(BeadStatus::Done),
+        s if s.starts_with("blocked:") || s.starts_with("blocked ") => {
+            let reason = s
+                .strip_prefix("blocked:")
+                .or_else(|| s.strip_prefix("blocked "))
+                .unwrap_or("No reason provided")
+                .trim()
+                .to_string();
+            Some(BeadStatus::Blocked { reason })
+        }
+        "blocked" => Some(BeadStatus::Blocked {
+            reason: "No reason provided".to_string(),
+        }),
+        s if s.starts_with("cancelled:")
+            || s.starts_with("cancelled ")
+            || s.starts_with("canceled:")
+            || s.starts_with("canceled ") =>
+        {
+            let reason = s
+                .strip_prefix("cancelled:")
+                .or_else(|| s.strip_prefix("cancelled "))
+                .or_else(|| s.strip_prefix("canceled:"))
+                .or_else(|| s.strip_prefix("canceled "))
+                .unwrap_or("No reason provided")
+                .trim()
+                .to_string();
+            Some(BeadStatus::Cancelled { reason })
+        }
+        "cancelled" | "canceled" => Some(BeadStatus::Cancelled {
+            reason: "No reason provided".to_string(),
+        }),
+        _ => None,
+    }
 }
 
 // === Helper Functions for Argument Parsing ===
@@ -1200,5 +1376,205 @@ mod tests {
         assert!(is_exit_command("ExIt"));
         assert!(is_clear_command("/CleAr"));
         assert!(is_help_command("/HelP"));
+    }
+
+    // ==================== Skills Command Parser Tests ====================
+
+    #[test]
+    fn test_parse_skills_command_list() {
+        let args = parse_skills_command("/skills").unwrap();
+        assert!(args.subcommand.is_none());
+        assert!(args.name.is_none());
+
+        let args = parse_skills_command("/skills list").unwrap();
+        assert_eq!(args.subcommand, Some("list".to_string()));
+    }
+
+    #[test]
+    fn test_parse_skills_command_show() {
+        let args = parse_skills_command("/skills show rust-async").unwrap();
+        assert_eq!(args.subcommand, Some("show".to_string()));
+        assert_eq!(args.name, Some("rust-async".to_string()));
+    }
+
+    #[test]
+    fn test_parse_skills_command_show_multi_word() {
+        let args = parse_skills_command("/skills show my skill name").unwrap();
+        assert_eq!(args.subcommand, Some("show".to_string()));
+        assert_eq!(args.name, Some("my skill name".to_string()));
+    }
+
+    #[test]
+    fn test_parse_skills_command_create() {
+        let args = parse_skills_command("/skills create my-new-skill").unwrap();
+        assert_eq!(args.subcommand, Some("create".to_string()));
+        assert_eq!(args.name, Some("my-new-skill".to_string()));
+    }
+
+    #[test]
+    fn test_parse_skills_command_alias() {
+        // Both /skill and /skills should work
+        assert!(parse_skills_command("/skill").is_some());
+        assert!(parse_skills_command("/skills").is_some());
+        assert!(parse_skills_command("/skill show test").is_some());
+    }
+
+    #[test]
+    fn test_parse_skills_command_invalid() {
+        assert!(parse_skills_command("/skillset").is_none());
+        assert!(parse_skills_command("/sk").is_none());
+        assert!(parse_skills_command("skills").is_none());
+    }
+
+    #[test]
+    fn test_parse_skills_command_unknown_treated_as_show() {
+        let args = parse_skills_command("/skills rust-async").unwrap();
+        assert_eq!(args.subcommand, Some("show".to_string()));
+        assert_eq!(args.name, Some("rust-async".to_string()));
+    }
+
+    // ==================== Beads Command Parser Tests ====================
+
+    #[test]
+    fn test_parse_beads_command_list() {
+        let args = parse_beads_command("/beads").unwrap();
+        assert!(args.subcommand.is_none());
+
+        let args = parse_beads_command("/beads list").unwrap();
+        assert_eq!(args.subcommand, Some("list".to_string()));
+    }
+
+    #[test]
+    fn test_parse_beads_command_add() {
+        let args = parse_beads_command("/beads add Implement feature X").unwrap();
+        assert_eq!(args.subcommand, Some("add".to_string()));
+        assert_eq!(args.value, Some("Implement feature X".to_string()));
+    }
+
+    #[test]
+    fn test_parse_beads_command_show() {
+        let args = parse_beads_command("/beads show bd-12345678").unwrap();
+        assert_eq!(args.subcommand, Some("show".to_string()));
+        assert_eq!(args.id, Some("bd-12345678".to_string()));
+    }
+
+    #[test]
+    fn test_parse_beads_command_status() {
+        let args = parse_beads_command("/beads status bd-12345678 done").unwrap();
+        assert_eq!(args.subcommand, Some("status".to_string()));
+        assert_eq!(args.id, Some("bd-12345678".to_string()));
+        assert_eq!(args.value, Some("done".to_string()));
+    }
+
+    #[test]
+    fn test_parse_beads_command_status_with_reason() {
+        let args =
+            parse_beads_command("/beads status bd-12345678 blocked:waiting for API").unwrap();
+        assert_eq!(args.value, Some("blocked:waiting for API".to_string()));
+    }
+
+    #[test]
+    fn test_parse_beads_command_stats() {
+        let args = parse_beads_command("/beads stats").unwrap();
+        assert_eq!(args.subcommand, Some("stats".to_string()));
+    }
+
+    #[test]
+    fn test_parse_beads_command_alias() {
+        // Both /bead and /beads should work
+        assert!(parse_beads_command("/bead").is_some());
+        assert!(parse_beads_command("/beads").is_some());
+    }
+
+    #[test]
+    fn test_parse_beads_command_invalid() {
+        assert!(parse_beads_command("/beadwork").is_none());
+        assert!(parse_beads_command("beads").is_none());
+    }
+
+    #[test]
+    fn test_parse_beads_command_unknown_treated_as_show() {
+        let args = parse_beads_command("/beads bd-12345678").unwrap();
+        assert_eq!(args.subcommand, Some("show".to_string()));
+        assert_eq!(args.id, Some("bd-12345678".to_string()));
+    }
+
+    // ==================== Bead Status Parser Tests ====================
+
+    #[test]
+    fn test_parse_bead_status_simple() {
+        assert!(matches!(
+            parse_bead_status("pending"),
+            Some(BeadStatus::Pending)
+        ));
+        assert!(matches!(
+            parse_bead_status("ready"),
+            Some(BeadStatus::Ready)
+        ));
+        assert!(matches!(
+            parse_bead_status("in-progress"),
+            Some(BeadStatus::InProgress)
+        ));
+        assert!(matches!(
+            parse_bead_status("wip"),
+            Some(BeadStatus::InProgress)
+        ));
+        assert!(matches!(parse_bead_status("done"), Some(BeadStatus::Done)));
+        assert!(matches!(
+            parse_bead_status("complete"),
+            Some(BeadStatus::Done)
+        ));
+    }
+
+    #[test]
+    fn test_parse_bead_status_blocked() {
+        let status = parse_bead_status("blocked:waiting for api").unwrap();
+        if let BeadStatus::Blocked { reason } = status {
+            assert_eq!(reason, "waiting for api");
+        } else {
+            panic!("Expected Blocked status");
+        }
+
+        // Simple blocked without reason
+        let status = parse_bead_status("blocked").unwrap();
+        if let BeadStatus::Blocked { reason } = status {
+            assert_eq!(reason, "No reason provided");
+        } else {
+            panic!("Expected Blocked status");
+        }
+    }
+
+    #[test]
+    fn test_parse_bead_status_cancelled() {
+        let status = parse_bead_status("cancelled:no longer needed").unwrap();
+        if let BeadStatus::Cancelled { reason } = status {
+            assert_eq!(reason, "no longer needed");
+        } else {
+            panic!("Expected Cancelled status");
+        }
+
+        // American spelling
+        let status = parse_bead_status("canceled").unwrap();
+        assert!(matches!(status, BeadStatus::Cancelled { .. }));
+    }
+
+    #[test]
+    fn test_parse_bead_status_invalid() {
+        assert!(parse_bead_status("unknown").is_none());
+        assert!(parse_bead_status("").is_none());
+        assert!(parse_bead_status("xyz").is_none());
+    }
+
+    #[test]
+    fn test_parse_bead_status_case_insensitive() {
+        assert!(matches!(
+            parse_bead_status("PENDING"),
+            Some(BeadStatus::Pending)
+        ));
+        assert!(matches!(parse_bead_status("Done"), Some(BeadStatus::Done)));
+        assert!(matches!(
+            parse_bead_status("IN-PROGRESS"),
+            Some(BeadStatus::InProgress)
+        ));
     }
 }

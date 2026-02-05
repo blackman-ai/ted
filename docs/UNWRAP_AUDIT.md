@@ -77,7 +77,7 @@ Production code primarily uses safe patterns like `unwrap_or()` with fallbacks.
 | src/context/mod.rs | 55 | ✅ Analyzed | 0 unwraps in production |
 | src/commands/mod.rs | 54 | ✅ Analyzed | 2 safe unwrap_or patterns |
 | src/beads/storage.rs | 54 | ✅ Complete | Safe patterns only |
-| src/update.rs | 52 | Pending | Needs analysis |
+| src/update.rs | 52 | ✅ Analyzed | 0 unsafe unwraps (tests only) |
 | src/mcp/protocol.rs | 52 | Pending | Needs analysis |
 | src/history/store.rs | 47 | Pending | Needs analysis |
 | src/context/filetree.rs | 46 | Pending | Needs analysis |

@@ -87,6 +87,10 @@ impl<'a> Widget for MessageWidget<'a> {
 
         if self.message.role == MessageRole::Assistant && !self.message.active_caps.is_empty() {
             for cap in &self.message.active_caps {
+                // Skip "base" cap - it's always applied silently and shouldn't be shown
+                if cap == "base" {
+                    continue;
+                }
                 header_line.push(Span::raw(" "));
                 header_line.push(Span::styled(
                     format!(" {} ", cap),

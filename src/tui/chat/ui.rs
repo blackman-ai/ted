@@ -113,8 +113,15 @@ fn calculate_layout(area: Rect, app: &ChatApp) -> Layout {
 
 fn render_title_bar(frame: &mut Frame, app: &ChatApp, area: Rect) {
     let session_id = app.session_id.to_string();
+    // Filter out "base" cap - it's always applied silently and shouldn't be shown
+    let visible_caps: Vec<String> = app
+        .caps
+        .iter()
+        .filter(|c| c.as_str() != "base")
+        .cloned()
+        .collect();
     let bar = StatusBar::new("ted", &app.provider_name, &app.model, &session_id)
-        .caps(&app.caps)
+        .caps(&visible_caps)
         .status(app.status_message.as_deref(), app.status_is_error)
         .processing(app.is_processing);
 

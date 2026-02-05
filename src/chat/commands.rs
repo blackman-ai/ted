@@ -59,6 +59,26 @@ pub struct ExplainArgs {
     pub verbosity: Option<String>,
 }
 
+/// Arguments for /skills command
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SkillsArgs {
+    /// Subcommand: None (list), "list", "show", "create"
+    pub subcommand: Option<String>,
+    /// Skill name for show/create
+    pub name: Option<String>,
+}
+
+/// Arguments for /beads command
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BeadsArgs {
+    /// Subcommand: None (list), "list", "add", "show", "status", "stats"
+    pub subcommand: Option<String>,
+    /// Bead ID for show/status commands
+    pub id: Option<String>,
+    /// Title for add command or status value for status command
+    pub value: Option<String>,
+}
+
 /// Represents the different types of commands that can be issued in chat
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatCommand {
@@ -120,6 +140,12 @@ pub enum ChatCommand {
     Fix(FixArgs),
     /// Explain code or file
     Explain(ExplainArgs),
+
+    // === Skills & Beads Commands ===
+    /// Manage skills (list, show, create)
+    Skills(SkillsArgs),
+    /// Manage beads for task tracking
+    Beads(BeadsArgs),
 }
 
 /// Parse user input into a ChatCommand
@@ -245,6 +271,12 @@ pub fn parse_command(input: &str) -> ChatCommand {
     if let Some(args) = input_parser::parse_explain_command(trimmed) {
         return ChatCommand::Explain(args);
     }
+    if let Some(args) = input_parser::parse_skills_command(trimmed) {
+        return ChatCommand::Skills(args);
+    }
+    if let Some(args) = input_parser::parse_beads_command(trimmed) {
+        return ChatCommand::Beads(args);
+    }
 
     // Check for unknown slash command
     if input_parser::is_slash_command(trimmed) {
@@ -328,6 +360,16 @@ Development Commands:
   /review [target] [--focus X] - Review changes or PR
   /fix [lint|types|all]        - Fix linting/type errors
   /explain [file] [--brief]    - Explain code
+
+Skills & Beads:
+  /skills              - List available skills
+  /skills show <name>  - Display skill content
+  /skills create <name> - Create a new skill (interactive)
+  /beads               - List all beads (task tracking)
+  /beads add <title>   - Create a new bead
+  /beads show <id>     - Show bead details
+  /beads status <id> <status> - Update bead status
+  /beads stats         - Show bead statistics
 
 Model & Capabilities:
   /model      - Show current and available models

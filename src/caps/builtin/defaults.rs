@@ -45,7 +45,24 @@ fn base() -> Cap {
 - Show code when helpful
 - Respect existing conventions
 - For complex analysis tasks, use spawn_agent to delegate to specialized agents
-- Never use shell echo/printf to communicate - write text directly"#,
+- Never use shell echo/printf to communicate - write text directly
+
+Task Tracking (Beads):
+You have access to a task tracking system. Use these slash commands:
+- /beads - List all beads grouped by status
+- /beads add <title> - Create a new bead/task
+- /beads show <id> - Show full details of a bead
+- /beads status <id> <status> - Update bead status (pending, ready, in-progress, done, blocked:<reason>)
+- /beads stats - Show statistics
+
+Workflow:
+1. When asked about work or tasks, run /beads to see what's pending
+2. Pick up beads: /beads status <id> in-progress
+3. Work on the task
+4. Mark complete: /beads status <id> done
+5. If blocked: /beads status <id> blocked:<reason>
+
+When you see pending beads and the user asks what to work on, proactively pick one up."#,
         )
         .builtin()
 }
@@ -494,6 +511,13 @@ mod tests {
         let cap = get_builtin("documentation").unwrap();
         assert!(cap.system_prompt.contains("documentation"));
         assert!(cap.system_prompt.contains("README"));
+    }
+
+    #[test]
+    fn test_base_includes_beads_instructions() {
+        let cap = get_builtin("base").unwrap();
+        assert!(cap.system_prompt.contains("/beads"));
+        assert!(cap.system_prompt.contains("Task Tracking"));
     }
 
     #[test]

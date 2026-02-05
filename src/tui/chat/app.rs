@@ -112,7 +112,8 @@ impl ChatApp {
             session_id: config.session_id,
             provider_name: config.provider_name,
             model: config.model,
-            caps: config.caps,
+            // Filter out "base" from display - it's always applied silently
+            caps: config.caps.into_iter().filter(|c| c != "base").collect(),
             trust_mode: config.trust_mode,
             stream_enabled: config.stream_enabled,
 

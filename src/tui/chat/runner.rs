@@ -21,11 +21,12 @@ use ratatui::prelude::*;
 
 use crate::caps::available_caps;
 use crate::chat::input_parser::{
-    parse_commit_command, parse_explain_command, parse_fix_command, parse_review_command,
-    parse_test_command,
+    parse_beads_command, parse_commit_command, parse_explain_command, parse_fix_command,
+    parse_review_command, parse_skills_command, parse_test_command,
 };
 use crate::chat::slash_commands::{
-    execute_commit, execute_explain, execute_fix, execute_review, execute_test, SlashCommandResult,
+    execute_beads, execute_commit, execute_explain, execute_fix, execute_review, execute_skills,
+    execute_test, SlashCommandResult,
 };
 use crate::config::Settings;
 use crate::context::ContextManager;
@@ -36,6 +37,7 @@ use crate::llm::provider::{
     CompletionRequest, ContentBlockDelta, ContentBlockResponse, LlmProvider, StopReason,
     StreamEvent, ToolChoice,
 };
+use crate::skills::SkillRegistry;
 use crate::tools::builtin::ProgressTracker;
 use crate::tools::ToolExecutor;
 
@@ -784,7 +786,7 @@ pub async fn run_chat_tui_loop(
 
                         // Check for commands (always process immediately)
                         if input_text.trim().starts_with('/') {
-                            handle_command(&input_text, &mut state)?;
+                            handle_command(&input_text, &mut state, Some(&mut conversation))?;
 
                             // Check if the command queued an LLM message (e.g., /explain, /commit)
                             // If so, process it immediately instead of waiting
@@ -1168,8 +1170,11 @@ fn draw_title_bar(frame: &mut Frame, state: &TuiState, area: ratatui::layout::Re
         Style::default().fg(Color::White).bg(Color::DarkGray),
     )];
 
-    // Add caps badges
+    // Add caps badges (filter out "base" - it's always applied silently)
     for cap in &state.config.caps {
+        if cap == "base" {
+            continue;
+        }
         title_spans.push(ratatui::text::Span::styled(
             format!(" {} ", cap),
             Style::default().fg(Color::White).bg(Color::Blue),
@@ -1916,7 +1921,14 @@ fn handle_settings_key(state: &mut TuiState, key: crossterm::event::KeyEvent) ->
 }
 
 /// Handle slash commands
-fn handle_command(input: &str, state: &mut TuiState) -> Result<()> {
+///
+/// `conversation` is optional - when provided, informational command outputs (like /beads)
+/// will be added to the conversation so the LLM can see and act on them.
+fn handle_command(
+    input: &str,
+    state: &mut TuiState,
+    mut conversation: Option<&mut Conversation>,
+) -> Result<()> {
     let trimmed = input.trim();
     let lower = trimmed.to_lowercase();
 
@@ -2126,6 +2138,70 @@ fn handle_command(input: &str, state: &mut TuiState) -> Result<()> {
                 state.set_error("Failed to parse /explain command");
             }
         }
+        cmd if cmd.starts_with("/skill") => {
+            if let Some(args) = parse_skills_command(trimmed) {
+                // Create a skill registry and scan for skills
+                let mut registry = SkillRegistry::new();
+                if let Err(e) = registry.scan() {
+                    state.set_error(&format!("Failed to scan skills: {}", e));
+                    return Ok(());
+                }
+                match execute_skills(&args, &registry) {
+                    SlashCommandResult::SendToLlm(msg) => {
+                        state.pending_messages.push(msg);
+                        state.set_status("Processing /skills...");
+                    }
+                    SlashCommandResult::Message(msg) => {
+                        state.messages.push(DisplayMessage::system(msg));
+                        state.auto_scroll();
+                    }
+                    SlashCommandResult::Error(e) => {
+                        state.set_error(&e);
+                    }
+                    SlashCommandResult::SpawnAgent { task, .. } => {
+                        state.pending_messages.push(task);
+                        state.set_status("Processing...");
+                    }
+                }
+            } else {
+                state.set_error("Failed to parse /skills command");
+            }
+        }
+        cmd if cmd.starts_with("/bead") => {
+            if let Some(args) = parse_beads_command(trimmed) {
+                let working_dir = std::env::current_dir().unwrap_or_default();
+                match execute_beads(&args, &working_dir) {
+                    SlashCommandResult::SendToLlm(msg) => {
+                        state.pending_messages.push(msg);
+                        state.set_status("Processing /beads...");
+                    }
+                    SlashCommandResult::Message(msg) => {
+                        // Display in UI as system message
+                        state.messages.push(DisplayMessage::system(msg.clone()));
+                        state.auto_scroll();
+
+                        // Also add to conversation so LLM can see and act on pending beads
+                        // This allows the assistant to proactively work on tasks
+                        if let Some(conv) = conversation.as_deref_mut() {
+                            let context_msg = format!(
+                                "[System: User ran /beads command. Current task status:]\n{}",
+                                msg
+                            );
+                            conv.push(Message::user(&context_msg));
+                        }
+                    }
+                    SlashCommandResult::Error(e) => {
+                        state.set_error(&e);
+                    }
+                    SlashCommandResult::SpawnAgent { task, .. } => {
+                        state.pending_messages.push(task);
+                        state.set_status("Processing...");
+                    }
+                }
+            } else {
+                state.set_error("Failed to parse /beads command");
+            }
+        }
         _ => {
             state.set_error(&format!("Unknown command: {}. Try /help", trimmed));
         }
@@ -2215,7 +2291,7 @@ async fn process_llm_response(
                                 let input_text = state.input.submit();
                                 // Handle commands immediately, queue regular messages
                                 if input_text.trim().starts_with('/') {
-                                    let _ = handle_command(&input_text, state);
+                                    let _ = handle_command(&input_text, state, None);
                                 } else {
                                     state.pending_messages.push(input_text);
                                     state.set_status(&format!(
@@ -2446,7 +2522,7 @@ async fn process_llm_response(
                                             let input_text = state.input.submit();
                                             // Handle commands immediately, queue regular messages
                                             if input_text.trim().starts_with('/') {
-                                                let _ = handle_command(&input_text, state);
+                                                let _ = handle_command(&input_text, state, None);
                                             } else {
                                                 state.pending_messages.push(input_text);
                                                 state.set_status(&format!("Message queued ({} pending)", state.pending_messages.len()));
@@ -3188,7 +3264,7 @@ mod tests {
     #[test]
     fn test_handle_command_help() {
         let mut state = create_test_tui_state();
-        handle_command("/help", &mut state).unwrap();
+        handle_command("/help", &mut state, None).unwrap();
         assert_eq!(state.mode, ChatMode::Help);
     }
 
@@ -3202,7 +3278,7 @@ mod tests {
             .messages
             .push(DisplayMessage::assistant("response".to_string(), vec![]));
 
-        handle_command("/clear", &mut state).unwrap();
+        handle_command("/clear", &mut state, None).unwrap();
         assert!(state.messages.is_empty());
         assert_eq!(state.status_message, Some("Chat cleared".to_string()));
     }
@@ -3212,17 +3288,17 @@ mod tests {
         let mut state = create_test_tui_state();
         assert!(state.agent_pane_visible);
 
-        handle_command("/agents", &mut state).unwrap();
+        handle_command("/agents", &mut state, None).unwrap();
         assert!(!state.agent_pane_visible);
 
-        handle_command("/agents", &mut state).unwrap();
+        handle_command("/agents", &mut state, None).unwrap();
         assert!(state.agent_pane_visible);
     }
 
     #[test]
     fn test_handle_command_model_with_arg() {
         let mut state = create_test_tui_state();
-        handle_command("/model claude-opus-4-5-20250514", &mut state).unwrap();
+        handle_command("/model claude-opus-4-5-20250514", &mut state, None).unwrap();
         assert_eq!(state.current_model, "claude-opus-4-5-20250514");
         assert!(state
             .status_message
@@ -3235,7 +3311,7 @@ mod tests {
     fn test_handle_command_model_with_space_only() {
         let mut state = create_test_tui_state();
         // "/model " gets trimmed to "/model" which shows info
-        handle_command("/model ", &mut state).unwrap();
+        handle_command("/model ", &mut state, None).unwrap();
         // Should add a system message showing model info
         assert!(!state.messages.is_empty());
     }
@@ -3243,7 +3319,7 @@ mod tests {
     #[test]
     fn test_handle_command_model_no_arg() {
         let mut state = create_test_tui_state();
-        handle_command("/model", &mut state).unwrap();
+        handle_command("/model", &mut state, None).unwrap();
         // Should show info message in messages list
         assert!(!state.messages.is_empty());
     }
@@ -3251,14 +3327,14 @@ mod tests {
     #[test]
     fn test_handle_command_settings() {
         let mut state = create_test_tui_state();
-        handle_command("/settings", &mut state).unwrap();
+        handle_command("/settings", &mut state, None).unwrap();
         assert_eq!(state.mode, ChatMode::Settings);
     }
 
     #[test]
     fn test_handle_command_caps() {
         let mut state = create_test_tui_state();
-        handle_command("/caps", &mut state).unwrap();
+        handle_command("/caps", &mut state, None).unwrap();
         assert_eq!(state.mode, ChatMode::Settings);
         // Should open on Capabilities tab
         if let Some(ref settings) = state.settings_state {
@@ -3277,12 +3353,12 @@ mod tests {
         state.enabled_caps = vec!["base".to_string()];
 
         // Enable rust-expert
-        handle_command("/cap rust-expert", &mut state).unwrap();
+        handle_command("/cap rust-expert", &mut state, None).unwrap();
         assert!(state.enabled_caps.contains(&"rust-expert".to_string()));
         assert!(state.status_message.as_ref().unwrap().contains("Enabled"));
 
         // Disable rust-expert
-        handle_command("/cap rust-expert", &mut state).unwrap();
+        handle_command("/cap rust-expert", &mut state, None).unwrap();
         assert!(!state.enabled_caps.contains(&"rust-expert".to_string()));
         assert!(state.status_message.as_ref().unwrap().contains("Disabled"));
     }
@@ -3292,7 +3368,7 @@ mod tests {
         let mut state = create_test_tui_state();
         state.available_caps = vec![("base".to_string(), true)];
 
-        handle_command("/cap unknown-cap", &mut state).unwrap();
+        handle_command("/cap unknown-cap", &mut state, None).unwrap();
         assert!(state.status_is_error);
         assert!(state
             .status_message
@@ -3305,7 +3381,7 @@ mod tests {
     fn test_handle_command_cap_with_space_only() {
         let mut state = create_test_tui_state();
         // "/cap " gets trimmed to "/cap" which falls through to unknown command
-        handle_command("/cap ", &mut state).unwrap();
+        handle_command("/cap ", &mut state, None).unwrap();
         assert!(state.status_is_error);
         assert!(state
             .status_message
@@ -3317,7 +3393,7 @@ mod tests {
     #[test]
     fn test_handle_command_unknown() {
         let mut state = create_test_tui_state();
-        handle_command("/unknown-command", &mut state).unwrap();
+        handle_command("/unknown-command", &mut state, None).unwrap();
         assert!(state.status_is_error);
         assert!(state
             .status_message
@@ -3329,11 +3405,11 @@ mod tests {
     #[test]
     fn test_handle_command_case_insensitive() {
         let mut state = create_test_tui_state();
-        handle_command("/HELP", &mut state).unwrap();
+        handle_command("/HELP", &mut state, None).unwrap();
         assert_eq!(state.mode, ChatMode::Help);
 
         state.mode = ChatMode::Input;
-        handle_command("/Help", &mut state).unwrap();
+        handle_command("/Help", &mut state, None).unwrap();
         assert_eq!(state.mode, ChatMode::Help);
     }
 

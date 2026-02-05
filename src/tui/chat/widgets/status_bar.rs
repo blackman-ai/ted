@@ -98,8 +98,12 @@ impl<'a> Widget for StatusBar<'a> {
         );
         x += session_short.len() as u16 + 2;
 
-        // Caps badges
+        // Caps badges (filter out "base" - it's always applied silently)
         for cap in self.caps {
+            // Skip "base" cap - it's always applied silently
+            if cap == "base" {
+                continue;
+            }
             if x + cap.len() as u16 + 4 > area.x + area.width {
                 break;
             }
