@@ -282,7 +282,10 @@ impl DownloadRegistry {
         let contents = std::fs::read_to_string(&cache_path).ok()?;
         match serde_json::from_str(&contents) {
             Ok(registry) => {
-                tracing::debug!("Loaded registry from cache ({:.0}h old)", age.as_secs() / 3600);
+                tracing::debug!(
+                    "Loaded registry from cache ({:.0}h old)",
+                    age.as_secs() / 3600
+                );
                 Some(registry)
             }
             Err(e) => {
@@ -298,8 +301,9 @@ impl DownloadRegistry {
 
         // Create parent directory if needed
         if let Some(parent) = cache_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| TedError::Config(format!("Failed to create cache directory: {}", e)))?;
+            std::fs::create_dir_all(parent).map_err(|e| {
+                TedError::Config(format!("Failed to create cache directory: {}", e))
+            })?;
         }
 
         // Write to cache
@@ -648,7 +652,10 @@ mod tests {
         let registry = DownloadRegistry::embedded().unwrap();
 
         // Should find models that exist
-        let found = registry.models.iter().any(|m| m.category == ModelCategory::Code);
+        let found = registry
+            .models
+            .iter()
+            .any(|m| m.category == ModelCategory::Code);
         assert!(found, "Should have at least one code model");
     }
 

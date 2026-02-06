@@ -623,18 +623,20 @@ pub fn parse_model_command(input: &str) -> Option<ModelArgs> {
     }
 
     // Determine which command it is and validate
-    let prefix_len = if lower.starts_with("/models") {
+    let prefix_len = if let Some(rest) = lower.strip_prefix("/models") {
         // Must be exactly /models or /models followed by space
-        if lower.len() > 7 && !lower[7..].starts_with(' ') {
+        if !rest.is_empty() && !rest.starts_with(' ') {
             return None; // Invalid: /modelssomething
         }
         7
-    } else {
+    } else if let Some(rest) = lower.strip_prefix("/model") {
         // Must be exactly /model or /model followed by space
-        if lower.len() > 6 && !lower[6..].starts_with(' ') {
+        if !rest.is_empty() && !rest.starts_with(' ') {
             return None; // Invalid: /modelsomething (when not /models)
         }
         6
+    } else {
+        return None;
     };
 
     let args_str = trimmed.get(prefix_len..).unwrap_or("").trim();
@@ -1696,8 +1698,7 @@ mod tests {
         assert_eq!(args.name, Some("qwen3-coder-30b".to_string()));
         assert_eq!(args.quantization, Some("q4_k_m".to_string()));
 
-        let args =
-            parse_model_command("/model download llama3 --quantization Q5_K_M").unwrap();
+        let args = parse_model_command("/model download llama3 --quantization Q5_K_M").unwrap();
         assert_eq!(args.quantization, Some("Q5_K_M".to_string()));
     }
 
@@ -1720,10 +1721,7 @@ mod tests {
         // Model name without subcommand = switch
         let args = parse_model_command("/model claude-3-5-sonnet-20241022").unwrap();
         assert_eq!(args.subcommand, Some("switch".to_string()));
-        assert_eq!(
-            args.name,
-            Some("claude-3-5-sonnet-20241022".to_string())
-        );
+        assert_eq!(args.name, Some("claude-3-5-sonnet-20241022".to_string()));
     }
 
     #[test]

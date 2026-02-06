@@ -149,7 +149,9 @@ impl ProviderFactory {
             "ollama" => settings.providers.ollama.default_model.clone(),
             "openrouter" => settings.providers.openrouter.default_model.clone(),
             "blackman" => settings.providers.blackman.default_model.clone(),
-            "llama-cpp" | "llamacpp" | "local" => settings.providers.llama_cpp.default_model.clone(),
+            "llama-cpp" | "llamacpp" | "local" => {
+                settings.providers.llama_cpp.default_model.clone()
+            }
             _ => settings.providers.anthropic.default_model.clone(),
         }
     }

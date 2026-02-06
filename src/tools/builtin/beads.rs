@@ -42,7 +42,12 @@ impl Tool for BeadsAddTool {
                     "Priority level: low, medium (default), high, or critical",
                     false,
                 )
-                .array("tags", "Tags for categorization (e.g., 'feature', 'bug', 'refactor')", "string", false)
+                .array(
+                    "tags",
+                    "Tags for categorization (e.g., 'feature', 'bug', 'refactor')",
+                    "string",
+                    false,
+                )
                 .array(
                     "depends_on",
                     "IDs of beads that must be completed before this one (e.g., ['bd-abc123'])",
@@ -64,9 +69,7 @@ impl Tool for BeadsAddTool {
             .as_str()
             .or_else(|| input["name"].as_str())
             .or_else(|| input["task"].as_str())
-            .ok_or_else(|| {
-                crate::error::TedError::InvalidInput("title is required".to_string())
-            })?;
+            .ok_or_else(|| crate::error::TedError::InvalidInput("title is required".to_string()))?;
 
         // Extract optional fields
         let description = input["description"]
@@ -101,7 +104,10 @@ impl Tool for BeadsAddTool {
             .unwrap_or_default();
 
         // Get project root for bead storage
-        let project_root = context.project_root.as_ref().unwrap_or(&context.working_directory);
+        let project_root = context
+            .project_root
+            .as_ref()
+            .unwrap_or(&context.working_directory);
         let beads_dir = project_root.join(".beads");
 
         // Initialize bead store
@@ -195,7 +201,10 @@ impl Tool for BeadsListTool {
         input: Value,
         context: &ToolContext,
     ) -> Result<ToolResult> {
-        let project_root = context.project_root.as_ref().unwrap_or(&context.working_directory);
+        let project_root = context
+            .project_root
+            .as_ref()
+            .unwrap_or(&context.working_directory);
         let beads_dir = project_root.join(".beads");
 
         let store = match BeadStore::new(beads_dir) {
@@ -221,8 +230,13 @@ impl Tool for BeadsListTool {
         if beads.is_empty() {
             return Ok(ToolResult::success(
                 tool_use_id,
-                format!("No beads found{}",
-                    if status_filter != "all" { format!(" with status '{}'", status_filter) } else { String::new() }
+                format!(
+                    "No beads found{}",
+                    if status_filter != "all" {
+                        format!(" with status '{}'", status_filter)
+                    } else {
+                        String::new()
+                    }
                 ),
             ));
         }
@@ -304,19 +318,18 @@ impl Tool for BeadsStatusTool {
         let id_str = input["id"]
             .as_str()
             .or_else(|| input["bead_id"].as_str())
-            .ok_or_else(|| {
-                crate::error::TedError::InvalidInput("id is required".to_string())
-            })?;
+            .ok_or_else(|| crate::error::TedError::InvalidInput("id is required".to_string()))?;
 
-        let new_status = input["status"]
-            .as_str()
-            .ok_or_else(|| {
-                crate::error::TedError::InvalidInput("status is required".to_string())
-            })?;
+        let new_status = input["status"].as_str().ok_or_else(|| {
+            crate::error::TedError::InvalidInput("status is required".to_string())
+        })?;
 
         let reason = input["reason"].as_str().unwrap_or("").to_string();
 
-        let project_root = context.project_root.as_ref().unwrap_or(&context.working_directory);
+        let project_root = context
+            .project_root
+            .as_ref()
+            .unwrap_or(&context.working_directory);
         let beads_dir = project_root.join(".beads");
 
         let store = match BeadStore::new(beads_dir) {
@@ -344,7 +357,9 @@ impl Tool for BeadsStatusTool {
                         "reason is required when setting status to blocked".to_string(),
                     ));
                 }
-                crate::beads::schema::BeadStatus::Blocked { reason: reason.clone() }
+                crate::beads::schema::BeadStatus::Blocked {
+                    reason: reason.clone(),
+                }
             }
             "cancelled" | "canceled" => {
                 if reason.is_empty() {
@@ -353,7 +368,9 @@ impl Tool for BeadsStatusTool {
                         "reason is required when setting status to cancelled".to_string(),
                     ));
                 }
-                crate::beads::schema::BeadStatus::Cancelled { reason: reason.clone() }
+                crate::beads::schema::BeadStatus::Cancelled {
+                    reason: reason.clone(),
+                }
             }
             _ => {
                 return Ok(ToolResult::error(
@@ -500,11 +517,7 @@ mod tests {
         let context = create_test_context(&temp_dir);
 
         let result = tool
-            .execute(
-                "test-id".to_string(),
-                serde_json::json!({}),
-                &context,
-            )
+            .execute("test-id".to_string(), serde_json::json!({}), &context)
             .await
             .unwrap();
 

@@ -888,8 +888,10 @@ mod tests {
     fn test_parse_command_model_preserves_case() {
         // Model names should preserve their case
         if let ChatCommand::Model(args) = parse_command("/model Claude-3-5-Sonnet") {
-            assert!(args.name == Some("Claude-3-5-Sonnet".to_string()) ||
-                    args.subcommand == Some("Claude-3-5-Sonnet".to_string()));
+            assert!(
+                args.name == Some("Claude-3-5-Sonnet".to_string())
+                    || args.subcommand == Some("Claude-3-5-Sonnet".to_string())
+            );
         } else {
             panic!("Expected Model command");
         }

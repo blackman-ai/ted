@@ -683,22 +683,40 @@ fn execute_model_list() -> SlashCommandResult {
     // Use embedded registry for synchronous operation
     let registry = match DownloadRegistry::embedded() {
         Ok(r) => r,
-        Err(e) => return SlashCommandResult::Error(format!("Failed to load model registry: {}", e)),
+        Err(e) => {
+            return SlashCommandResult::Error(format!("Failed to load model registry: {}", e))
+        }
     };
 
     let mut output = String::from("Available Local Models\n");
     output.push_str("───────────────────────────────────────\n\n");
 
     // Group by category
-    let code_models: Vec<_> = registry.models.iter().filter(|m| m.category == ModelCategory::Code).collect();
-    let chat_models: Vec<_> = registry.models.iter().filter(|m| m.category == ModelCategory::Chat).collect();
+    let code_models: Vec<_> = registry
+        .models
+        .iter()
+        .filter(|m| m.category == ModelCategory::Code)
+        .collect();
+    let chat_models: Vec<_> = registry
+        .models
+        .iter()
+        .filter(|m| m.category == ModelCategory::Chat)
+        .collect();
 
     if !code_models.is_empty() {
         output.push_str("[Code Models]\n");
         for model in code_models {
-            let recommended = if model.tags.contains(&"recommended".to_string()) { " ★" } else { "" };
+            let recommended = if model.tags.contains(&"recommended".to_string()) {
+                " ★"
+            } else {
+                ""
+            };
             output.push_str(&format!("  {} - {}{}\n", model.id, model.name, recommended));
-            output.push_str(&format!("    Parameters: {} | Context: {}K\n", model.parameters, model.context_size / 1024));
+            output.push_str(&format!(
+                "    Parameters: {} | Context: {}K\n",
+                model.parameters,
+                model.context_size / 1024
+            ));
         }
         output.push('\n');
     }
@@ -706,9 +724,17 @@ fn execute_model_list() -> SlashCommandResult {
     if !chat_models.is_empty() {
         output.push_str("[Chat Models]\n");
         for model in chat_models {
-            let recommended = if model.tags.contains(&"recommended".to_string()) { " ★" } else { "" };
+            let recommended = if model.tags.contains(&"recommended".to_string()) {
+                " ★"
+            } else {
+                ""
+            };
             output.push_str(&format!("  {} - {}{}\n", model.id, model.name, recommended));
-            output.push_str(&format!("    Parameters: {} | Context: {}K\n", model.parameters, model.context_size / 1024));
+            output.push_str(&format!(
+                "    Parameters: {} | Context: {}K\n",
+                model.parameters,
+                model.context_size / 1024
+            ));
         }
         output.push('\n');
     }
@@ -756,12 +782,16 @@ fn execute_model_info(name: &str) -> SlashCommandResult {
     // Use embedded registry for synchronous operation
     let registry = match DownloadRegistry::embedded() {
         Ok(r) => r,
-        Err(e) => return SlashCommandResult::Error(format!("Failed to load model registry: {}", e)),
+        Err(e) => {
+            return SlashCommandResult::Error(format!("Failed to load model registry: {}", e))
+        }
     };
 
     // Find model by ID (case-insensitive, partial match)
     let name_lower = name.to_lowercase();
-    let model = registry.models.iter()
+    let model = registry
+        .models
+        .iter()
         .find(|m| m.id.to_lowercase() == name_lower || m.id.to_lowercase().contains(&name_lower));
 
     match model {
@@ -792,14 +822,22 @@ fn execute_model_info(name: &str) -> SlashCommandResult {
                 ));
             }
 
-            output.push_str(&format!("\nDownload: /model download {} [-q QUANT]\n", m.id));
+            output.push_str(&format!(
+                "\nDownload: /model download {} [-q QUANT]\n",
+                m.id
+            ));
 
             SlashCommandResult::Message(output)
         }
         None => {
             // Try to find similar models
-            let similar: Vec<_> = registry.models.iter()
-                .filter(|m| m.id.to_lowercase().contains(&name_lower) || m.name.to_lowercase().contains(&name_lower))
+            let similar: Vec<_> = registry
+                .models
+                .iter()
+                .filter(|m| {
+                    m.id.to_lowercase().contains(&name_lower)
+                        || m.name.to_lowercase().contains(&name_lower)
+                })
                 .take(5)
                 .collect();
 

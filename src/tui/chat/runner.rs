@@ -1972,7 +1972,7 @@ fn handle_settings_key(state: &mut TuiState, key: crossterm::event::KeyEvent) ->
 fn handle_command(
     input: &str,
     state: &mut TuiState,
-    mut conversation: Option<&mut Conversation>,
+    conversation: Option<&mut Conversation>,
 ) -> Result<()> {
     let trimmed = input.trim();
     let lower = trimmed.to_lowercase();
@@ -2236,7 +2236,7 @@ fn handle_command(
 
                         // Also add to conversation so LLM can see and act on pending beads
                         // This allows the assistant to proactively work on tasks
-                        if let Some(conv) = conversation.as_deref_mut() {
+                        if let Some(conv) = conversation {
                             let context_msg = format!(
                                 "[System: User ran /beads command. Current task status:]\n{}",
                                 msg
