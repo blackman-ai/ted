@@ -13,9 +13,10 @@ use crate::beads::{init_beads, Bead, BeadId, BeadStatus, BeadStore};
 use crate::skills::SkillRegistry;
 
 use super::commands::{
-    BeadsArgs, CommitArgs, ExplainArgs, FixArgs, ReviewArgs, SkillsArgs, TestArgs,
+    BeadsArgs, CommitArgs, ExplainArgs, FixArgs, ModelArgs, ReviewArgs, SkillsArgs, TestArgs,
 };
 use super::input_parser::parse_bead_status;
+use crate::models::{DownloadRegistry, ModelCategory};
 
 /// Result of executing a slash command
 #[derive(Debug, Clone)]
@@ -646,6 +647,188 @@ fn execute_beads_stats(store: &BeadStore) -> SlashCommandResult {
     }
 
     SlashCommandResult::Message(output)
+}
+
+// === Model Command Execution ===
+
+/// Execute /model command
+pub fn execute_model(args: &ModelArgs) -> SlashCommandResult {
+    match args.subcommand.as_deref() {
+        None | Some("list") => execute_model_list(),
+        Some("download") => match &args.name {
+            Some(name) => execute_model_download(name, args.quantization.as_deref()),
+            None => SlashCommandResult::Error("Usage: /model download <name> [-q QUANT]".to_string()),
+        },
+        Some("load") => match &args.name {
+            Some(name) => execute_model_load(name),
+            None => SlashCommandResult::Error("Usage: /model load <name>".to_string()),
+        },
+        Some("info") => match &args.name {
+            Some(name) => execute_model_info(name),
+            None => SlashCommandResult::Error("Usage: /model info <name>".to_string()),
+        },
+        Some("switch") => match &args.name {
+            Some(name) => execute_model_switch(name),
+            None => SlashCommandResult::Error("Usage: /model <model-name>".to_string()),
+        },
+        Some(cmd) => SlashCommandResult::Error(format!(
+            "Unknown model subcommand: {}. Use: list, download <name>, load <name>, info <name>, or <model-name> to switch",
+            cmd
+        )),
+    }
+}
+
+/// List available models from registry
+fn execute_model_list() -> SlashCommandResult {
+    // Use embedded registry for synchronous operation
+    let registry = match DownloadRegistry::embedded() {
+        Ok(r) => r,
+        Err(e) => return SlashCommandResult::Error(format!("Failed to load model registry: {}", e)),
+    };
+
+    let mut output = String::from("Available Local Models\n");
+    output.push_str("───────────────────────────────────────\n\n");
+
+    // Group by category
+    let code_models: Vec<_> = registry.models.iter().filter(|m| m.category == ModelCategory::Code).collect();
+    let chat_models: Vec<_> = registry.models.iter().filter(|m| m.category == ModelCategory::Chat).collect();
+
+    if !code_models.is_empty() {
+        output.push_str("[Code Models]\n");
+        for model in code_models {
+            let recommended = if model.tags.contains(&"recommended".to_string()) { " ★" } else { "" };
+            output.push_str(&format!("  {} - {}{}\n", model.id, model.name, recommended));
+            output.push_str(&format!("    Parameters: {} | Context: {}K\n", model.parameters, model.context_size / 1024));
+        }
+        output.push('\n');
+    }
+
+    if !chat_models.is_empty() {
+        output.push_str("[Chat Models]\n");
+        for model in chat_models {
+            let recommended = if model.tags.contains(&"recommended".to_string()) { " ★" } else { "" };
+            output.push_str(&format!("  {} - {}{}\n", model.id, model.name, recommended));
+            output.push_str(&format!("    Parameters: {} | Context: {}K\n", model.parameters, model.context_size / 1024));
+        }
+        output.push('\n');
+    }
+
+    output.push_str("───────────────────────────────────────\n");
+    output.push_str(&format!("{} models available\n", registry.models.len()));
+    output.push_str("\nCommands:\n");
+    output.push_str("  /model info <name>     - Show model details and variants\n");
+    output.push_str("  /model download <name> - Download a model\n");
+    output.push_str("  /model load <name>     - Load a downloaded model\n");
+    output.push_str("  /model <name>          - Switch to cloud model\n");
+
+    SlashCommandResult::Message(output)
+}
+
+/// Download a model
+fn execute_model_download(name: &str, quantization: Option<&str>) -> SlashCommandResult {
+    let quant = quantization.unwrap_or("q4_k_m");
+
+    SlashCommandResult::SendToLlm(format!(
+        "Download the local LLM model '{}' with quantization '{}'. Steps:\n\n\
+         1. Use the DownloadRegistry to find the model and its download URL\n\
+         2. Use ModelDownloader to download the GGUF file to ~/.ted/models/local/\n\
+         3. Verify the SHA256 checksum after download\n\
+         4. Report the download progress and final file location\n\n\
+         If the model is already downloaded, just confirm its location.",
+        name, quant
+    ))
+}
+
+/// Load a model for inference
+fn execute_model_load(name: &str) -> SlashCommandResult {
+    SlashCommandResult::SendToLlm(format!(
+        "Load the local LLM model '{}' for inference. Steps:\n\n\
+         1. Check if the model file exists in ~/.ted/models/local/\n\
+         2. If not found, suggest downloading it with /model download {}\n\
+         3. If found, update the settings to use llama-cpp provider with this model\n\
+         4. Confirm the model is ready for use",
+        name, name
+    ))
+}
+
+/// Show model info
+fn execute_model_info(name: &str) -> SlashCommandResult {
+    // Use embedded registry for synchronous operation
+    let registry = match DownloadRegistry::embedded() {
+        Ok(r) => r,
+        Err(e) => return SlashCommandResult::Error(format!("Failed to load model registry: {}", e)),
+    };
+
+    // Find model by ID (case-insensitive, partial match)
+    let name_lower = name.to_lowercase();
+    let model = registry.models.iter()
+        .find(|m| m.id.to_lowercase() == name_lower || m.id.to_lowercase().contains(&name_lower));
+
+    match model {
+        Some(m) => {
+            let mut output = String::new();
+            output.push_str(&format!("Model: {}\n", m.name));
+            output.push_str("───────────────────────────────────────\n");
+            output.push_str(&format!("  ID:         {}\n", m.id));
+            output.push_str(&format!("  Category:   {}\n", m.category.display_name()));
+            output.push_str(&format!("  Parameters: {}\n", m.parameters));
+            output.push_str(&format!("  Context:    {} tokens\n", m.context_size));
+            output.push_str(&format!("  Base:       {}\n", m.base_model));
+            output.push_str(&format!("  Creator:    {}\n", m.creator));
+            output.push_str(&format!("  License:    {}\n", m.license));
+
+            if !m.tags.is_empty() {
+                output.push_str(&format!("  Tags:       {}\n", m.tags.join(", ")));
+            }
+
+            output.push_str("\nAvailable Quantizations:\n");
+            for variant in &m.variants {
+                let size_gb = variant.size_bytes as f64 / 1_073_741_824.0;
+                output.push_str(&format!(
+                    "  {} - {:.1}GB (min VRAM: {:.0}GB)\n",
+                    variant.quantization.display_name(),
+                    size_gb,
+                    variant.min_vram_gb
+                ));
+            }
+
+            output.push_str(&format!("\nDownload: /model download {} [-q QUANT]\n", m.id));
+
+            SlashCommandResult::Message(output)
+        }
+        None => {
+            // Try to find similar models
+            let similar: Vec<_> = registry.models.iter()
+                .filter(|m| m.id.to_lowercase().contains(&name_lower) || m.name.to_lowercase().contains(&name_lower))
+                .take(5)
+                .collect();
+
+            if similar.is_empty() {
+                SlashCommandResult::Error(format!(
+                    "Model '{}' not found. Use /model list to see available models.",
+                    name
+                ))
+            } else {
+                let mut output = format!("Model '{}' not found. Did you mean:\n", name);
+                for m in similar {
+                    output.push_str(&format!("  {} - {}\n", m.id, m.name));
+                }
+                SlashCommandResult::Error(output)
+            }
+        }
+    }
+}
+
+/// Switch to a different (cloud) model
+fn execute_model_switch(name: &str) -> SlashCommandResult {
+    // For cloud models, just return a message indicating the switch
+    // The actual model switching happens in the chat runner
+    SlashCommandResult::Message(format!(
+        "Switching to model: {}\n\n\
+         Note: If this is a cloud model (claude-*, gpt-*, etc.), the switch will take effect immediately.\n\
+         For local models, use /model load <name> instead.",
+        name
+    ))
 }
 
 // === Helper Functions ===

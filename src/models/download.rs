@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use crate::error::{Result, TedError};
 
@@ -41,6 +42,9 @@ const REGISTRY_URL: &str =
 
 /// Fallback embedded registry (compiled into binary)
 const EMBEDDED_REGISTRY: &str = include_str!("../../registry/models.json");
+
+/// Cache TTL for registry (24 hours)
+const REGISTRY_CACHE_TTL: Duration = Duration::from_secs(86400);
 
 /// Model category
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -246,6 +250,106 @@ impl DownloadRegistry {
             Ok(registry) => Ok(registry),
             Err(e) => {
                 tracing::warn!("Failed to fetch remote registry, using embedded: {}", e);
+                Self::embedded()
+            }
+        }
+    }
+
+    /// Get the cache file path
+    fn cache_path() -> Result<PathBuf> {
+        Ok(dirs::home_dir()
+            .ok_or_else(|| TedError::Config("Cannot find home directory".to_string()))?
+            .join(".ted")
+            .join("registry")
+            .join("models.json"))
+    }
+
+    /// Load registry from cache if fresh
+    fn load_from_cache() -> Option<Self> {
+        let cache_path = Self::cache_path().ok()?;
+
+        // Check if cache file exists and is fresh
+        let metadata = std::fs::metadata(&cache_path).ok()?;
+        let modified = metadata.modified().ok()?;
+        let age = SystemTime::now().duration_since(modified).ok()?;
+
+        if age > REGISTRY_CACHE_TTL {
+            tracing::debug!("Registry cache is stale ({:.0}h old)", age.as_secs() / 3600);
+            return None;
+        }
+
+        // Try to load from cache
+        let contents = std::fs::read_to_string(&cache_path).ok()?;
+        match serde_json::from_str(&contents) {
+            Ok(registry) => {
+                tracing::debug!("Loaded registry from cache ({:.0}h old)", age.as_secs() / 3600);
+                Some(registry)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to parse cached registry: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Save registry to cache
+    fn save_to_cache(&self) -> Result<()> {
+        let cache_path = Self::cache_path()?;
+
+        // Create parent directory if needed
+        if let Some(parent) = cache_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| TedError::Config(format!("Failed to create cache directory: {}", e)))?;
+        }
+
+        // Write to cache
+        let contents = serde_json::to_string_pretty(&self)
+            .map_err(|e| TedError::Context(format!("Failed to serialize registry: {}", e)))?;
+        std::fs::write(&cache_path, contents)
+            .map_err(|e| TedError::Config(format!("Failed to write cache: {}", e)))?;
+
+        tracing::debug!("Saved registry to cache: {}", cache_path.display());
+        Ok(())
+    }
+
+    /// Create registry with caching support
+    ///
+    /// Priority:
+    /// 1. Fresh cache (< 24h old) - return immediately
+    /// 2. Remote fetch - update cache on success
+    /// 3. Stale cache - if remote fails
+    /// 4. Embedded fallback - last resort
+    pub async fn with_cache() -> Result<Self> {
+        // Try fresh cache first
+        if let Some(registry) = Self::load_from_cache() {
+            return Ok(registry);
+        }
+
+        // Try remote fetch
+        match Self::fetch().await {
+            Ok(registry) => {
+                // Cache the result (ignore errors)
+                if let Err(e) = registry.save_to_cache() {
+                    tracing::warn!("Failed to cache registry: {}", e);
+                }
+                Ok(registry)
+            }
+            Err(fetch_error) => {
+                tracing::warn!("Failed to fetch remote registry: {}", fetch_error);
+
+                // Try stale cache (read without TTL check)
+                let cache_path = Self::cache_path()?;
+                if cache_path.exists() {
+                    if let Ok(contents) = std::fs::read_to_string(&cache_path) {
+                        if let Ok(registry) = serde_json::from_str(&contents) {
+                            tracing::info!("Using stale cached registry");
+                            return Ok(registry);
+                        }
+                    }
+                }
+
+                // Fall back to embedded
+                tracing::info!("Using embedded registry");
                 Self::embedded()
             }
         }
@@ -530,5 +634,29 @@ mod tests {
         let path = downloader.model_path(&model, &variant);
         assert!(path.to_string_lossy().contains("test-model"));
         assert!(path.to_string_lossy().contains("q4_k_m"));
+    }
+
+    #[test]
+    fn test_embedded_registry() {
+        let registry = DownloadRegistry::embedded().unwrap();
+        assert!(!registry.models.is_empty());
+        assert!(!registry.version.is_empty());
+    }
+
+    #[test]
+    fn test_registry_find_model() {
+        let registry = DownloadRegistry::embedded().unwrap();
+
+        // Should find models that exist
+        let found = registry.models.iter().any(|m| m.category == ModelCategory::Code);
+        assert!(found, "Should have at least one code model");
+    }
+
+    #[test]
+    fn test_registry_cache_path() {
+        let path = DownloadRegistry::cache_path().unwrap();
+        assert!(path.to_string_lossy().contains(".ted"));
+        assert!(path.to_string_lossy().contains("registry"));
+        assert!(path.to_string_lossy().contains("models.json"));
     }
 }

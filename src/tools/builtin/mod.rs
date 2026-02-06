@@ -3,6 +3,7 @@
 
 //! Built-in tools for Ted
 
+mod beads;
 mod database;
 mod file_changeset;
 mod file_edit;
@@ -14,6 +15,7 @@ mod plan;
 mod shell;
 mod spawn_agent;
 
+pub use beads::{BeadsAddTool, BeadsListTool, BeadsStatusTool};
 pub use database::{DatabaseInitTool, DatabaseMigrateTool, DatabaseQueryTool, DatabaseSeedTool};
 pub use file_changeset::FileChangeSetTool;
 pub use file_edit::FileEditTool;

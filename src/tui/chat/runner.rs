@@ -22,11 +22,11 @@ use ratatui::prelude::*;
 use crate::caps::available_caps;
 use crate::chat::input_parser::{
     parse_beads_command, parse_commit_command, parse_explain_command, parse_fix_command,
-    parse_review_command, parse_skills_command, parse_test_command,
+    parse_model_command, parse_review_command, parse_skills_command, parse_test_command,
 };
 use crate::chat::slash_commands::{
-    execute_beads, execute_commit, execute_explain, execute_fix, execute_review, execute_skills,
-    execute_test, SlashCommandResult,
+    execute_beads, execute_commit, execute_explain, execute_fix, execute_model, execute_review,
+    execute_skills, execute_test, SlashCommandResult,
 };
 use crate::config::Settings;
 use crate::context::ContextManager;
@@ -44,6 +44,35 @@ use crate::tools::ToolExecutor;
 use super::app::ChatMode;
 use super::state::{AgentTracker, DisplayMessage, DisplayToolCall, InputState};
 use super::ChatTuiConfig;
+
+/// Discover locally downloaded GGUF models
+fn discover_local_models() -> Vec<String> {
+    let mut models = Vec::new();
+
+    // Check ~/.ted/models/local/ for GGUF files
+    if let Some(home) = dirs::home_dir() {
+        let models_dir = home.join(".ted").join("models").join("local");
+        if models_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&models_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|s| s.to_str()) == Some("gguf") {
+                        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                            models.push(stem.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // If no models found, show a placeholder
+    if models.is_empty() {
+        models.push("(no models - use /model download)".to_string());
+    }
+
+    models
+}
 
 /// Settings section tabs
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,6 +185,7 @@ impl SettingsState {
             "ollama".to_string(),
             "openrouter".to_string(),
             "blackman".to_string(),
+            "local".to_string(),
         ];
         let provider_index = providers
             .iter()
@@ -203,6 +233,10 @@ impl SettingsState {
             ],
         );
 
+        // Discover local models (GGUF files in ~/.ted/models/local/)
+        let local_models = discover_local_models();
+        models_by_provider.insert("local".to_string(), local_models);
+
         // Find current model index for the provider
         let model_index = models_by_provider
             .get(&config.provider_name)
@@ -239,6 +273,7 @@ impl SettingsState {
                 .unwrap_or_default(),
         );
         api_keys_by_provider.insert("ollama".to_string(), String::new()); // ollama doesn't need API key
+        api_keys_by_provider.insert("local".to_string(), String::new()); // local doesn't need API key
 
         // Get API key for current provider
         let api_key = api_keys_by_provider
@@ -1806,29 +1841,39 @@ fn handle_settings_key(state: &mut TuiState, key: crossterm::event::KeyEvent) ->
                         "blackman" => {
                             file_settings.providers.blackman.default_model = new_model.clone()
                         }
+                        "local" | "llama-cpp" => {
+                            // Update llama_cpp settings with selected model
+                            file_settings.providers.llama_cpp.default_model = new_model.clone();
+                            // Update model path to point to the selected model
+                            if let Some(home) = dirs::home_dir() {
+                                let model_path = home
+                                    .join(".ted")
+                                    .join("models")
+                                    .join("local")
+                                    .join(format!("{}.gguf", new_model));
+                                if model_path.exists() {
+                                    file_settings.providers.llama_cpp.model_path = model_path;
+                                }
+                            }
+                        }
                         _ => {}
                     }
 
-                    // Save API keys for all providers
+                    // Save API keys for all providers (only update if non-empty to preserve existing keys)
                     if let Some(key) = api_keys.get("anthropic") {
                         if !key.is_empty() {
                             file_settings.providers.anthropic.api_key = Some(key.clone());
-                        } else {
-                            file_settings.providers.anthropic.api_key = None;
                         }
+                        // If empty, don't touch existing key - user may not have edited it
                     }
                     if let Some(key) = api_keys.get("openrouter") {
                         if !key.is_empty() {
                             file_settings.providers.openrouter.api_key = Some(key.clone());
-                        } else {
-                            file_settings.providers.openrouter.api_key = None;
                         }
                     }
                     if let Some(key) = api_keys.get("blackman") {
                         if !key.is_empty() {
                             file_settings.providers.blackman.api_key = Some(key.clone());
-                        } else {
-                            file_settings.providers.blackman.api_key = None;
                         }
                     }
 
@@ -1932,17 +1977,38 @@ fn handle_command(
     let trimmed = input.trim();
     let lower = trimmed.to_lowercase();
 
-    // Check for commands with arguments
-    if lower.starts_with("/model ") {
-        // Set model: /model <model_name>
-        let model = trimmed[7..].trim();
-        if !model.is_empty() {
-            state.current_model = model.to_string();
-            state.set_status(&format!("Model set to: {}", model));
-        } else {
-            state.set_error("Usage: /model <model_name>");
+    // Check for /model commands (with subcommands or model switch)
+    if lower.starts_with("/model") {
+        if let Some(args) = parse_model_command(trimmed) {
+            // Check if it's a simple model switch (subcommand = "switch")
+            if args.subcommand.as_deref() == Some("switch") {
+                if let Some(ref model_name) = args.name {
+                    state.current_model = model_name.clone();
+                    state.set_status(&format!("Model set to: {}", model_name));
+                    return Ok(());
+                }
+            }
+
+            // Handle other subcommands via execute_model
+            match execute_model(&args) {
+                SlashCommandResult::SendToLlm(msg) => {
+                    state.pending_messages.push(msg);
+                    state.set_status("Processing /model...");
+                }
+                SlashCommandResult::Message(msg) => {
+                    state.messages.push(DisplayMessage::system(msg));
+                    state.auto_scroll();
+                }
+                SlashCommandResult::Error(e) => {
+                    state.set_error(&e);
+                }
+                SlashCommandResult::SpawnAgent { task, .. } => {
+                    state.pending_messages.push(task);
+                    state.set_status("Processing...");
+                }
+            }
+            return Ok(());
         }
-        return Ok(());
     }
 
     if lower.starts_with("/cap ") {
@@ -1991,19 +2057,7 @@ fn handle_command(
         "/agents" => {
             state.agent_pane_visible = !state.agent_pane_visible;
         }
-        "/model" => {
-            // Show current model and available models
-            let info = format!(
-                "Current: {} ({})\n\nAvailable models for {}:\n\
-                • claude-sonnet-4-20250514 (default)\n\
-                • claude-opus-4-5-20250514\n\
-                • claude-haiku-3-5-20241022\n\n\
-                Use /model <name> to switch",
-                state.current_model, state.config.provider_name, state.config.provider_name
-            );
-            state.messages.push(DisplayMessage::system(info));
-            state.auto_scroll();
-        }
+        // "/model" is handled above with parse_model_command
         "/settings" => {
             // Open settings editor
             state.mode = ChatMode::Settings;
@@ -2917,12 +2971,15 @@ mod tests {
         state.cycle_provider(true);
         assert_eq!(state.provider, "blackman");
 
+        state.cycle_provider(true);
+        assert_eq!(state.provider, "local");
+
         state.cycle_provider(true); // Wrap around
         assert_eq!(state.provider, "anthropic");
 
         // Test backward cycling
         state.cycle_provider(false);
-        assert_eq!(state.provider, "blackman");
+        assert_eq!(state.provider, "local");
     }
 
     #[test]
@@ -2931,8 +2988,8 @@ mod tests {
         assert_eq!(state.provider_index, 0);
 
         state.cycle_provider(false);
-        assert_eq!(state.provider, "blackman");
-        assert_eq!(state.provider_index, 3);
+        assert_eq!(state.provider, "local");
+        assert_eq!(state.provider_index, 4);
     }
 
     #[test]
@@ -2947,7 +3004,7 @@ mod tests {
         // Provider and Model now show cycling UI with arrows and index
         assert_eq!(
             state.current_value(SettingsField::Provider),
-            "◀ anthropic ▶  (1/4)"
+            "◀ anthropic ▶  (1/5)"
         );
         // Model shows the current model with cycling UI (models list has 4 anthropic models)
         assert_eq!(

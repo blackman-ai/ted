@@ -12,7 +12,7 @@ use crate::llm::provider::ContentBlockResponse;
 use crate::beads::BeadStatus;
 
 use super::commands::{
-    BeadsArgs, CommitArgs, ExplainArgs, FixArgs, ReviewArgs, SkillsArgs, TestArgs,
+    BeadsArgs, CommitArgs, ExplainArgs, FixArgs, ModelArgs, ReviewArgs, SkillsArgs, TestArgs,
 };
 
 /// Parse a shell command from user input.
@@ -604,6 +604,96 @@ pub fn parse_beads_command(input: &str) -> Option<BeadsArgs> {
             // Unknown subcommand - treat as bead ID for show
             args.subcommand = Some("show".to_string());
             args.id = Some(parts[0].to_string());
+        }
+    }
+
+    Some(args)
+}
+
+/// Parse /model command and arguments.
+/// Supports: /model, /models, /model list, /model download <name> [-q QUANT],
+///           /model load <name>, /model info <name>, /model <name> (switch)
+pub fn parse_model_command(input: &str) -> Option<ModelArgs> {
+    let trimmed = input.trim();
+    let lower = trimmed.to_lowercase();
+
+    // Must start with /model or /models
+    if !lower.starts_with("/model") {
+        return None;
+    }
+
+    // Determine which command it is and validate
+    let prefix_len = if lower.starts_with("/models") {
+        // Must be exactly /models or /models followed by space
+        if lower.len() > 7 && !lower[7..].starts_with(' ') {
+            return None; // Invalid: /modelssomething
+        }
+        7
+    } else {
+        // Must be exactly /model or /model followed by space
+        if lower.len() > 6 && !lower[6..].starts_with(' ') {
+            return None; // Invalid: /modelsomething (when not /models)
+        }
+        6
+    };
+
+    let args_str = trimmed.get(prefix_len..).unwrap_or("").trim();
+    let mut args = ModelArgs::default();
+
+    if args_str.is_empty() {
+        // /model or /models with no args = list
+        args.subcommand = Some("list".to_string());
+        return Some(args);
+    }
+
+    let parts: Vec<&str> = args_str.split_whitespace().collect();
+
+    if parts.is_empty() {
+        args.subcommand = Some("list".to_string());
+        return Some(args);
+    }
+
+    match parts[0].to_lowercase().as_str() {
+        "list" => {
+            args.subcommand = Some("list".to_string());
+        }
+        "download" => {
+            args.subcommand = Some("download".to_string());
+            // Parse remaining args
+            let mut i = 1;
+            while i < parts.len() {
+                match parts[i].to_lowercase().as_str() {
+                    "-q" | "--quantization" => {
+                        if i + 1 < parts.len() {
+                            args.quantization = Some(parts[i + 1].to_string());
+                            i += 2;
+                            continue;
+                        }
+                    }
+                    other if !other.starts_with('-') && args.name.is_none() => {
+                        args.name = Some(other.to_string());
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+        }
+        "load" => {
+            args.subcommand = Some("load".to_string());
+            if parts.len() > 1 {
+                args.name = Some(parts[1..].join(" "));
+            }
+        }
+        "info" => {
+            args.subcommand = Some("info".to_string());
+            if parts.len() > 1 {
+                args.name = Some(parts[1..].join(" "));
+            }
+        }
+        _ => {
+            // Unknown subcommand - treat as model name for switch
+            args.subcommand = Some("switch".to_string());
+            args.name = Some(parts.join(" "));
         }
     }
 
@@ -1576,5 +1666,70 @@ mod tests {
             parse_bead_status("IN-PROGRESS"),
             Some(BeadStatus::InProgress)
         ));
+    }
+
+    // ==================== Model Command Parser Tests ====================
+
+    #[test]
+    fn test_parse_model_command_list() {
+        let args = parse_model_command("/model").unwrap();
+        assert_eq!(args.subcommand, Some("list".to_string()));
+
+        let args = parse_model_command("/models").unwrap();
+        assert_eq!(args.subcommand, Some("list".to_string()));
+
+        let args = parse_model_command("/model list").unwrap();
+        assert_eq!(args.subcommand, Some("list".to_string()));
+    }
+
+    #[test]
+    fn test_parse_model_command_download() {
+        let args = parse_model_command("/model download qwen3-coder-30b").unwrap();
+        assert_eq!(args.subcommand, Some("download".to_string()));
+        assert_eq!(args.name, Some("qwen3-coder-30b".to_string()));
+    }
+
+    #[test]
+    fn test_parse_model_command_download_with_quantization() {
+        let args = parse_model_command("/model download qwen3-coder-30b -q q4_k_m").unwrap();
+        assert_eq!(args.subcommand, Some("download".to_string()));
+        assert_eq!(args.name, Some("qwen3-coder-30b".to_string()));
+        assert_eq!(args.quantization, Some("q4_k_m".to_string()));
+
+        let args =
+            parse_model_command("/model download llama3 --quantization Q5_K_M").unwrap();
+        assert_eq!(args.quantization, Some("Q5_K_M".to_string()));
+    }
+
+    #[test]
+    fn test_parse_model_command_load() {
+        let args = parse_model_command("/model load qwen3-coder-30b").unwrap();
+        assert_eq!(args.subcommand, Some("load".to_string()));
+        assert_eq!(args.name, Some("qwen3-coder-30b".to_string()));
+    }
+
+    #[test]
+    fn test_parse_model_command_info() {
+        let args = parse_model_command("/model info llama3").unwrap();
+        assert_eq!(args.subcommand, Some("info".to_string()));
+        assert_eq!(args.name, Some("llama3".to_string()));
+    }
+
+    #[test]
+    fn test_parse_model_command_switch() {
+        // Model name without subcommand = switch
+        let args = parse_model_command("/model claude-3-5-sonnet-20241022").unwrap();
+        assert_eq!(args.subcommand, Some("switch".to_string()));
+        assert_eq!(
+            args.name,
+            Some("claude-3-5-sonnet-20241022".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_model_command_invalid() {
+        assert!(parse_model_command("/modelsomething").is_none());
+        assert!(parse_model_command("model").is_none());
+        assert!(parse_model_command("/mod").is_none());
     }
 }

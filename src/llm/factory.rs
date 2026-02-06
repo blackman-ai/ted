@@ -13,6 +13,9 @@ use crate::error::{Result, TedError};
 use crate::llm::provider::LlmProvider;
 use crate::llm::providers::{AnthropicProvider, OllamaProvider, OpenRouterProvider};
 
+#[cfg(feature = "local-llm")]
+use crate::llm::providers::{LlamaCppConfig, LlamaCppProvider};
+
 /// Factory for creating LLM providers
 pub struct ProviderFactory;
 
@@ -35,6 +38,8 @@ impl ProviderFactory {
             "ollama" => Self::create_ollama(settings, perform_health_check).await,
             "openrouter" => Self::create_openrouter(settings),
             "blackman" => Self::create_blackman(settings),
+            #[cfg(feature = "local-llm")]
+            "llama-cpp" | "llamacpp" | "local" => Self::create_llama_cpp(settings),
             _ => Self::create_anthropic(settings),
         }
     }
@@ -110,12 +115,41 @@ impl ProviderFactory {
         Ok(Arc::new(provider))
     }
 
+    /// Create a LlamaCpp local model provider
+    #[cfg(feature = "local-llm")]
+    pub fn create_llama_cpp(settings: &Settings) -> Result<Arc<dyn LlmProvider>> {
+        let cfg = &settings.providers.llama_cpp;
+
+        // Check if model file exists
+        if !cfg.model_path.exists() {
+            return Err(TedError::Config(format!(
+                "LlamaCpp model not found: {}. Download a model with /model download or set the path in settings.",
+                cfg.model_path.display()
+            )));
+        }
+
+        // Build configuration from settings
+        let mut config = LlamaCppConfig::new(&cfg.model_path)
+            .with_context_size(cfg.context_size)
+            .with_gpu_layers(cfg.gpu_layers);
+
+        // Add threads if specified
+        if let Some(threads) = cfg.threads {
+            config = config.with_threads(threads);
+        }
+
+        // Create and return provider
+        let provider = LlamaCppProvider::with_config(config)?;
+        Ok(Arc::new(provider))
+    }
+
     /// Get the default model for a provider
     pub fn default_model(provider_name: &str, settings: &Settings) -> String {
         match provider_name {
             "ollama" => settings.providers.ollama.default_model.clone(),
             "openrouter" => settings.providers.openrouter.default_model.clone(),
             "blackman" => settings.providers.blackman.default_model.clone(),
+            "llama-cpp" | "llamacpp" | "local" => settings.providers.llama_cpp.default_model.clone(),
             _ => settings.providers.anthropic.default_model.clone(),
         }
     }
@@ -133,13 +167,18 @@ impl ProviderFactory {
             "ollama" => true, // Ollama doesn't require API key
             "openrouter" => settings.get_openrouter_api_key().is_some(),
             "blackman" => settings.get_blackman_api_key().is_some(),
+            "llama-cpp" | "llamacpp" | "local" => settings.providers.llama_cpp.model_path.exists(),
             _ => settings.get_anthropic_api_key().is_some(),
         }
     }
 
     /// List all supported provider names
     pub fn supported_providers() -> &'static [&'static str] {
-        &["anthropic", "ollama", "openrouter", "blackman"]
+        #[cfg(feature = "local-llm")]
+        return &["anthropic", "ollama", "openrouter", "blackman", "llama-cpp"];
+
+        #[cfg(not(feature = "local-llm"))]
+        return &["anthropic", "ollama", "openrouter", "blackman"];
     }
 }
 
@@ -330,6 +369,9 @@ mod tests {
     #[test]
     fn test_supported_providers_count() {
         let providers = ProviderFactory::supported_providers();
+        #[cfg(feature = "local-llm")]
+        assert_eq!(providers.len(), 5);
+        #[cfg(not(feature = "local-llm"))]
         assert_eq!(providers.len(), 4);
     }
 

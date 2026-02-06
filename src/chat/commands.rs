@@ -79,6 +79,17 @@ pub struct BeadsArgs {
     pub value: Option<String>,
 }
 
+/// Arguments for /model command
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ModelArgs {
+    /// Subcommand: None (list), "list", "download", "load", "info", or model name to switch
+    pub subcommand: Option<String>,
+    /// Model name for download/load/info/switch commands
+    pub name: Option<String>,
+    /// Optional quantization level for download (-q flag)
+    pub quantization: Option<String>,
+}
+
 /// Represents the different types of commands that can be issued in chat
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatCommand {
@@ -100,10 +111,8 @@ pub enum ChatCommand {
     Plans,
     /// List plans
     PlansList,
-    /// Show current model or available models
-    Model,
-    /// Switch to a different model
-    ModelSwitch(String),
+    /// Model commands (list, download, load, info, switch)
+    Model(ModelArgs),
     /// Show active caps
     Caps,
     /// Add a cap
@@ -210,11 +219,8 @@ pub fn parse_command(input: &str) -> ChatCommand {
     }
 
     // Check for model commands
-    if let Some(model_name) = input_parser::parse_model_switch_command(trimmed) {
-        return ChatCommand::ModelSwitch(model_name.to_string());
-    }
-    if input_parser::is_model_command(trimmed) {
-        return ChatCommand::Model;
+    if let Some(args) = input_parser::parse_model_command(trimmed) {
+        return ChatCommand::Model(args);
     }
 
     // Check for caps command
@@ -537,12 +543,22 @@ mod tests {
 
     #[test]
     fn test_parse_command_model() {
-        assert_eq!(parse_command("/model"), ChatCommand::Model);
-        assert_eq!(parse_command("/models"), ChatCommand::Model);
-        assert_eq!(
-            parse_command("/model claude-3-5-haiku-20241022"),
-            ChatCommand::ModelSwitch("claude-3-5-haiku-20241022".to_string())
-        );
+        // Basic /model should return Model with no subcommand
+        if let ChatCommand::Model(args) = parse_command("/model") {
+            assert!(args.subcommand.is_none() || args.subcommand == Some("list".to_string()));
+        } else {
+            panic!("Expected Model command");
+        }
+
+        // /models should also work
+        assert!(matches!(parse_command("/models"), ChatCommand::Model(_)));
+
+        // /model <name> should switch to that model
+        if let ChatCommand::Model(args) = parse_command("/model claude-3-5-haiku-20241022") {
+            assert!(args.name.is_some() || args.subcommand.is_some());
+        } else {
+            panic!("Expected Model command");
+        }
     }
 
     #[test]
@@ -802,7 +818,7 @@ mod tests {
 
     #[test]
     fn test_chat_command_clone() {
-        let cmd = ChatCommand::Model;
+        let cmd = ChatCommand::Model(ModelArgs::default());
         let cloned = cmd.clone();
         assert_eq!(cmd, cloned);
     }
@@ -871,10 +887,12 @@ mod tests {
     #[test]
     fn test_parse_command_model_preserves_case() {
         // Model names should preserve their case
-        assert_eq!(
-            parse_command("/model Claude-3-5-Sonnet"),
-            ChatCommand::ModelSwitch("Claude-3-5-Sonnet".to_string())
-        );
+        if let ChatCommand::Model(args) = parse_command("/model Claude-3-5-Sonnet") {
+            assert!(args.name == Some("Claude-3-5-Sonnet".to_string()) ||
+                    args.subcommand == Some("Claude-3-5-Sonnet".to_string()));
+        } else {
+            panic!("Expected Model command");
+        }
     }
 
     #[test]

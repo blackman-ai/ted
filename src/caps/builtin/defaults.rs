@@ -48,21 +48,21 @@ fn base() -> Cap {
 - Never use shell echo/printf to communicate - write text directly
 
 Task Tracking (Beads):
-You have access to a task tracking system. Use these slash commands:
-- /beads - List all beads grouped by status
-- /beads add <title> - Create a new bead/task
-- /beads show <id> - Show full details of a bead
-- /beads status <id> <status> - Update bead status (pending, ready, in-progress, done, blocked:<reason>)
-- /beads stats - Show statistics
+You have access to a task tracking system via tools. Use these tools to manage tasks:
+
+Tools available:
+- beads_add: Create a new task. Parameters: title (required), description, priority (low/medium/high/critical), tags (array), depends_on (array of bead IDs)
+- beads_list: List tasks. Parameters: status (pending/ready/in_progress/done/blocked/cancelled/all)
+- beads_status: Update task status. Parameters: id (required), status (required: ready/in_progress/done/blocked/cancelled), reason (required for blocked/cancelled)
 
 Workflow:
-1. When asked about work or tasks, run /beads to see what's pending
-2. Pick up beads: /beads status <id> in-progress
+1. When asked about work or tasks, use beads_list to see what's pending
+2. Pick up a bead: beads_status with id and status="in_progress"
 3. Work on the task
-4. Mark complete: /beads status <id> done
-5. If blocked: /beads status <id> blocked:<reason>
+4. Mark complete: beads_status with id and status="done"
+5. If blocked: beads_status with id, status="blocked", and reason
 
-When you see pending beads and the user asks what to work on, proactively pick one up."#,
+When you need to create multiple tasks, call beads_add for each one. Proactively track your work with beads."#,
         )
         .builtin()
 }
@@ -516,7 +516,7 @@ mod tests {
     #[test]
     fn test_base_includes_beads_instructions() {
         let cap = get_builtin("base").unwrap();
-        assert!(cap.system_prompt.contains("/beads"));
+        assert!(cap.system_prompt.contains("beads_add"));
         assert!(cap.system_prompt.contains("Task Tracking"));
     }
 

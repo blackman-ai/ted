@@ -71,6 +71,10 @@ pub struct ProvidersConfig {
     #[serde(default)]
     pub blackman: BlackmanConfig,
 
+    /// LlamaCpp local model configuration (bundled inference)
+    #[serde(default)]
+    pub llama_cpp: LlamaCppSettingsConfig,
+
     /// OpenAI configuration (future)
     #[serde(default)]
     pub openai: Option<OpenAIConfig>,
@@ -164,6 +168,42 @@ impl Default for BlackmanConfig {
             api_key_env: default_blackman_api_key_env(),
             default_model: default_blackman_model(),
             base_url: default_blackman_base_url(),
+        }
+    }
+}
+
+/// LlamaCpp local model configuration (bundled inference)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlamaCppSettingsConfig {
+    /// Path to the GGUF model file
+    #[serde(default = "default_llama_cpp_model_path")]
+    pub model_path: PathBuf,
+
+    /// Context size (default 4096)
+    #[serde(default = "default_llama_cpp_context_size")]
+    pub context_size: u32,
+
+    /// GPU layers to offload (default 0 = CPU only)
+    #[serde(default = "default_llama_cpp_gpu_layers")]
+    pub gpu_layers: u32,
+
+    /// Number of threads (optional, auto-detect if None)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threads: Option<u32>,
+
+    /// Default model name for identification
+    #[serde(default = "default_llama_cpp_model_name")]
+    pub default_model: String,
+}
+
+impl Default for LlamaCppSettingsConfig {
+    fn default() -> Self {
+        Self {
+            model_path: default_llama_cpp_model_path(),
+            context_size: default_llama_cpp_context_size(),
+            gpu_layers: default_llama_cpp_gpu_layers(),
+            threads: None,
+            default_model: default_llama_cpp_model_name(),
         }
     }
 }
@@ -496,6 +536,27 @@ fn default_blackman_model() -> String {
 
 fn default_blackman_base_url() -> String {
     "https://app.useblackman.ai".to_string()
+}
+
+fn default_llama_cpp_model_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".ted")
+        .join("models")
+        .join("local")
+        .join("model.gguf")
+}
+
+fn default_llama_cpp_context_size() -> u32 {
+    4096
+}
+
+fn default_llama_cpp_gpu_layers() -> u32 {
+    0 // CPU-only by default for maximum compatibility
+}
+
+fn default_llama_cpp_model_name() -> String {
+    "local".to_string()
 }
 
 fn default_caps() -> Vec<String> {

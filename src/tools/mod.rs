@@ -383,6 +383,11 @@ impl ToolRegistry {
         registry.register(Arc::new(builtin::DatabaseQueryTool));
         registry.register(Arc::new(builtin::DatabaseSeedTool));
 
+        // Beads (task tracking) tools
+        registry.register(Arc::new(builtin::BeadsAddTool));
+        registry.register(Arc::new(builtin::BeadsListTool));
+        registry.register(Arc::new(builtin::BeadsStatusTool));
+
         // Add default aliases for common alternate tool names
         registry.aliases = Self::default_aliases();
 
