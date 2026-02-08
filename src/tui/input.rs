@@ -16,7 +16,6 @@ use crate::error::Result;
 /// Handle user input
 pub fn handle_input(app: &mut App) -> Result<AppResult> {
     // Check for async results (non-blocking)
-    app.check_model_fetch_results();
     app.check_connection_test_results();
 
     // Poll for events with a small timeout

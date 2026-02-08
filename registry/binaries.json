@@ -1,0 +1,35 @@
+{
+  "version": "1.0.0",
+  "updated_at": "2026-02-06T00:00:00Z",
+  "llama_server": {
+    "version": "b7951",
+    "release_url": "https://github.com/ggml-org/llama.cpp/releases/tag/b7951",
+    "platforms": {
+      "darwin-arm64": {
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b7951/llama-b7951-bin-macos-arm64.tar.gz",
+        "binary_path": "build/bin/llama-server",
+        "archive_type": "tar.gz"
+      },
+      "darwin-x86_64": {
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b7951/llama-b7951-bin-macos-x64.tar.gz",
+        "binary_path": "build/bin/llama-server",
+        "archive_type": "tar.gz"
+      },
+      "linux-x86_64": {
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b7951/llama-b7951-bin-ubuntu-x64.tar.gz",
+        "binary_path": "build/bin/llama-server",
+        "archive_type": "tar.gz"
+      },
+      "windows-x86_64": {
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b7951/llama-b7951-bin-win-cpu-x64.zip",
+        "binary_path": "build/bin/llama-server.exe",
+        "archive_type": "zip"
+      },
+      "windows-arm64": {
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b7951/llama-b7951-bin-win-cpu-arm64.zip",
+        "binary_path": "build/bin/llama-server.exe",
+        "archive_type": "zip"
+      }
+    }
+  }
+}

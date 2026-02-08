@@ -819,4 +819,353 @@ General rule"#,
         assert!(context.to_context_string().contains("Claude content"));
         assert!(!context.to_context_string().contains("Cursor content"));
     }
+
+    #[test]
+    fn test_mdc_frontmatter_incomplete() {
+        // Frontmatter starts but never closes
+        let content = "---\ndescription: Test\nSome content";
+
+        let (frontmatter, body) = parse_mdc_frontmatter(content);
+
+        // Should return default frontmatter and original content
+        assert!(frontmatter.description.is_none());
+        assert_eq!(body, content);
+    }
+
+    #[test]
+    fn test_mdc_frontmatter_invalid_yaml() {
+        let content = r#"---
+description: [invalid yaml
+globs: not a list
+---
+
+Body content"#;
+
+        let (frontmatter, body) = parse_mdc_frontmatter(content);
+
+        // Should return default frontmatter and original content on parse error
+        assert!(frontmatter.description.is_none());
+        assert_eq!(body, content);
+    }
+
+    #[test]
+    fn test_mdc_frontmatter_empty() {
+        let content = r#"---
+---
+
+Body only"#;
+
+        let (frontmatter, body) = parse_mdc_frontmatter(content);
+
+        // Empty frontmatter should parse as defaults
+        assert!(frontmatter.description.is_none());
+        assert!(frontmatter.globs.is_empty());
+        assert!(!frontmatter.always_apply);
+        assert!(body.contains("Body only"));
+    }
+
+    #[test]
+    fn test_mdc_frontmatter_with_leading_whitespace() {
+        let content = r#"
+---
+description: With whitespace
+---
+
+Content"#;
+
+        let (frontmatter, body) = parse_mdc_frontmatter(content);
+
+        assert_eq!(frontmatter.description, Some("With whitespace".to_string()));
+        assert!(body.contains("Content"));
+    }
+
+    #[test]
+    fn test_filter_for_context_empty_files() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join(".cursor/rules")).unwrap();
+
+        std::fs::write(
+            temp_dir.path().join(".cursor/rules/typescript.mdc"),
+            r#"---
+globs: ["**/*.ts"]
+---
+TS rule"#,
+        )
+        .unwrap();
+
+        let config = ProjectContextConfig::default();
+        let context = ProjectContext::discover(temp_dir.path(), &config).unwrap();
+
+        // Filter with empty file list - should not match glob-only rules
+        let filtered = context.filter_for_context(&[]);
+        assert_eq!(filtered.file_count(), 0);
+    }
+
+    #[test]
+    fn test_filter_for_context_mdc_empty_globs() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join(".cursor/rules")).unwrap();
+
+        // MDC with empty globs should always apply
+        std::fs::write(
+            temp_dir.path().join(".cursor/rules/empty-globs.mdc"),
+            r#"---
+description: Empty globs rule
+globs: []
+---
+Should always apply"#,
+        )
+        .unwrap();
+
+        let config = ProjectContextConfig::default();
+        let context = ProjectContext::discover(temp_dir.path(), &config).unwrap();
+
+        let filtered = context.filter_for_context(&[PathBuf::from("any/file.xyz")]);
+        assert_eq!(filtered.file_count(), 1);
+        assert!(filtered.to_context_string().contains("Should always apply"));
+    }
+
+    #[test]
+    fn test_subdirectory_depth_limit() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create nested directories beyond the depth limit
+        // walkdir max_depth counts from root: depth 0=root, 1=a/, 2=a/CLAUDE.md or a/b/, etc.
+        std::fs::create_dir_all(temp_dir.path().join("a/b/c/d")).unwrap();
+        std::fs::write(temp_dir.path().join("a/CLAUDE.md"), "Level 1").unwrap();
+        std::fs::write(temp_dir.path().join("a/b/CLAUDE.md"), "Level 2").unwrap();
+        std::fs::write(temp_dir.path().join("a/b/c/CLAUDE.md"), "Level 3").unwrap();
+        std::fs::write(temp_dir.path().join("a/b/c/d/CLAUDE.md"), "Level 4").unwrap();
+
+        // Depth of 3 finds: a/CLAUDE.md (depth 2), a/b/CLAUDE.md (depth 3)
+        // but not a/b/c/CLAUDE.md (depth 4) or a/b/c/d/CLAUDE.md (depth 5)
+        let config = ProjectContextConfig {
+            subdirectory_depth: 3,
+            ..Default::default()
+        };
+        let context = ProjectContext::discover(temp_dir.path(), &config).unwrap();
+
+        assert_eq!(context.file_count(), 2);
+        assert!(context.to_context_string().contains("Level 1"));
+        assert!(context.to_context_string().contains("Level 2"));
+        assert!(!context.to_context_string().contains("Level 3"));
+        assert!(!context.to_context_string().contains("Level 4"));
+    }
+
+    #[test]
+    fn test_subdirectory_depth_zero() {
+        let temp_dir = TempDir::new().unwrap();
+
+        std::fs::create_dir_all(temp_dir.path().join("src")).unwrap();
+        std::fs::write(temp_dir.path().join("CLAUDE.md"), "Root").unwrap();
+        std::fs::write(temp_dir.path().join("src/CLAUDE.md"), "Subdirectory").unwrap();
+
+        let config = ProjectContextConfig {
+            subdirectory_depth: 0,
+            ..Default::default()
+        };
+        let context = ProjectContext::discover(temp_dir.path(), &config).unwrap();
+
+        // Should only find root level
+        assert_eq!(context.file_count(), 1);
+        assert!(context.to_context_string().contains("Root"));
+        assert!(!context.to_context_string().contains("Subdirectory"));
+    }
+
+    #[test]
+    fn test_agents_local_md() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("AGENTS.md"), "Agent project").unwrap();
+        std::fs::write(temp_dir.path().join("AGENTS.local.md"), "Agent local").unwrap();
+
+        let config = ProjectContextConfig::default();
+        let context = ProjectContext::discover(temp_dir.path(), &config).unwrap();
+
+        assert_eq!(context.file_count(), 2);
+        assert!(context.to_context_string().contains("Agent project"));
+        assert!(context.to_context_string().contains("Agent local"));
+    }
+
+    #[test]
+    fn test_claude_local_takes_priority_over_agents_local() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("CLAUDE.local.md"), "Claude local").unwrap();
+        std::fs::write(temp_dir.path().join("AGENTS.local.md"), "Agent local").unwrap();
+
+        let config = ProjectContextConfig::default();
+        let context = ProjectContext::discover(temp_dir.path(), &config).unwrap();
+
+        // Should only load CLAUDE.local.md
+        assert_eq!(context.file_count(), 1);
+        assert!(context.to_context_string().contains("Claude local"));
+        assert!(!context.to_context_string().contains("Agent local"));
+    }
+
+    #[test]
+    fn test_truncation_small_remaining_space() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create content that will leave less than 100 bytes remaining
+        let content1 = "x".repeat(900);
+        let content2 = "y".repeat(500);
+        std::fs::write(temp_dir.path().join("CLAUDE.md"), &content1).unwrap();
+        std::fs::write(temp_dir.path().join("CLAUDE.local.md"), &content2).unwrap();
+
+        let config = ProjectContextConfig {
+            max_total_size: 1000, // Very small limit
+            ..Default::default()
+        };
+        let context = ProjectContext::discover(temp_dir.path(), &config).unwrap();
+
+        // Should be truncated and not include second file content due to < 100 bytes
+        assert!(context.is_truncated());
+    }
+
+    #[test]
+    fn test_mdc_no_frontmatter_markers() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join(".cursor/rules")).unwrap();
+
+        // MDC file without any frontmatter
+        std::fs::write(
+            temp_dir.path().join(".cursor/rules/plain.mdc"),
+            "Just plain content without frontmatter",
+        )
+        .unwrap();
+
+        let config = ProjectContextConfig::default();
+        let context = ProjectContext::discover(temp_dir.path(), &config).unwrap();
+
+        assert_eq!(context.file_count(), 1);
+        // Should have empty globs which means always apply
+        if let ContextFileSource::CursorMdc {
+            globs,
+            always_apply,
+            ..
+        } = &context.files()[0].source
+        {
+            assert!(globs.is_empty());
+            assert!(!always_apply);
+        } else {
+            panic!("Expected CursorMdc source");
+        }
+    }
+
+    #[test]
+    fn test_context_file_source_equality() {
+        assert_eq!(ContextFileSource::GlobalUser, ContextFileSource::GlobalUser);
+        assert_eq!(
+            ContextFileSource::ProjectRoot,
+            ContextFileSource::ProjectRoot
+        );
+        assert_eq!(
+            ContextFileSource::CursorRules,
+            ContextFileSource::CursorRules
+        );
+        assert_ne!(
+            ContextFileSource::GlobalUser,
+            ContextFileSource::ProjectRoot
+        );
+
+        let sub1 = ContextFileSource::Subdirectory(PathBuf::from("src"));
+        let sub2 = ContextFileSource::Subdirectory(PathBuf::from("src"));
+        let sub3 = ContextFileSource::Subdirectory(PathBuf::from("lib"));
+        assert_eq!(sub1, sub2);
+        assert_ne!(sub1, sub3);
+    }
+
+    #[test]
+    fn test_context_combined_string_headers() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join(".cursor/rules")).unwrap();
+        std::fs::create_dir_all(temp_dir.path().join("src")).unwrap();
+
+        std::fs::write(temp_dir.path().join("CLAUDE.md"), "project").unwrap();
+        std::fs::write(temp_dir.path().join("CLAUDE.local.md"), "local").unwrap();
+        std::fs::write(temp_dir.path().join("src/CLAUDE.md"), "subdir").unwrap();
+        std::fs::write(temp_dir.path().join(".cursorrules"), "cursor").unwrap();
+        std::fs::write(
+            temp_dir.path().join(".cursor/rules/test.mdc"),
+            r#"---
+description: Test MDC
+---
+mdc content"#,
+        )
+        .unwrap();
+
+        let config = ProjectContextConfig::default();
+        let context = ProjectContext::discover(temp_dir.path(), &config).unwrap();
+        let combined = context.to_context_string();
+
+        // Check all section headers are present
+        assert!(combined.contains("# Project Context"));
+        assert!(combined.contains("## Project Context"));
+        assert!(combined.contains("## Project Local Context"));
+        assert!(combined.contains("## Context for src/"));
+        assert!(combined.contains("## Cursor Rules"));
+        assert!(combined.contains("## Cursor Rule: Test MDC"));
+    }
+
+    #[test]
+    fn test_mdc_rule_without_description_uses_filename() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join(".cursor/rules")).unwrap();
+
+        std::fs::write(
+            temp_dir.path().join(".cursor/rules/my-rule.mdc"),
+            r#"---
+globs: ["*.rs"]
+---
+content"#,
+        )
+        .unwrap();
+
+        let config = ProjectContextConfig::default();
+        let context = ProjectContext::discover(temp_dir.path(), &config).unwrap();
+        let combined = context.to_context_string();
+
+        // Should use filename when no description
+        assert!(combined.contains("## Cursor Rule (my-rule.mdc)"));
+    }
+
+    #[test]
+    fn test_filter_for_context_preserves_non_mdc() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join(".cursor/rules")).unwrap();
+
+        std::fs::write(temp_dir.path().join("CLAUDE.md"), "Project content").unwrap();
+        std::fs::write(temp_dir.path().join(".cursorrules"), "Cursor content").unwrap();
+        std::fs::write(
+            temp_dir.path().join(".cursor/rules/ts.mdc"),
+            r#"---
+globs: ["*.ts"]
+---
+TS only"#,
+        )
+        .unwrap();
+
+        let config = ProjectContextConfig::default();
+        let context = ProjectContext::discover(temp_dir.path(), &config).unwrap();
+
+        // Filter for a .rs file - non-MDC files should always be included
+        let filtered = context.filter_for_context(&[PathBuf::from("main.rs")]);
+
+        assert_eq!(filtered.file_count(), 2); // CLAUDE.md and .cursorrules
+        assert!(filtered.to_context_string().contains("Project content"));
+        assert!(filtered.to_context_string().contains("Cursor content"));
+        assert!(!filtered.to_context_string().contains("TS only"));
+    }
+
+    #[test]
+    fn test_total_size_tracking() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("CLAUDE.md"), "Hello World").unwrap();
+
+        let config = ProjectContextConfig::default();
+        let context = ProjectContext::discover(temp_dir.path(), &config).unwrap();
+
+        // Total size should include headers and content
+        assert!(context.total_size() > "Hello World".len());
+        assert!(context.total_size() > 0);
+    }
 }

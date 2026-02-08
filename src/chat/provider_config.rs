@@ -12,7 +12,7 @@ use crate::error::{Result, TedError};
 /// Represents a configured provider
 #[derive(Debug, Clone)]
 pub struct ProviderConfig {
-    /// Provider name (e.g., "anthropic", "ollama", "openrouter")
+    /// Provider name (e.g., "anthropic", "local", "openrouter")
     pub name: String,
     /// API key if required
     pub api_key: Option<String>,
@@ -59,7 +59,7 @@ pub fn resolve_model_name(
 
     // Use provider-specific default
     match provider_name {
-        "ollama" => settings.providers.ollama.default_model.clone(),
+        "local" => settings.providers.local.default_model.clone(),
         "openrouter" => settings.providers.openrouter.default_model.clone(),
         _ => settings.providers.anthropic.default_model.clone(),
     }
@@ -68,8 +68,8 @@ pub fn resolve_model_name(
 /// Validate that a provider is properly configured
 pub fn validate_provider_config(provider_name: &str, settings: &Settings) -> ProviderValidation {
     match provider_name {
-        "ollama" => {
-            // Ollama doesn't require an API key, just needs to be running
+        "local" => {
+            // Local provider doesn't require an API key
             ProviderValidation::Valid
         }
         "openrouter" => {
@@ -97,11 +97,11 @@ pub fn validate_provider_config(provider_name: &str, settings: &Settings) -> Pro
 /// Build provider configuration from settings
 pub fn build_provider_config(provider_name: &str, settings: &Settings) -> Result<ProviderConfig> {
     match provider_name {
-        "ollama" => Ok(ProviderConfig {
-            name: "ollama".to_string(),
+        "local" => Ok(ProviderConfig {
+            name: "local".to_string(),
             api_key: None,
-            base_url: Some(settings.providers.ollama.base_url.clone()),
-            default_model: settings.providers.ollama.default_model.clone(),
+            base_url: None,
+            default_model: settings.providers.local.default_model.clone(),
             requires_api_key: false,
         }),
         "openrouter" => {
@@ -202,7 +202,7 @@ impl ApiKeyValidation {
 /// Get the default model for a provider
 pub fn get_default_model(provider_name: &str, settings: &Settings) -> String {
     match provider_name {
-        "ollama" => settings.providers.ollama.default_model.clone(),
+        "local" => settings.providers.local.default_model.clone(),
         "openrouter" => settings.providers.openrouter.default_model.clone(),
         _ => settings.providers.anthropic.default_model.clone(),
     }
@@ -212,8 +212,8 @@ pub fn get_default_model(provider_name: &str, settings: &Settings) -> String {
 pub fn is_model_supported_by_provider(model: &str, provider_name: &str) -> bool {
     match provider_name {
         "anthropic" => model.starts_with("claude-"),
-        "ollama" => {
-            // Ollama can run any model, so always return true
+        "local" => {
+            // Local provider can run any GGUF model
             true
         }
         "openrouter" => {
@@ -233,11 +233,10 @@ pub fn get_known_models(provider_name: &str) -> Vec<&'static str> {
             "claude-3-5-sonnet-20241022",
             "claude-3-5-haiku-20241022",
         ],
-        "ollama" => vec![
+        "local" => vec![
+            "qwen2.5-coder:14b",
+            "qwen2.5-coder:7b",
             "llama3.2",
-            "llama3.1",
-            "codellama",
-            "mistral",
             "deepseek-coder-v2",
         ],
         "openrouter" => vec![
@@ -279,8 +278,7 @@ mod tests {
     fn create_test_settings() -> Settings {
         let mut settings = Settings::default();
         settings.providers.anthropic.default_model = "claude-3-5-sonnet".to_string();
-        settings.providers.ollama.default_model = "llama3.2".to_string();
-        settings.providers.ollama.base_url = "http://localhost:11434".to_string();
+        settings.providers.local.default_model = "llama3.2".to_string();
         settings.providers.openrouter.default_model = "anthropic/claude-3.5-sonnet".to_string();
         settings
     }
@@ -290,8 +288,8 @@ mod tests {
     #[test]
     fn test_resolve_provider_name_from_arg() {
         let settings = create_test_settings();
-        let result = resolve_provider_name(Some("ollama"), &settings);
-        assert_eq!(result, "ollama");
+        let result = resolve_provider_name(Some("local"), &settings);
+        assert_eq!(result, "local");
     }
 
     #[test]
@@ -306,8 +304,8 @@ mod tests {
     fn test_resolve_provider_name_arg_overrides_settings() {
         let mut settings = create_test_settings();
         settings.defaults.provider = "anthropic".to_string();
-        let result = resolve_provider_name(Some("ollama"), &settings);
-        assert_eq!(result, "ollama");
+        let result = resolve_provider_name(Some("local"), &settings);
+        assert_eq!(result, "local");
     }
 
     // ==================== resolve_model_name tests ====================
@@ -334,9 +332,9 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_model_name_ollama() {
+    fn test_resolve_model_name_local() {
         let settings = create_test_settings();
-        let result = resolve_model_name(None, None, "ollama", &settings);
+        let result = resolve_model_name(None, None, "local", &settings);
         assert_eq!(result, "llama3.2");
     }
 
@@ -351,9 +349,9 @@ mod tests {
     // ==================== validate_provider_config tests ====================
 
     #[test]
-    fn test_validate_provider_config_ollama() {
+    fn test_validate_provider_config_local() {
         let settings = create_test_settings();
-        let result = validate_provider_config("ollama", &settings);
+        let result = validate_provider_config("local", &settings);
         assert_eq!(result, ProviderValidation::Valid);
     }
 
@@ -390,12 +388,12 @@ mod tests {
     // ==================== build_provider_config tests ====================
 
     #[test]
-    fn test_build_provider_config_ollama() {
+    fn test_build_provider_config_local() {
         let settings = create_test_settings();
-        let result = build_provider_config("ollama", &settings);
+        let result = build_provider_config("local", &settings);
         assert!(result.is_ok());
         let config = result.unwrap();
-        assert_eq!(config.name, "ollama");
+        assert_eq!(config.name, "local");
         assert!(!config.requires_api_key);
         assert!(config.api_key.is_none());
     }
@@ -499,9 +497,9 @@ mod tests {
     }
 
     #[test]
-    fn test_get_default_model_ollama() {
+    fn test_get_default_model_local() {
         let settings = create_test_settings();
-        let model = get_default_model("ollama", &settings);
+        let model = get_default_model("local", &settings);
         assert_eq!(model, "llama3.2");
     }
 
@@ -529,9 +527,9 @@ mod tests {
     }
 
     #[test]
-    fn test_is_model_supported_ollama() {
-        assert!(is_model_supported_by_provider("llama3.2", "ollama"));
-        assert!(is_model_supported_by_provider("any-model", "ollama"));
+    fn test_is_model_supported_local() {
+        assert!(is_model_supported_by_provider("llama3.2", "local"));
+        assert!(is_model_supported_by_provider("any-model", "local"));
     }
 
     #[test]
@@ -552,8 +550,8 @@ mod tests {
     }
 
     #[test]
-    fn test_get_known_models_ollama() {
-        let models = get_known_models("ollama");
+    fn test_get_known_models_local() {
+        let models = get_known_models("local");
         assert!(!models.is_empty());
         assert!(models.iter().any(|m| m.contains("llama")));
     }

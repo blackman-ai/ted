@@ -93,9 +93,9 @@ impl ModelRegistry {
             ],
         );
 
-        // Ollama models (local) - updated late 2025
+        // Local models (GGUF via llama-server) - updated late 2025
         self.models.insert(
-            Provider::Ollama,
+            Provider::Local,
             vec![
                 // High tier - requires significant VRAM (24GB+)
                 ModelInfo::new("qwen2.5-coder:72b", ModelTier::High)
@@ -287,7 +287,7 @@ impl ModelRegistry {
 
         // Merge user models (user models take precedence)
         self.merge_provider_models(Provider::Anthropic, config.anthropic);
-        self.merge_provider_models(Provider::Ollama, config.ollama);
+        self.merge_provider_models(Provider::Local, config.local);
         self.merge_provider_models(Provider::OpenRouter, config.openrouter);
         self.merge_provider_models(Provider::Blackman, config.blackman);
 
@@ -375,7 +375,7 @@ models = [
     # { id = "claude-sonnet-4-20250514", name = "Claude Sonnet 4", tier = "high", context_size = 200000, recommended = true }
 ]
 
-[ollama]
+[local]
 models = [
     # { id = "qwen2.5-coder:14b", name = "Qwen 2.5 Coder 14B", tier = "medium", vram_gb = 12.0, recommended = true }
     # { id = "custom-model:latest", name = "My Custom Model", tier = "medium", vram_gb = 8.0 }
@@ -408,7 +408,7 @@ mod tests {
         assert!(!registry
             .models_for_provider(&Provider::Anthropic)
             .is_empty());
-        assert!(!registry.models_for_provider(&Provider::Ollama).is_empty());
+        assert!(!registry.models_for_provider(&Provider::Local).is_empty());
         assert!(!registry
             .models_for_provider(&Provider::OpenRouter)
             .is_empty());
@@ -438,7 +438,7 @@ mod tests {
     fn test_registry_vram_filter() {
         let registry = ModelRegistry::with_defaults_only();
 
-        let low_vram = registry.models_for_vram(&Provider::Ollama, 4.0);
+        let low_vram = registry.models_for_vram(&Provider::Local, 4.0);
         for model in &low_vram {
             if let Some(vram) = model.vram_gb {
                 assert!(vram <= 4.0);
@@ -465,7 +465,7 @@ mod tests {
         let registry = ModelRegistry::with_defaults_only();
 
         let model = registry
-            .find_model_for_provider(&Provider::Ollama, "qwen2.5-coder:14b")
+            .find_model_for_provider(&Provider::Local, "qwen2.5-coder:14b")
             .unwrap();
         assert_eq!(model.tier, ModelTier::Medium);
     }
@@ -498,7 +498,7 @@ mod tests {
     fn test_generate_sample_config() {
         let sample = ModelRegistry::generate_sample_config();
         assert!(sample.contains("[anthropic]"));
-        assert!(sample.contains("[ollama]"));
+        assert!(sample.contains("[local]"));
         assert!(sample.contains("[openrouter]"));
     }
 }

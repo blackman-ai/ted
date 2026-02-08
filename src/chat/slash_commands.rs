@@ -16,7 +16,7 @@ use super::commands::{
     BeadsArgs, CommitArgs, ExplainArgs, FixArgs, ModelArgs, ReviewArgs, SkillsArgs, TestArgs,
 };
 use super::input_parser::parse_bead_status;
-use crate::models::{DownloadRegistry, ModelCategory};
+use crate::models::{scan_for_models, DownloadRegistry, ModelCategory};
 
 /// Result of executing a slash command
 #[derive(Debug, Clone)]
@@ -680,6 +680,24 @@ pub fn execute_model(args: &ModelArgs) -> SlashCommandResult {
 
 /// List available models from registry
 fn execute_model_list() -> SlashCommandResult {
+    let mut output = String::from("Local Models\n");
+    output.push_str("───────────────────────────────────────\n\n");
+
+    // Show discovered models on the system first
+    let discovered = scan_for_models();
+    if !discovered.is_empty() {
+        output.push_str("[Installed on your system]\n");
+        for model in &discovered {
+            output.push_str(&format!(
+                "  {} - {} ({})\n",
+                model.filename,
+                model.source,
+                model.size_display()
+            ));
+        }
+        output.push('\n');
+    }
+
     // Use embedded registry for synchronous operation
     let registry = match DownloadRegistry::embedded() {
         Ok(r) => r,
@@ -687,9 +705,6 @@ fn execute_model_list() -> SlashCommandResult {
             return SlashCommandResult::Error(format!("Failed to load model registry: {}", e))
         }
     };
-
-    let mut output = String::from("Available Local Models\n");
-    output.push_str("───────────────────────────────────────\n\n");
 
     // Group by category
     let code_models: Vec<_> = registry
@@ -704,7 +719,7 @@ fn execute_model_list() -> SlashCommandResult {
         .collect();
 
     if !code_models.is_empty() {
-        output.push_str("[Code Models]\n");
+        output.push_str("[Available for Download - Code]\n");
         for model in code_models {
             let recommended = if model.tags.contains(&"recommended".to_string()) {
                 " ★"
@@ -722,7 +737,7 @@ fn execute_model_list() -> SlashCommandResult {
     }
 
     if !chat_models.is_empty() {
-        output.push_str("[Chat Models]\n");
+        output.push_str("[Available for Download - Chat]\n");
         for model in chat_models {
             let recommended = if model.tags.contains(&"recommended".to_string()) {
                 " ★"
@@ -740,7 +755,11 @@ fn execute_model_list() -> SlashCommandResult {
     }
 
     output.push_str("───────────────────────────────────────\n");
-    output.push_str(&format!("{} models available\n", registry.models.len()));
+    output.push_str(&format!(
+        "{} installed, {} available for download\n",
+        discovered.len(),
+        registry.models.len()
+    ));
     output.push_str("\nCommands:\n");
     output.push_str("  /model info <name>     - Show model details and variants\n");
     output.push_str("  /model download <name> - Download a model\n");
@@ -754,27 +773,152 @@ fn execute_model_list() -> SlashCommandResult {
 fn execute_model_download(name: &str, quantization: Option<&str>) -> SlashCommandResult {
     let quant = quantization.unwrap_or("q4_k_m");
 
-    SlashCommandResult::SendToLlm(format!(
-        "Download the local LLM model '{}' with quantization '{}'. Steps:\n\n\
-         1. Use the DownloadRegistry to find the model and its download URL\n\
-         2. Use ModelDownloader to download the GGUF file to ~/.ted/models/local/\n\
-         3. Verify the SHA256 checksum after download\n\
-         4. Report the download progress and final file location\n\n\
-         If the model is already downloaded, just confirm its location.",
-        name, quant
-    ))
+    let registry = match DownloadRegistry::embedded() {
+        Ok(r) => r,
+        Err(e) => {
+            return SlashCommandResult::Error(format!("Failed to load model registry: {}", e))
+        }
+    };
+
+    let name_lower = name.to_lowercase();
+    let model = registry
+        .models
+        .iter()
+        .find(|m| m.id.to_lowercase() == name_lower || m.id.to_lowercase().contains(&name_lower));
+
+    match model {
+        Some(m) => {
+            let quant_lower = quant.to_lowercase();
+            let variant = m
+                .variants
+                .iter()
+                .find(|v| format!("{:?}", v.quantization).to_lowercase() == quant_lower);
+
+            match variant {
+                Some(v) => {
+                    let dest = dirs::home_dir()
+                        .map(|h| h.join(".ted/models/local"))
+                        .unwrap_or_else(|| std::path::PathBuf::from("~/.ted/models/local"));
+                    let filename = format!("{}-{}.gguf", m.id, quant_lower);
+                    let dest_path = dest.join(&filename);
+
+                    SlashCommandResult::SendToLlm(format!(
+                        "Download this model file using curl or wget:\n\n\
+                         Model: {} ({})\n\
+                         Size: {}\n\
+                         URL: {}\n\
+                         Destination: {}\n\n\
+                         First create the directory if needed:\n\
+                         mkdir -p \"{}\"\n\n\
+                         Then download:\n\
+                         curl -L --progress-bar -o \"{}\" \"{}\"\n\n\
+                         Run these commands now to download the model.",
+                        m.name,
+                        quant,
+                        v.size_display(),
+                        v.url,
+                        dest_path.display(),
+                        dest.display(),
+                        dest_path.display(),
+                        v.url
+                    ))
+                }
+                None => {
+                    let available: Vec<String> = m
+                        .variants
+                        .iter()
+                        .map(|v| format!("{:?}", v.quantization).to_lowercase())
+                        .collect();
+                    SlashCommandResult::Error(format!(
+                        "Quantization '{}' not available for {}.\nAvailable: {}",
+                        quant,
+                        m.name,
+                        available.join(", ")
+                    ))
+                }
+            }
+        }
+        None => {
+            let similar: Vec<_> = registry
+                .models
+                .iter()
+                .filter(|m| {
+                    m.id.to_lowercase().contains(&name_lower)
+                        || m.name.to_lowercase().contains(&name_lower)
+                })
+                .take(5)
+                .collect();
+
+            if similar.is_empty() {
+                SlashCommandResult::Error(format!(
+                    "Model '{}' not found. Use /model list to see available models.",
+                    name
+                ))
+            } else {
+                let mut output = format!("Model '{}' not found. Did you mean:\n", name);
+                for m in similar {
+                    output.push_str(&format!("  {} - {}\n", m.id, m.name));
+                }
+                SlashCommandResult::Error(output)
+            }
+        }
+    }
 }
 
 /// Load a model for inference
 fn execute_model_load(name: &str) -> SlashCommandResult {
-    SlashCommandResult::SendToLlm(format!(
-        "Load the local LLM model '{}' for inference. Steps:\n\n\
-         1. Check if the model file exists in ~/.ted/models/local/\n\
-         2. If not found, suggest downloading it with /model download {}\n\
-         3. If found, update the settings to use llama-cpp provider with this model\n\
-         4. Confirm the model is ready for use",
-        name, name
-    ))
+    let discovered = scan_for_models();
+    let name_lower = name.to_lowercase();
+
+    let matching: Vec<_> = discovered
+        .iter()
+        .filter(|m| m.filename.to_lowercase().contains(&name_lower))
+        .collect();
+
+    match matching.len() {
+        0 => {
+            let mut output = format!("No model matching '{}' found on your system.\n", name);
+            output.push_str(&format!("Download it with: /model download {}\n", name));
+            if !discovered.is_empty() {
+                output.push_str("\nAvailable models:\n");
+                for m in &discovered {
+                    output.push_str(&format!(
+                        "  {} ({}, {})\n",
+                        m.filename,
+                        m.source,
+                        m.size_display()
+                    ));
+                }
+            }
+            SlashCommandResult::Error(output)
+        }
+        1 => {
+            let model = &matching[0];
+            SlashCommandResult::Message(format!(
+                "Found: {} ({})\n\
+                 Path: {}\n\n\
+                 To use this model, update your settings:\n\
+                 Set providers.local.model_path = \"{}\"",
+                model.display_name(),
+                model.size_display(),
+                model.path.display(),
+                model.path.display()
+            ))
+        }
+        _ => {
+            let mut output = format!("Multiple models matching '{}':\n", name);
+            for (i, m) in matching.iter().enumerate() {
+                output.push_str(&format!(
+                    "  {}. {} ({})\n",
+                    i + 1,
+                    m.display_name(),
+                    m.size_display()
+                ));
+            }
+            output.push_str("\nSpecify a more precise name.");
+            SlashCommandResult::Message(output)
+        }
+    }
 }
 
 /// Show model info

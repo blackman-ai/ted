@@ -190,9 +190,7 @@ fn draw_providers(frame: &mut Frame, area: Rect, app: &App) {
                 ProviderItem::AnthropicApiKey | ProviderItem::AnthropicModel => {
                     current_provider == "anthropic"
                 }
-                ProviderItem::OllamaBaseUrl | ProviderItem::OllamaModel => {
-                    current_provider == "ollama"
-                }
+                ProviderItem::LocalPort | ProviderItem::LocalModel => current_provider == "local",
                 ProviderItem::OpenRouterApiKey | ProviderItem::OpenRouterModel => {
                     current_provider == "openrouter"
                 }
@@ -220,8 +218,8 @@ fn draw_providers(frame: &mut Frame, area: Rect, app: &App) {
                 ProviderItem::AnthropicModel => {
                     app.settings.providers.anthropic.default_model.clone()
                 }
-                ProviderItem::OllamaBaseUrl => app.settings.providers.ollama.base_url.clone(),
-                ProviderItem::OllamaModel => app.settings.providers.ollama.default_model.clone(),
+                ProviderItem::LocalPort => app.settings.providers.local.port.to_string(),
+                ProviderItem::LocalModel => app.settings.providers.local.default_model.clone(),
                 ProviderItem::OpenRouterApiKey => {
                     if app.settings.get_openrouter_api_key().is_some() {
                         "••••••••••••••••".to_string()
@@ -737,7 +735,7 @@ fn draw_model_picker_popup(frame: &mut Frame, app: &App) {
     // Determine title based on target
     let title = match app.model_selection_target {
         Some(ModelSelectionTarget::Anthropic) => " Select Anthropic Model ",
-        Some(ModelSelectionTarget::Ollama) => " Select Ollama Model ",
+        Some(ModelSelectionTarget::Local) => " Select Local Model ",
         Some(ModelSelectionTarget::OpenRouter) => " Select OpenRouter Model ",
         Some(ModelSelectionTarget::Blackman) => " Select Blackman Model ",
         None => " Select Model ",
@@ -751,14 +749,6 @@ fn draw_model_picker_popup(frame: &mut Frame, app: &App) {
 
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
-
-    // Show loading indicator for Ollama
-    if app.loading_ollama_models {
-        let loading_msg = Paragraph::new("Loading models from Ollama...")
-            .style(Style::default().fg(Color::Yellow));
-        frame.render_widget(loading_msg, inner);
-        return;
-    }
 
     if app.available_models.is_empty() {
         let empty_msg = Paragraph::new("No models available for this provider")
@@ -982,7 +972,7 @@ mod tests {
         assert!(content.contains("Default Provider"));
         assert!(content.contains("Anthropic API Key"));
         assert!(content.contains("Anthropic Model"));
-        assert!(content.contains("Ollama"));
+        assert!(content.contains("Local"));
     }
 
     #[test]

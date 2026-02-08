@@ -130,7 +130,7 @@ pub struct ChatArgs {
     #[arg(short, long)]
     pub model: Option<String>,
 
-    /// LLM provider to use (anthropic, ollama)
+    /// LLM provider to use (anthropic, local, openrouter, blackman)
     #[arg(short, long)]
     pub provider: Option<String>,
 
@@ -149,6 +149,10 @@ pub struct ChatArgs {
     /// Embedded mode (output JSONL events for GUI integration)
     #[arg(long, hide = true)]
     pub embedded: bool,
+
+    /// Path to a GGUF model file for local provider
+    #[arg(long, value_name = "PATH")]
+    pub model_path: Option<PathBuf>,
 
     /// Disable TUI mode (use simple terminal output, useful for piping/scripting)
     #[arg(long)]
@@ -191,7 +195,7 @@ pub struct AskArgs {
     #[arg(short, long)]
     pub model: Option<String>,
 
-    /// LLM provider to use (anthropic, ollama)
+    /// LLM provider to use (anthropic, local, openrouter, blackman)
     #[arg(short, long)]
     pub provider: Option<String>,
 
@@ -491,9 +495,9 @@ mod tests {
 
     #[test]
     fn test_chat_with_provider() {
-        let cli = Cli::parse_from(["ted", "chat", "-p", "ollama"]);
+        let cli = Cli::parse_from(["ted", "chat", "-p", "local"]);
         if let Some(Commands::Chat(args)) = cli.command {
-            assert_eq!(args.provider, Some("ollama".to_string()));
+            assert_eq!(args.provider, Some("local".to_string()));
         } else {
             panic!("Expected Chat command");
         }
@@ -970,11 +974,11 @@ mod tests {
 
     #[test]
     fn test_settings_set() {
-        let cli = Cli::parse_from(["ted", "settings", "set", "provider", "ollama"]);
+        let cli = Cli::parse_from(["ted", "settings", "set", "provider", "local"]);
         if let Some(Commands::Settings(args)) = cli.command {
             if let Some(SettingsCommands::Set { key, value }) = args.command {
                 assert_eq!(key, "provider");
-                assert_eq!(value, "ollama");
+                assert_eq!(value, "local");
             } else {
                 panic!("Expected Set subcommand");
             }

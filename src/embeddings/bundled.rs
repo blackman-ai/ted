@@ -4,7 +4,7 @@
 //! Bundled embeddings using fastembed-rs
 //!
 //! This module provides embedding generation using locally-bundled ONNX models
-//! via fastembed. No external server (like Ollama) is required.
+//! via fastembed. No external server is required.
 
 use crate::error::{Result, TedError};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};

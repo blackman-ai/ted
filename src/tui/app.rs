@@ -10,7 +10,6 @@ use std::sync::mpsc;
 
 use crate::caps::loader::CapLoader;
 use crate::config::Settings;
-use crate::llm::providers::OllamaProvider;
 use crate::models::{ModelInfo, ModelRegistry, Provider};
 use crate::plans::{PlanInfo, PlanStatus, PlanStore};
 use crate::tui::editor::{CommandResult, Editor, EditorMode};
@@ -103,8 +102,8 @@ pub enum ProviderItem {
     DefaultProvider,
     AnthropicApiKey,
     AnthropicModel,
-    OllamaBaseUrl,
-    OllamaModel,
+    LocalPort,
+    LocalModel,
     OpenRouterApiKey,
     OpenRouterModel,
     BlackmanApiKey,
@@ -119,8 +118,8 @@ impl ProviderItem {
             ProviderItem::DefaultProvider,
             ProviderItem::AnthropicApiKey,
             ProviderItem::AnthropicModel,
-            ProviderItem::OllamaBaseUrl,
-            ProviderItem::OllamaModel,
+            ProviderItem::LocalPort,
+            ProviderItem::LocalModel,
             ProviderItem::OpenRouterApiKey,
             ProviderItem::OpenRouterModel,
             ProviderItem::BlackmanApiKey,
@@ -135,8 +134,8 @@ impl ProviderItem {
             ProviderItem::DefaultProvider => "Default Provider",
             ProviderItem::AnthropicApiKey => "Anthropic API Key",
             ProviderItem::AnthropicModel => "Anthropic Model",
-            ProviderItem::OllamaBaseUrl => "Ollama Base URL",
-            ProviderItem::OllamaModel => "Ollama Model",
+            ProviderItem::LocalPort => "Local Port",
+            ProviderItem::LocalModel => "Local Model",
             ProviderItem::OpenRouterApiKey => "OpenRouter API Key",
             ProviderItem::OpenRouterModel => "OpenRouter Model",
             ProviderItem::BlackmanApiKey => "Blackman API Key",
@@ -218,7 +217,7 @@ impl From<&ModelInfo> for ModelDisplayInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelSelectionTarget {
     Anthropic,
-    Ollama,
+    Local,
     OpenRouter,
     Blackman,
 }
@@ -273,10 +272,6 @@ pub struct App {
     pub model_selection_target: Option<ModelSelectionTarget>,
     /// Scroll offset for the model picker
     pub model_picker_scroll: usize,
-    /// Whether we're currently loading models from Ollama
-    pub loading_ollama_models: bool,
-    /// Receiver for async Ollama model fetch results
-    model_fetch_rx: Option<mpsc::Receiver<Result<Vec<String>, String>>>,
     /// Whether we're currently testing a connection
     pub testing_connection: bool,
     /// Receiver for async connection test results
@@ -316,8 +311,6 @@ impl App {
             model_picker_index: 0,
             model_selection_target: None,
             model_picker_scroll: 0,
-            loading_ollama_models: false,
-            model_fetch_rx: None,
             testing_connection: false,
             connection_test_rx: None,
         }
@@ -514,51 +507,37 @@ impl App {
     pub fn start_model_selection(&mut self, target: ModelSelectionTarget) {
         let provider = match target {
             ModelSelectionTarget::Anthropic => Provider::Anthropic,
-            ModelSelectionTarget::Ollama => Provider::Ollama,
+            ModelSelectionTarget::Local => Provider::Local,
             ModelSelectionTarget::OpenRouter => Provider::OpenRouter,
             ModelSelectionTarget::Blackman => Provider::Blackman,
         };
 
-        // For Ollama, spawn an async task to fetch live models
-        if target == ModelSelectionTarget::Ollama {
-            // Check if we're in a tokio runtime context
-            if tokio::runtime::Handle::try_current().is_ok() {
-                self.loading_ollama_models = true;
-                self.set_status("Fetching models from Ollama...", false);
+        // Use registry models for all providers
+        let models = self.model_registry.models_for_provider(&provider);
+        self.available_models = models.into_iter().map(ModelDisplayInfo::from).collect();
 
-                // Create channel for receiving results
-                let (tx, rx) = mpsc::channel();
-                self.model_fetch_rx = Some(rx);
-
-                // Spawn async task to fetch models
-                let base_url = self.settings.providers.ollama.base_url.clone();
-                tokio::spawn(async move {
-                    let ollama = OllamaProvider::with_base_url(&base_url);
-                    let result = ollama
-                        .list_local_models()
-                        .await
-                        .map_err(|e| format!("Failed to fetch Ollama models: {}", e));
-                    // Send result through channel (ignore error if receiver dropped)
-                    let _ = tx.send(result);
-                });
-
-                // Show empty list while loading - will be populated when results arrive
-                self.available_models = Vec::new();
-            } else {
-                // No runtime available (e.g., in tests) - use registry models directly
-                let models = self.model_registry.models_for_provider(&provider);
-                self.available_models = models.into_iter().map(ModelDisplayInfo::from).collect();
+        // For local provider, also include discovered GGUF models from the system
+        if target == ModelSelectionTarget::Local {
+            let discovered = crate::models::scanner::scan_for_models();
+            for model in discovered {
+                let id = model
+                    .path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&model.filename)
+                    .to_string();
+                // Skip if already in registry list
+                if self.available_models.iter().any(|m| m.id == id) {
+                    continue;
+                }
+                self.available_models.push(self.create_live_model_info(&id));
             }
-        } else {
-            // For other providers, use registry models
-            let models = self.model_registry.models_for_provider(&provider);
-            self.available_models = models.into_iter().map(ModelDisplayInfo::from).collect();
         }
 
         // Find current model in list and set selection
         let current_model = match target {
             ModelSelectionTarget::Anthropic => &self.settings.providers.anthropic.default_model,
-            ModelSelectionTarget::Ollama => &self.settings.providers.ollama.default_model,
+            ModelSelectionTarget::Local => &self.settings.providers.local.default_model,
             ModelSelectionTarget::OpenRouter => &self.settings.providers.openrouter.default_model,
             ModelSelectionTarget::Blackman => &self.settings.providers.blackman.default_model,
         };
@@ -581,108 +560,23 @@ impl App {
         self.model_selection_target = None;
         self.model_picker_index = 0;
         self.model_picker_scroll = 0;
-        self.loading_ollama_models = false;
-        self.model_fetch_rx = None;
         self.input_mode = InputMode::Normal;
-    }
-
-    /// Check for async model fetch results (non-blocking)
-    /// Call this from the event loop to update state when models arrive
-    pub fn check_model_fetch_results(&mut self) {
-        if let Some(ref rx) = self.model_fetch_rx {
-            // Non-blocking check for results
-            match rx.try_recv() {
-                Ok(Ok(live_models)) => {
-                    // Success - populate with live models
-                    self.available_models = live_models
-                        .iter()
-                        .map(|name| self.create_live_model_info(name))
-                        .collect();
-                    self.loading_ollama_models = false;
-                    self.model_fetch_rx = None;
-                    self.set_status(&format!("Found {} models", live_models.len()), false);
-
-                    // Find current model in the new list
-                    if let Some(ModelSelectionTarget::Ollama) = self.model_selection_target {
-                        let current_model = &self.settings.providers.ollama.default_model;
-                        self.model_picker_index = self
-                            .available_models
-                            .iter()
-                            .position(|m| &m.id == current_model)
-                            .unwrap_or(0);
-                    }
-                }
-                Ok(Err(err)) => {
-                    // Fetch failed - fall back to registry models
-                    self.loading_ollama_models = false;
-                    self.model_fetch_rx = None;
-                    self.set_status(&format!("Using registry: {}", err), true);
-
-                    // Fall back to registry models
-                    let models = self.model_registry.models_for_provider(&Provider::Ollama);
-                    self.available_models =
-                        models.into_iter().map(ModelDisplayInfo::from).collect();
-
-                    // Find current model in the fallback list
-                    let current_model = &self.settings.providers.ollama.default_model;
-                    self.model_picker_index = self
-                        .available_models
-                        .iter()
-                        .position(|m| &m.id == current_model)
-                        .unwrap_or(0);
-                }
-                Err(mpsc::TryRecvError::Empty) => {
-                    // Still loading, do nothing
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    // Channel closed unexpectedly - fall back to registry
-                    self.loading_ollama_models = false;
-                    self.model_fetch_rx = None;
-                    self.set_status("Model fetch interrupted", true);
-
-                    let models = self.model_registry.models_for_provider(&Provider::Ollama);
-                    self.available_models =
-                        models.into_iter().map(ModelDisplayInfo::from).collect();
-                }
-            }
-        }
     }
 
     /// Start an async connection test for the current provider
     pub fn start_connection_test(&mut self) {
         let provider = &self.settings.defaults.provider;
 
-        if provider == "ollama" {
-            // Check if we're in a tokio runtime context
-            if tokio::runtime::Handle::try_current().is_ok() {
-                self.testing_connection = true;
-                self.set_status("Testing Ollama connection...", false);
-
-                // Create channel for receiving results
-                let (tx, rx) = mpsc::channel();
-                self.connection_test_rx = Some(rx);
-
-                // Spawn async task to test connection
-                let base_url = self.settings.providers.ollama.base_url.clone();
-                tokio::spawn(async move {
-                    let ollama = OllamaProvider::with_base_url(&base_url);
-                    match ollama.list_local_models().await {
-                        Ok(models) => {
-                            let msg = format!(
-                                "Ollama connected! Found {} model{}",
-                                models.len(),
-                                if models.len() == 1 { "" } else { "s" }
-                            );
-                            let _ = tx.send(Ok(msg));
-                        }
-                        Err(e) => {
-                            let _ = tx.send(Err(format!("Ollama connection failed: {}", e)));
-                        }
-                    }
-                });
+        if provider == "local" {
+            // For local provider, check basic configuration
+            let model = &self.settings.providers.local.default_model;
+            if model.is_empty() {
+                self.set_status("No local model configured", true);
             } else {
-                // No runtime available (e.g., in tests)
-                self.set_status("Connection test requires async runtime", true);
+                self.set_status(
+                    &format!("Local provider configured with model: {}", model),
+                    false,
+                );
             }
         } else if provider == "anthropic" {
             // For Anthropic, just check if the API key is set
@@ -736,8 +630,8 @@ impl App {
                     ModelSelectionTarget::Anthropic => {
                         self.settings.providers.anthropic.default_model = model_id;
                     }
-                    ModelSelectionTarget::Ollama => {
-                        self.settings.providers.ollama.default_model = model_id;
+                    ModelSelectionTarget::Local => {
+                        self.settings.providers.local.default_model = model_id;
                     }
                     ModelSelectionTarget::OpenRouter => {
                         self.settings.providers.openrouter.default_model = model_id;
@@ -916,7 +810,7 @@ impl App {
                         // Toggle between providers
                         let current = &self.settings.defaults.provider;
                         let new_provider = if current == "anthropic" {
-                            "ollama"
+                            "local"
                         } else {
                             "anthropic"
                         };
@@ -939,14 +833,14 @@ impl App {
                         // Open model picker for Anthropic
                         self.start_model_selection(ModelSelectionTarget::Anthropic);
                     }
-                    ProviderItem::OllamaBaseUrl => {
-                        // Start editing Ollama base URL
-                        let current = self.settings.providers.ollama.base_url.clone();
+                    ProviderItem::LocalPort => {
+                        // Start editing local port
+                        let current = self.settings.providers.local.port.to_string();
                         self.start_editing(&current);
                     }
-                    ProviderItem::OllamaModel => {
-                        // Open model picker for Ollama
-                        self.start_model_selection(ModelSelectionTarget::Ollama);
+                    ProviderItem::LocalModel => {
+                        // Open model picker for Local
+                        self.start_model_selection(ModelSelectionTarget::Local);
                     }
                     ProviderItem::OpenRouterApiKey => {
                         // Start editing OpenRouter API key
@@ -1064,15 +958,16 @@ impl App {
                             self.mark_modified();
                         }
                     }
-                    ProviderItem::OllamaBaseUrl => {
+                    ProviderItem::LocalPort => {
                         if !value.is_empty() {
-                            self.settings.providers.ollama.base_url = value;
+                            self.settings.providers.local.port =
+                                value.parse::<u16>().unwrap_or(8847);
                             self.mark_modified();
                         }
                     }
-                    ProviderItem::OllamaModel => {
+                    ProviderItem::LocalModel => {
                         if !value.is_empty() {
-                            self.settings.providers.ollama.default_model = value;
+                            self.settings.providers.local.default_model = value;
                             self.mark_modified();
                         }
                     }
@@ -1164,12 +1059,12 @@ impl App {
         }
     }
 
-    /// Create ModelDisplayInfo from a live Ollama model name
+    /// Create ModelDisplayInfo from a local model name
     fn create_live_model_info(&self, model_name: &str) -> ModelDisplayInfo {
         // Check if we have this model in our registry for metadata
         if let Some(registry_model) = self
             .model_registry
-            .find_model_for_provider(&Provider::Ollama, model_name)
+            .find_model_for_provider(&Provider::Local, model_name)
         {
             // Use registry metadata
             ModelDisplayInfo::from(registry_model)
@@ -1179,7 +1074,7 @@ impl App {
                 id: model_name.to_string(),
                 name: model_name.to_string(),
                 tier: "Unknown".to_string(),
-                description: "Live model from Ollama".to_string(),
+                description: "Local model".to_string(),
                 recommended: false,
             }
         }
@@ -1350,8 +1245,8 @@ mod tests {
         assert_eq!(items[0], ProviderItem::DefaultProvider);
         assert_eq!(items[1], ProviderItem::AnthropicApiKey);
         assert_eq!(items[2], ProviderItem::AnthropicModel);
-        assert_eq!(items[3], ProviderItem::OllamaBaseUrl);
-        assert_eq!(items[4], ProviderItem::OllamaModel);
+        assert_eq!(items[3], ProviderItem::LocalPort);
+        assert_eq!(items[4], ProviderItem::LocalModel);
         assert_eq!(items[5], ProviderItem::OpenRouterApiKey);
         assert_eq!(items[6], ProviderItem::OpenRouterModel);
         assert_eq!(items[7], ProviderItem::BlackmanApiKey);
@@ -1365,8 +1260,8 @@ mod tests {
         assert_eq!(ProviderItem::DefaultProvider.label(), "Default Provider");
         assert_eq!(ProviderItem::AnthropicApiKey.label(), "Anthropic API Key");
         assert_eq!(ProviderItem::AnthropicModel.label(), "Anthropic Model");
-        assert_eq!(ProviderItem::OllamaBaseUrl.label(), "Ollama Base URL");
-        assert_eq!(ProviderItem::OllamaModel.label(), "Ollama Model");
+        assert_eq!(ProviderItem::LocalPort.label(), "Local Port");
+        assert_eq!(ProviderItem::LocalModel.label(), "Local Model");
         assert_eq!(ProviderItem::TestConnection.label(), "Test Connection");
         assert_eq!(ProviderItem::Back.label(), "← Back");
     }
@@ -1476,7 +1371,6 @@ mod tests {
         assert!(app.status_message.is_none());
         assert!(!app.status_is_error);
         assert!(!app.settings_modified);
-        assert!(!app.loading_ollama_models);
     }
 
     #[test]
@@ -1791,31 +1685,30 @@ mod tests {
     }
 
     #[test]
-    fn test_app_select_providers_ollama_base_url_starts_editing() {
+    fn test_app_select_providers_local_port_starts_editing() {
         let settings = Settings::default();
         let mut app = App::new(settings);
         app.screen = Screen::Providers;
 
-        app.provider_index = 3; // OllamaBaseUrl
+        app.provider_index = 3; // LocalPort
         app.select();
         assert_eq!(app.input_mode, InputMode::Editing);
     }
 
     #[test]
-    fn test_app_select_providers_ollama_model_opens_picker() {
+    fn test_app_select_providers_local_model_opens_picker() {
         let settings = Settings::default();
         let mut app = App::new(settings);
         app.screen = Screen::Providers;
 
-        app.provider_index = 4; // OllamaModel
+        app.provider_index = 4; // LocalModel
         app.select();
         assert_eq!(app.input_mode, InputMode::SelectingModel);
         assert_eq!(
             app.model_selection_target,
-            Some(ModelSelectionTarget::Ollama)
+            Some(ModelSelectionTarget::Local)
         );
-        // In test context (no tokio runtime), falls back to registry models
-        // In production (with runtime), models load asynchronously
+        // Uses registry models directly
         assert!(!app.available_models.is_empty());
     }
 
@@ -1955,31 +1848,31 @@ mod tests {
     }
 
     #[test]
-    fn test_app_confirm_edit_ollama_base_url() {
+    fn test_app_confirm_edit_local_port() {
         let settings = Settings::default();
         let mut app = App::new(settings);
         app.screen = Screen::Providers;
-        app.provider_index = 3; // OllamaBaseUrl
+        app.provider_index = 3; // LocalPort
 
-        app.start_editing("http://custom:8080");
+        app.start_editing("9090");
         app.confirm_edit();
 
-        assert_eq!(app.settings.providers.ollama.base_url, "http://custom:8080");
+        assert_eq!(app.settings.providers.local.port, 9090);
         assert!(app.settings_modified);
     }
 
     #[test]
-    fn test_app_confirm_edit_ollama_model() {
+    fn test_app_confirm_edit_local_model() {
         let settings = Settings::default();
         let mut app = App::new(settings);
         app.screen = Screen::Providers;
-        app.provider_index = 4; // OllamaModel
+        app.provider_index = 4; // LocalModel
 
         app.start_editing("llama3.2:latest");
         app.confirm_edit();
 
         assert_eq!(
-            app.settings.providers.ollama.default_model,
+            app.settings.providers.local.default_model,
             "llama3.2:latest"
         );
         assert!(app.settings_modified);
@@ -2167,208 +2060,34 @@ mod tests {
         assert_eq!(app.caps_index, 0);
     }
 
-    // ===== Async Model Fetch Tests =====
+    // ===== Model Selection Tests =====
 
     #[test]
-    fn test_model_fetch_rx_initialized_none() {
-        let settings = Settings::default();
-        let app = App::new(settings);
-        assert!(app.model_fetch_rx.is_none());
-    }
-
-    #[test]
-    fn test_check_model_fetch_results_no_receiver() {
-        let settings = Settings::default();
-        let mut app = App::new(settings);
-        app.model_fetch_rx = None;
-
-        // Should not panic and do nothing
-        app.check_model_fetch_results();
-        assert!(app.model_fetch_rx.is_none());
-    }
-
-    #[test]
-    fn test_check_model_fetch_results_success() {
-        let settings = Settings::default();
-        let mut app = App::new(settings);
-        app.model_selection_target = Some(ModelSelectionTarget::Ollama);
-        app.loading_ollama_models = true;
-
-        // Create a channel and send success result
-        let (tx, rx) = mpsc::channel();
-        app.model_fetch_rx = Some(rx);
-        tx.send(Ok(vec![
-            "model1:latest".to_string(),
-            "model2:7b".to_string(),
-        ]))
-        .unwrap();
-
-        // Check for results
-        app.check_model_fetch_results();
-
-        // Should have populated models
-        assert_eq!(app.available_models.len(), 2);
-        assert!(!app.loading_ollama_models);
-        assert!(app.model_fetch_rx.is_none());
-        assert!(app.status_message.is_some());
-        assert!(app.status_message.as_ref().unwrap().contains("2 models"));
-    }
-
-    #[test]
-    fn test_check_model_fetch_results_error() {
-        let settings = Settings::default();
-        let mut app = App::new(settings);
-        app.model_selection_target = Some(ModelSelectionTarget::Ollama);
-        app.loading_ollama_models = true;
-
-        // Create a channel and send error result
-        let (tx, rx) = mpsc::channel();
-        app.model_fetch_rx = Some(rx);
-        tx.send(Err("Connection refused".to_string())).unwrap();
-
-        // Check for results
-        app.check_model_fetch_results();
-
-        // Should have fallen back to registry models
-        assert!(!app.available_models.is_empty()); // Registry has Ollama models
-        assert!(!app.loading_ollama_models);
-        assert!(app.model_fetch_rx.is_none());
-        assert!(app.status_is_error);
-        assert!(app
-            .status_message
-            .as_ref()
-            .unwrap()
-            .contains("Connection refused"));
-    }
-
-    #[test]
-    fn test_check_model_fetch_results_empty_still_loading() {
-        let settings = Settings::default();
-        let mut app = App::new(settings);
-        app.model_selection_target = Some(ModelSelectionTarget::Ollama);
-        app.loading_ollama_models = true;
-
-        // Create a channel but don't send anything
-        let (_tx, rx) = mpsc::channel::<Result<Vec<String>, String>>();
-        app.model_fetch_rx = Some(rx);
-
-        // Check for results
-        app.check_model_fetch_results();
-
-        // Should still be loading
-        assert!(app.loading_ollama_models);
-        assert!(app.model_fetch_rx.is_some());
-        assert!(app.available_models.is_empty());
-    }
-
-    #[test]
-    fn test_check_model_fetch_results_disconnected() {
-        let settings = Settings::default();
-        let mut app = App::new(settings);
-        app.model_selection_target = Some(ModelSelectionTarget::Ollama);
-        app.loading_ollama_models = true;
-
-        // Create a channel and drop the sender immediately
-        let (tx, rx) = mpsc::channel::<Result<Vec<String>, String>>();
-        app.model_fetch_rx = Some(rx);
-        drop(tx); // Disconnect the channel
-
-        // Check for results
-        app.check_model_fetch_results();
-
-        // Should have fallen back to registry models
-        assert!(!app.available_models.is_empty());
-        assert!(!app.loading_ollama_models);
-        assert!(app.model_fetch_rx.is_none());
-        assert!(app.status_is_error);
-        assert!(app.status_message.as_ref().unwrap().contains("interrupted"));
-    }
-
-    #[test]
-    fn test_cancel_model_selection_clears_receiver() {
+    fn test_cancel_model_selection_clears_state() {
         let settings = Settings::default();
         let mut app = App::new(settings);
 
-        // Set up as if we're in the middle of loading
-        let (_tx, rx) = mpsc::channel::<Result<Vec<String>, String>>();
-        app.model_fetch_rx = Some(rx);
-        app.loading_ollama_models = true;
-        app.model_selection_target = Some(ModelSelectionTarget::Ollama);
+        // Set up as if we're in the middle of model selection
+        app.model_selection_target = Some(ModelSelectionTarget::Local);
         app.input_mode = InputMode::SelectingModel;
 
         // Cancel
         app.cancel_model_selection();
 
         // Should have cleared everything
-        assert!(app.model_fetch_rx.is_none());
-        assert!(!app.loading_ollama_models);
         assert!(app.model_selection_target.is_none());
         assert_eq!(app.input_mode, InputMode::Normal);
     }
 
     #[test]
-    fn test_check_model_fetch_results_updates_picker_index() {
-        let mut settings = Settings::default();
-        settings.providers.ollama.default_model = "model2:7b".to_string();
-        let mut app = App::new(settings);
-        app.model_selection_target = Some(ModelSelectionTarget::Ollama);
-        app.loading_ollama_models = true;
-        app.model_picker_index = 0;
-
-        // Create a channel and send success result
-        let (tx, rx) = mpsc::channel();
-        app.model_fetch_rx = Some(rx);
-        tx.send(Ok(vec![
-            "model1:latest".to_string(),
-            "model2:7b".to_string(),
-            "model3:13b".to_string(),
-        ]))
-        .unwrap();
-
-        // Check for results
-        app.check_model_fetch_results();
-
-        // Should have found the current model in the list
-        assert_eq!(app.model_picker_index, 1); // model2:7b is at index 1
-    }
-
-    #[test]
-    fn test_check_model_fetch_results_model_not_found_defaults_to_zero() {
-        let mut settings = Settings::default();
-        settings.providers.ollama.default_model = "nonexistent:model".to_string();
-        let mut app = App::new(settings);
-        app.model_selection_target = Some(ModelSelectionTarget::Ollama);
-        app.loading_ollama_models = true;
-        app.model_picker_index = 5; // Some arbitrary value
-
-        // Create a channel and send success result
-        let (tx, rx) = mpsc::channel();
-        app.model_fetch_rx = Some(rx);
-        tx.send(Ok(vec![
-            "model1:latest".to_string(),
-            "model2:7b".to_string(),
-        ]))
-        .unwrap();
-
-        // Check for results
-        app.check_model_fetch_results();
-
-        // Should default to 0 since current model not found
-        assert_eq!(app.model_picker_index, 0);
-    }
-
-    #[test]
-    fn test_start_model_selection_ollama_no_runtime_uses_registry() {
+    fn test_start_model_selection_local_uses_registry() {
         let settings = Settings::default();
         let mut app = App::new(settings);
 
-        // In test context, there's no tokio runtime
-        app.start_model_selection(ModelSelectionTarget::Ollama);
+        app.start_model_selection(ModelSelectionTarget::Local);
 
         // Should have used registry models directly
         assert!(!app.available_models.is_empty());
-        assert!(!app.loading_ollama_models);
-        assert!(app.model_fetch_rx.is_none());
         assert_eq!(app.input_mode, InputMode::SelectingModel);
     }
 
@@ -2381,8 +2100,6 @@ mod tests {
 
         // Should have used registry models
         assert!(!app.available_models.is_empty());
-        assert!(!app.loading_ollama_models);
-        assert!(app.model_fetch_rx.is_none());
         assert_eq!(app.input_mode, InputMode::SelectingModel);
         assert_eq!(
             app.model_selection_target,
@@ -2410,33 +2127,6 @@ mod tests {
         let selected_model = &app.available_models[app.model_picker_index];
         assert_eq!(selected_model.id, available_model);
         assert_eq!(app.model_picker_index, 1);
-    }
-
-    #[test]
-    fn test_check_model_fetch_error_updates_picker_index() {
-        let mut settings = Settings::default();
-        // Set a model that exists in the registry
-        settings.providers.ollama.default_model = "qwen2.5-coder:14b".to_string();
-        let mut app = App::new(settings);
-        app.model_selection_target = Some(ModelSelectionTarget::Ollama);
-        app.loading_ollama_models = true;
-
-        // Create a channel and send error
-        let (tx, rx) = mpsc::channel();
-        app.model_fetch_rx = Some(rx);
-        tx.send(Err("Connection failed".to_string())).unwrap();
-
-        // Check for results
-        app.check_model_fetch_results();
-
-        // Should have found the model in registry fallback
-        let found_model = app
-            .available_models
-            .iter()
-            .position(|m| m.id == "qwen2.5-coder:14b");
-        if let Some(idx) = found_model {
-            assert_eq!(app.model_picker_index, idx);
-        }
     }
 
     // ===== Plan Management Tests =====
@@ -2758,12 +2448,11 @@ mod tests {
     }
 
     #[test]
-    fn test_confirm_model_selection_ollama() {
+    fn test_confirm_model_selection_local() {
         let settings = Settings::default();
         let mut app = App::new(settings);
 
-        // In test context, falls back to registry
-        app.start_model_selection(ModelSelectionTarget::Ollama);
+        app.start_model_selection(ModelSelectionTarget::Local);
         assert!(!app.available_models.is_empty());
 
         app.model_picker_index = 0;
@@ -2771,7 +2460,7 @@ mod tests {
 
         app.confirm_model_selection();
 
-        assert_eq!(app.settings.providers.ollama.default_model, expected_model);
+        assert_eq!(app.settings.providers.local.default_model, expected_model);
         assert!(app.settings_modified);
     }
 
@@ -3035,21 +2724,15 @@ mod tests {
     }
 
     #[test]
-    fn test_start_connection_test_ollama_no_runtime() {
+    fn test_start_connection_test_local_provider() {
         let mut settings = Settings::default();
-        settings.defaults.provider = "ollama".to_string();
+        settings.defaults.provider = "local".to_string();
         let mut app = App::new(settings);
 
-        // In test context, there's no tokio runtime
         app.start_connection_test();
 
-        // Should set error status since no runtime
-        assert!(app.status_is_error);
-        assert!(app
-            .status_message
-            .as_ref()
-            .unwrap()
-            .contains("async runtime"));
+        // Should set a status message about local provider configuration
+        assert!(app.status_message.is_some());
     }
 
     #[test]

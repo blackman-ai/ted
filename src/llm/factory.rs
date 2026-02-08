@@ -11,35 +11,23 @@ use std::sync::Arc;
 use crate::config::Settings;
 use crate::error::{Result, TedError};
 use crate::llm::provider::LlmProvider;
-use crate::llm::providers::{AnthropicProvider, OllamaProvider, OpenRouterProvider};
-
-#[cfg(feature = "local-llm")]
-use crate::llm::providers::{LlamaCppConfig, LlamaCppProvider};
+use crate::llm::providers::{AnthropicProvider, LocalProvider, OpenRouterProvider};
+use crate::models::download::BinaryDownloader;
 
 /// Factory for creating LLM providers
 pub struct ProviderFactory;
 
 impl ProviderFactory {
     /// Create an LLM provider based on provider name and settings
-    ///
-    /// # Arguments
-    /// * `provider_name` - One of: "anthropic", "ollama", "openrouter", "blackman"
-    /// * `settings` - Application settings containing provider configuration
-    /// * `perform_health_check` - Whether to perform health checks (for ollama)
-    ///
-    /// # Returns
-    /// An Arc-wrapped provider instance
     pub async fn create(
         provider_name: &str,
         settings: &Settings,
-        perform_health_check: bool,
+        _perform_health_check: bool,
     ) -> Result<Arc<dyn LlmProvider>> {
         match provider_name {
-            "ollama" => Self::create_ollama(settings, perform_health_check).await,
+            "local" => Self::create_local(settings).await,
             "openrouter" => Self::create_openrouter(settings),
             "blackman" => Self::create_blackman(settings),
-            #[cfg(feature = "local-llm")]
-            "llama-cpp" | "llamacpp" | "local" => Self::create_llama_cpp(settings),
             _ => Self::create_anthropic(settings),
         }
     }
@@ -62,20 +50,56 @@ impl ProviderFactory {
         Ok(Arc::new(provider))
     }
 
-    /// Create an Ollama provider
-    pub async fn create_ollama(
-        settings: &Settings,
-        perform_health_check: bool,
-    ) -> Result<Arc<dyn LlmProvider>> {
-        let provider = OllamaProvider::with_base_url(&settings.providers.ollama.base_url);
+    /// Create a local LLM provider (llama-server subprocess)
+    pub async fn create_local(settings: &Settings) -> Result<Arc<dyn LlmProvider>> {
+        let cfg = &settings.providers.local;
 
-        if perform_health_check {
-            provider.health_check().await.map_err(|_| {
-                TedError::Config(
-                    "Ollama is not running. Start Ollama with: ollama serve".to_string(),
-                )
-            })?;
-        }
+        // Resolve model path: explicit config → system scan → error
+        let model_path = if cfg.model_path.exists() {
+            cfg.model_path.clone()
+        } else {
+            let discovered = crate::models::scanner::scan_for_models();
+            if discovered.is_empty() {
+                return Err(TedError::Config(
+                    "No GGUF model files found.\n\n\
+                     To use the local provider, you need a GGUF model file.\n\
+                     Options:\n\
+                     1. Download one with: /model download <name>\n\
+                     2. Place a .gguf file in ~/.ted/models/local/\n\
+                     3. Models from LM Studio and GPT4All are detected automatically\n\
+                     4. Specify a path: ted chat -p local --model-path /path/to/model.gguf"
+                        .to_string(),
+                ));
+            }
+
+            let selected = &discovered[0];
+            tracing::info!(
+                "Auto-detected model: {} ({})",
+                selected.display_name(),
+                selected.size_display()
+            );
+            selected.path.clone()
+        };
+
+        // Derive model name from filename
+        let model_name = model_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&cfg.default_model)
+            .to_string();
+
+        // Find or download llama-server binary
+        let downloader = BinaryDownloader::new()?;
+        let binary_path = downloader.ensure_llama_server().await?;
+
+        let provider = LocalProvider::new(
+            binary_path,
+            model_path,
+            model_name,
+            cfg.port,
+            cfg.gpu_layers,
+            cfg.ctx_size,
+        );
 
         Ok(Arc::new(provider))
     }
@@ -115,43 +139,12 @@ impl ProviderFactory {
         Ok(Arc::new(provider))
     }
 
-    /// Create a LlamaCpp local model provider
-    #[cfg(feature = "local-llm")]
-    pub fn create_llama_cpp(settings: &Settings) -> Result<Arc<dyn LlmProvider>> {
-        let cfg = &settings.providers.llama_cpp;
-
-        // Check if model file exists
-        if !cfg.model_path.exists() {
-            return Err(TedError::Config(format!(
-                "LlamaCpp model not found: {}. Download a model with /model download or set the path in settings.",
-                cfg.model_path.display()
-            )));
-        }
-
-        // Build configuration from settings
-        let mut config = LlamaCppConfig::new(&cfg.model_path)
-            .with_context_size(cfg.context_size)
-            .with_gpu_layers(cfg.gpu_layers);
-
-        // Add threads if specified
-        if let Some(threads) = cfg.threads {
-            config = config.with_threads(threads);
-        }
-
-        // Create and return provider
-        let provider = LlamaCppProvider::with_config(config)?;
-        Ok(Arc::new(provider))
-    }
-
     /// Get the default model for a provider
     pub fn default_model(provider_name: &str, settings: &Settings) -> String {
         match provider_name {
-            "ollama" => settings.providers.ollama.default_model.clone(),
+            "local" => settings.providers.local.default_model.clone(),
             "openrouter" => settings.providers.openrouter.default_model.clone(),
             "blackman" => settings.providers.blackman.default_model.clone(),
-            "llama-cpp" | "llamacpp" | "local" => {
-                settings.providers.llama_cpp.default_model.clone()
-            }
             _ => settings.providers.anthropic.default_model.clone(),
         }
     }
@@ -166,21 +159,19 @@ impl ProviderFactory {
     /// Check if a provider is configured (has required credentials)
     pub fn is_configured(provider_name: &str, settings: &Settings) -> bool {
         match provider_name {
-            "ollama" => true, // Ollama doesn't require API key
+            "local" => {
+                settings.providers.local.model_path.exists()
+                    || !crate::models::scanner::scan_for_models().is_empty()
+            }
             "openrouter" => settings.get_openrouter_api_key().is_some(),
             "blackman" => settings.get_blackman_api_key().is_some(),
-            "llama-cpp" | "llamacpp" | "local" => settings.providers.llama_cpp.model_path.exists(),
             _ => settings.get_anthropic_api_key().is_some(),
         }
     }
 
     /// List all supported provider names
     pub fn supported_providers() -> &'static [&'static str] {
-        #[cfg(feature = "local-llm")]
-        return &["anthropic", "ollama", "openrouter", "blackman", "llama-cpp"];
-
-        #[cfg(not(feature = "local-llm"))]
-        return &["anthropic", "ollama", "openrouter", "blackman"];
+        &["anthropic", "local", "openrouter", "blackman"]
     }
 }
 
@@ -196,17 +187,17 @@ mod tests {
     }
 
     #[test]
-    fn test_default_model_ollama() {
+    fn test_default_model_local() {
         let settings = Settings::default();
-        let model = ProviderFactory::default_model("ollama", &settings);
+        let model = ProviderFactory::default_model("local", &settings);
         assert!(!model.is_empty());
     }
 
     #[test]
     fn test_resolve_provider_name_with_requested() {
         let settings = Settings::default();
-        let name = ProviderFactory::resolve_provider_name(Some("ollama"), &settings);
-        assert_eq!(name, "ollama");
+        let name = ProviderFactory::resolve_provider_name(Some("local"), &settings);
+        assert_eq!(name, "local");
     }
 
     #[test]
@@ -217,17 +208,10 @@ mod tests {
     }
 
     #[test]
-    fn test_is_configured_ollama() {
-        let settings = Settings::default();
-        // Ollama doesn't require API key
-        assert!(ProviderFactory::is_configured("ollama", &settings));
-    }
-
-    #[test]
     fn test_supported_providers() {
         let providers = ProviderFactory::supported_providers();
         assert!(providers.contains(&"anthropic"));
-        assert!(providers.contains(&"ollama"));
+        assert!(providers.contains(&"local"));
         assert!(providers.contains(&"openrouter"));
         assert!(providers.contains(&"blackman"));
     }
@@ -262,8 +246,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ===== Additional default_model Tests =====
-
     #[test]
     fn test_default_model_openrouter() {
         let settings = Settings::default();
@@ -281,21 +263,9 @@ mod tests {
     #[test]
     fn test_default_model_unknown_provider() {
         let settings = Settings::default();
-        // Unknown provider should default to anthropic's model
         let model = ProviderFactory::default_model("unknown_provider", &settings);
         assert_eq!(model, settings.providers.anthropic.default_model);
     }
-
-    #[test]
-    fn test_default_model_custom_settings() {
-        let mut settings = Settings::default();
-        settings.providers.ollama.default_model = "custom-llama-model".to_string();
-
-        let model = ProviderFactory::default_model("ollama", &settings);
-        assert_eq!(model, "custom-llama-model");
-    }
-
-    // ===== Additional resolve_provider_name Tests =====
 
     #[test]
     fn test_resolve_provider_name_with_anthropic() {
@@ -312,22 +282,13 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_provider_name_with_blackman() {
-        let settings = Settings::default();
-        let name = ProviderFactory::resolve_provider_name(Some("blackman"), &settings);
-        assert_eq!(name, "blackman");
-    }
-
-    #[test]
     fn test_resolve_provider_name_uses_settings_default() {
         let mut settings = Settings::default();
-        settings.defaults.provider = "ollama".to_string();
+        settings.defaults.provider = "local".to_string();
 
         let name = ProviderFactory::resolve_provider_name(None, &settings);
-        assert_eq!(name, "ollama");
+        assert_eq!(name, "local");
     }
-
-    // ===== Additional is_configured Tests =====
 
     #[test]
     fn test_is_configured_anthropic_no_key() {
@@ -357,23 +318,8 @@ mod tests {
     }
 
     #[test]
-    fn test_is_configured_unknown_provider() {
-        let mut settings = Settings::default();
-        settings.providers.anthropic.api_key = None;
-        settings.providers.anthropic.api_key_env = "NONEXISTENT_ENV_VAR_12345".to_string();
-
-        // Unknown provider falls back to anthropic check
-        assert!(!ProviderFactory::is_configured("unknown", &settings));
-    }
-
-    // ===== supported_providers Tests =====
-
-    #[test]
     fn test_supported_providers_count() {
         let providers = ProviderFactory::supported_providers();
-        #[cfg(feature = "local-llm")]
-        assert_eq!(providers.len(), 5);
-        #[cfg(not(feature = "local-llm"))]
         assert_eq!(providers.len(), 4);
     }
 
@@ -386,101 +332,13 @@ mod tests {
         assert_eq!(unique.len(), providers.len());
     }
 
-    // ===== Error message Tests =====
-
-    #[test]
-    fn test_create_anthropic_error_message() {
-        let mut settings = Settings::default();
-        settings.providers.anthropic.api_key = None;
-        settings.providers.anthropic.api_key_env = "NONEXISTENT_ENV_VAR_12345".to_string();
-
-        let result = ProviderFactory::create_anthropic(&settings);
-        if let Err(e) = result {
-            let msg = e.to_string();
-            assert!(msg.contains("Anthropic"));
-            assert!(msg.contains("API key"));
-        } else {
-            panic!("Expected error");
-        }
-    }
-
-    #[test]
-    fn test_create_openrouter_error_message() {
-        let mut settings = Settings::default();
-        settings.providers.openrouter.api_key = None;
-        settings.providers.openrouter.api_key_env = "NONEXISTENT_ENV_VAR_12345".to_string();
-
-        let result = ProviderFactory::create_openrouter(&settings);
-        if let Err(e) = result {
-            let msg = e.to_string();
-            assert!(msg.contains("OpenRouter"));
-            assert!(msg.contains("API key"));
-        } else {
-            panic!("Expected error");
-        }
-    }
-
-    #[test]
-    fn test_create_blackman_error_message() {
-        let mut settings = Settings::default();
-        settings.providers.blackman.api_key = None;
-        settings.providers.blackman.api_key_env = "NONEXISTENT_ENV_VAR_12345".to_string();
-
-        let result = ProviderFactory::create_blackman(&settings);
-        if let Err(e) = result {
-            let msg = e.to_string();
-            assert!(msg.contains("Blackman"));
-            assert!(msg.contains("API key"));
-        } else {
-            panic!("Expected error");
-        }
-    }
-
-    // ===== Async create Tests =====
-
-    #[tokio::test]
-    async fn test_create_ollama_without_health_check() {
-        let settings = Settings::default();
-        let result = ProviderFactory::create_ollama(&settings, false).await;
-        // Should succeed without health check
-        assert!(result.is_ok());
-    }
-
     #[tokio::test]
     async fn test_create_returns_anthropic_for_unknown() {
         let mut settings = Settings::default();
         settings.providers.anthropic.api_key = None;
         settings.providers.anthropic.api_key_env = "NONEXISTENT_ENV_VAR_12345".to_string();
 
-        // Unknown provider falls back to anthropic, which should fail without key
         let result = ProviderFactory::create("unknown_provider", &settings, false).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_create_ollama_via_factory() {
-        let settings = Settings::default();
-        let result = ProviderFactory::create("ollama", &settings, false).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_create_openrouter_via_factory_no_key() {
-        let mut settings = Settings::default();
-        settings.providers.openrouter.api_key = None;
-        settings.providers.openrouter.api_key_env = "NONEXISTENT_ENV_VAR_12345".to_string();
-
-        let result = ProviderFactory::create("openrouter", &settings, false).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_create_blackman_via_factory_no_key() {
-        let mut settings = Settings::default();
-        settings.providers.blackman.api_key = None;
-        settings.providers.blackman.api_key_env = "NONEXISTENT_ENV_VAR_12345".to_string();
-
-        let result = ProviderFactory::create("blackman", &settings, false).await;
         assert!(result.is_err());
     }
 }

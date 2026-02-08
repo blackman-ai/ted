@@ -27,7 +27,7 @@
 //!     { id = "claude-sonnet-4-20250514", tier = "high", context_size = 200000 }
 //! ]
 //!
-//! [ollama]
+//! [local]
 //! models = [
 //!     { id = "qwen2.5-coder:14b", tier = "medium", vram_gb = 12.0 }
 //! ]
@@ -45,10 +45,10 @@
 //! let models = registry.models_for_provider(&Provider::Anthropic);
 //!
 //! // Filter by tier
-//! let fast_models = registry.models_by_tier(&Provider::Ollama, ModelTier::Low);
+//! let fast_models = registry.models_by_tier(&Provider::Local, ModelTier::Low);
 //!
 //! // Filter by VRAM budget
-//! let laptop_models = registry.models_for_vram(&Provider::Ollama, 8.0);
+//! let laptop_models = registry.models_for_vram(&Provider::Local, 8.0);
 //!
 //! // Find a specific model
 //! if let Some((provider, model)) = registry.find_model("claude-sonnet-4-20250514") {
@@ -58,6 +58,7 @@
 
 pub mod download;
 pub mod loader;
+pub mod scanner;
 pub mod schema;
 
 // Re-export commonly used types
@@ -65,6 +66,7 @@ pub use download::{
     DownloadRegistry, DownloadableModel, ModelCategory, ModelDownloader, ModelVariant, Quantization,
 };
 pub use loader::ModelRegistry;
+pub use scanner::{scan_for_models, DiscoveredModel, ModelSource};
 pub use schema::{ModelInfo, ModelTier, ModelsConfig, Provider, ProviderModels};
 
 #[cfg(test)]

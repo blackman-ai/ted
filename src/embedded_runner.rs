@@ -24,8 +24,9 @@ use crate::llm::provider::{
     ToolChoice,
 };
 use crate::llm::providers::{
-    AnthropicProvider, BlackmanProvider, OllamaProvider, OpenRouterProvider,
+    AnthropicProvider, BlackmanProvider, LocalProvider, OpenRouterProvider,
 };
+use crate::models::download::BinaryDownloader;
 use crate::tools::{ShellOutputEvent, ToolContext, ToolExecutor};
 
 /// Simple message struct for history serialization
@@ -81,146 +82,6 @@ fn extract_history_messages(messages: &[Message]) -> Vec<HistoryMessageData> {
 /// Create a hash key for deduplicating tool calls
 fn tool_call_key(name: &str, input: &serde_json::Value) -> String {
     format!("{}:{}", name, input)
-}
-
-/// Extract JSON tool calls from text that may contain markdown code blocks
-/// Ollama models often output tool calls as ```json ... ``` blocks
-fn extract_json_tool_calls(text: &str) -> Vec<(String, serde_json::Value)> {
-    let mut tools = Vec::new();
-
-    // Pattern 1: Look for ```json ... ``` blocks containing tool calls
-    let json_block_re = regex::Regex::new(r"```json\s*([\s\S]*?)```").unwrap();
-    for cap in json_block_re.captures_iter(text) {
-        if let Some(json_str) = cap.get(1) {
-            let json_text = json_str.as_str().trim();
-            eprintln!(
-                "[TOOL PARSE] Found JSON block ({} chars): {}",
-                json_text.len(),
-                &json_text[..json_text.len().min(200)]
-            );
-
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_text) {
-                eprintln!("[TOOL PARSE] Successfully parsed JSON");
-
-                // Check if it's an array of tool calls
-                if let Some(arr) = parsed.as_array() {
-                    for item in arr {
-                        if let Some(tool) = parse_tool_from_json(item) {
-                            eprintln!("[TOOL PARSE] Extracted tool from array: {}", tool.0);
-                            tools.push(tool);
-                        }
-                    }
-                } else if let Some(tool) = parse_tool_from_json(&parsed) {
-                    eprintln!("[TOOL PARSE] Extracted tool: {}", tool.0);
-                    tools.push(tool);
-                }
-            } else {
-                eprintln!("[TOOL PARSE] Failed to parse JSON block");
-            }
-        }
-    }
-
-    // Pattern 2: Look for ``` ... ``` blocks without json marker (some models do this)
-    if tools.is_empty() {
-        let generic_block_re = regex::Regex::new(r"```\s*([\s\S]*?)```").unwrap();
-        for cap in generic_block_re.captures_iter(text) {
-            if let Some(block_str) = cap.get(1) {
-                let block_text = block_str.as_str().trim();
-                // Only try to parse if it looks like JSON
-                if block_text.starts_with('{') || block_text.starts_with('[') {
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(block_text) {
-                        if let Some(arr) = parsed.as_array() {
-                            for item in arr {
-                                if let Some(tool) = parse_tool_from_json(item) {
-                                    tools.push(tool);
-                                }
-                            }
-                        } else if let Some(tool) = parse_tool_from_json(&parsed) {
-                            tools.push(tool);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Pattern 3: Try to find JSON objects by scanning for balanced braces
-    // This is more robust than a regex for complex nested JSON
-    if tools.is_empty() {
-        eprintln!("[TOOL PARSE] No tools from markdown blocks, trying brace scanning");
-        for tool in extract_json_objects_by_braces(text) {
-            tools.push(tool);
-        }
-    }
-
-    tools
-}
-
-/// Extract JSON objects from text by scanning for balanced braces
-/// More robust than regex for nested JSON structures
-fn extract_json_objects_by_braces(text: &str) -> Vec<(String, serde_json::Value)> {
-    let mut tools = Vec::new();
-    let chars: Vec<char> = text.chars().collect();
-    let mut i = 0;
-
-    while i < chars.len() {
-        // Look for start of JSON object
-        if chars[i] == '{' {
-            // Try to find balanced closing brace
-            let mut brace_count = 1;
-            let start = i;
-            i += 1;
-
-            while i < chars.len() && brace_count > 0 {
-                match chars[i] {
-                    '{' => brace_count += 1,
-                    '}' => brace_count -= 1,
-                    '"' => {
-                        // Skip string content (handle escaped quotes)
-                        i += 1;
-                        while i < chars.len() {
-                            if chars[i] == '\\' && i + 1 < chars.len() {
-                                i += 2; // Skip escaped char
-                                continue;
-                            }
-                            if chars[i] == '"' {
-                                break;
-                            }
-                            i += 1;
-                        }
-                    }
-                    _ => {}
-                }
-                i += 1;
-            }
-
-            if brace_count == 0 {
-                // Found balanced braces, try to parse
-                let json_str: String = chars[start..i].iter().collect();
-
-                // Check if it looks like a tool call before parsing (performance optimization)
-                if json_str.contains("\"name\"")
-                    && (json_str.contains("\"arguments\"") || json_str.contains("\"input\""))
-                {
-                    eprintln!(
-                        "[TOOL PARSE] Found potential tool JSON ({} chars)",
-                        json_str.len()
-                    );
-
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                        if let Some(tool) = parse_tool_from_json(&parsed) {
-                            eprintln!("[TOOL PARSE] Extracted tool via brace scan: {}", tool.0);
-                            tools.push(tool);
-                        }
-                    }
-                }
-            }
-        } else {
-            i += 1;
-        }
-    }
-
-    tools
 }
 
 /// Parse a tool call from a JSON value
@@ -286,7 +147,7 @@ fn parse_tool_from_json(value: &serde_json::Value) -> Option<(String, serde_json
 }
 
 /// Map file_edit argument names from various LLM output formats to our expected format
-/// Different models (Ollama, etc.) use different naming conventions:
+/// Different models use different naming conventions:
 /// - old/new, old_text/new_text, old_string/new_string, find/replace, etc.
 /// - Some send arrays of lines instead of strings
 fn map_file_edit_arguments(args: &serde_json::Value) -> serde_json::Value {
@@ -318,7 +179,7 @@ fn map_file_edit_arguments(args: &serde_json::Value) -> serde_json::Value {
         };
 
         // Handle array values - join them into a single string with newlines
-        // Models like Ollama often send old/new as arrays of lines
+        // Some models send old/new as arrays of lines
         let mapped_value =
             if (mapped_key == "old_string" || mapped_key == "new_string") && value.is_array() {
                 if let Some(arr) = value.as_array() {
@@ -420,10 +281,46 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
 
     // Create provider
     let provider: Box<dyn LlmProvider> = match provider_name.as_str() {
-        "ollama" => {
-            let ollama_provider =
-                OllamaProvider::with_base_url(&settings.providers.ollama.base_url);
-            Box::new(ollama_provider)
+        "local" => {
+            let cfg = &settings.providers.local;
+
+            // Resolve model path: explicit config → system scan → error
+            let model_path = if cfg.model_path.exists() {
+                cfg.model_path.clone()
+            } else {
+                let discovered = crate::models::scanner::scan_for_models();
+                if discovered.is_empty() {
+                    return Err(TedError::Config(
+                        "No GGUF model files found. Download a model with /model download."
+                            .to_string(),
+                    ));
+                }
+                let selected = &discovered[0];
+                tracing::info!(
+                    "Auto-detected model: {} ({})",
+                    selected.display_name(),
+                    selected.size_display()
+                );
+                selected.path.clone()
+            };
+
+            let model_name = model_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(&cfg.default_model)
+                .to_string();
+
+            let downloader = BinaryDownloader::new()?;
+            let binary_path = downloader.ensure_llama_server().await?;
+            let local_provider = LocalProvider::new(
+                binary_path,
+                model_path,
+                model_name,
+                cfg.port,
+                cfg.gpu_layers,
+                cfg.ctx_size,
+            );
+            Box::new(local_provider)
         }
         "openrouter" => {
             let api_key = settings
@@ -447,7 +344,12 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
             let api_key = settings
                 .get_anthropic_api_key()
                 .ok_or_else(|| TedError::Config("No Anthropic API key found".to_string()))?;
-            Box::new(AnthropicProvider::new(api_key))
+            let provider = if let Some(ref base_url) = settings.providers.anthropic.base_url {
+                AnthropicProvider::with_base_url(api_key, base_url)
+            } else {
+                AnthropicProvider::new(api_key)
+            };
+            Box::new(provider)
         }
     };
 
@@ -493,7 +395,7 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
         .clone()
         .or_else(|| merged_cap.preferred_model().map(|s| s.to_string()))
         .unwrap_or_else(|| match provider_name.as_str() {
-            "ollama" => settings.providers.ollama.default_model.clone(),
+            "local" => settings.providers.local.default_model.clone(),
             "openrouter" => settings.providers.openrouter.default_model.clone(),
             "blackman" => "gpt-4o-mini".to_string(), // Default Blackman model
             _ => settings.providers.anthropic.default_model.clone(),
@@ -741,17 +643,12 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
 
         let mut assistant_blocks: Vec<ContentBlock> = Vec::new();
         let mut current_text = String::new();
-        let mut buffered_text = String::new(); // Buffer text that might be JSON tool calls
-        let mut might_be_tool_call = false; // Track if we're buffering potential tool call JSON
         let mut tool_uses: Vec<(String, String, serde_json::Value)> = Vec::new();
 
         // Track current tool use being built (for streaming JSON input)
         let mut current_tool_id: Option<String> = None;
         let mut current_tool_name: Option<String> = None;
         let mut current_tool_input_json = String::new();
-
-        // For Ollama, we need to buffer text because it outputs JSON tool calls as text
-        let is_ollama = provider_name == "ollama";
 
         // Process stream
         while let Some(event_result) = stream.next().await {
@@ -764,21 +661,7 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
                         ContentBlockResponse::Text { text } => {
                             if !text.is_empty() {
                                 current_text.push_str(&text);
-
-                                // For Ollama, buffer text that might be JSON
-                                if is_ollama {
-                                    buffered_text.push_str(&text);
-                                    let trimmed = buffered_text.trim_start();
-                                    if trimmed.starts_with('{') || trimmed.starts_with("```") {
-                                        might_be_tool_call = true;
-                                    }
-                                    // Only stream if it doesn't look like a tool call
-                                    if !might_be_tool_call {
-                                        emitter.emit_message("assistant", text, Some(true))?;
-                                    }
-                                } else {
-                                    emitter.emit_message("assistant", text, Some(true))?;
-                                }
+                                emitter.emit_message("assistant", text, Some(true))?;
                             }
                         }
                         ContentBlockResponse::ToolUse { id, name, input } => {
@@ -799,23 +682,7 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
                     match delta {
                         ContentBlockDelta::TextDelta { text } => {
                             current_text.push_str(&text);
-
-                            // For Ollama, buffer text that might be JSON
-                            if is_ollama {
-                                buffered_text.push_str(&text);
-                                if !might_be_tool_call {
-                                    let trimmed = buffered_text.trim_start();
-                                    if trimmed.starts_with('{') || trimmed.starts_with("```") {
-                                        might_be_tool_call = true;
-                                    }
-                                }
-                                // Only stream if it doesn't look like a tool call
-                                if !might_be_tool_call {
-                                    emitter.emit_message("assistant", text, Some(true))?;
-                                }
-                            } else {
-                                emitter.emit_message("assistant", text, Some(true))?;
-                            }
+                            emitter.emit_message("assistant", text, Some(true))?;
                         }
                         ContentBlockDelta::InputJsonDelta { partial_json } => {
                             // Accumulate partial JSON for tool input
@@ -877,56 +744,13 @@ pub async fn run_embedded_chat(args: ChatArgs, settings: Settings) -> Result<()>
             }
         }
 
-        // If we buffered text thinking it was a tool call but got no tool uses,
-        // try to parse JSON tool calls from the text (Ollama often outputs them as markdown)
-        if is_ollama && might_be_tool_call && tool_uses.is_empty() && !buffered_text.is_empty() {
-            eprintln!(
-                "[TOOL PARSE] Attempting to extract tools from buffered text ({} chars)",
-                buffered_text.len()
-            );
-            eprintln!(
-                "[TOOL PARSE] Buffered text preview: {}",
-                &buffered_text[..buffered_text.len().min(500)]
-            );
-
-            // Try to extract JSON tool calls from markdown code blocks
-            let extracted_tools = extract_json_tool_calls(&buffered_text);
-            if !extracted_tools.is_empty() {
-                eprintln!(
-                    "[TOOL PARSE] Extracted {} tool calls from text",
-                    extracted_tools.len()
-                );
-                for (name, input) in extracted_tools {
-                    let id = uuid::Uuid::new_v4().to_string();
-                    tool_uses.push((id, name, input));
-                }
-            } else {
-                eprintln!("[TOOL PARSE] No tools extracted, emitting as message");
-                // No tool calls found, emit the text as a message
-                emitter.emit_message("assistant", buffered_text.clone(), Some(false))?;
-            }
-        }
-
         // Debug: Log if we have empty response
         if tool_uses.is_empty() && current_text.trim().is_empty() {
             eprintln!("[DEBUG] Empty response from model - no tools and no text");
-            eprintln!(
-                "[DEBUG] might_be_tool_call={}, buffered_text.len()={}",
-                might_be_tool_call,
-                buffered_text.len()
-            );
         }
 
         // Add text content if any
-        // For Ollama: if we detected tool uses and buffered text (meaning the text was JSON tool calls),
-        // don't include the text in the message - it was just the JSON representation
-        let should_include_text = if is_ollama && might_be_tool_call && !tool_uses.is_empty() {
-            false // Text was JSON tool call output, don't include it
-        } else {
-            !current_text.is_empty()
-        };
-
-        if should_include_text {
+        if !current_text.is_empty() {
             assistant_blocks.push(ContentBlock::Text {
                 text: current_text.clone(),
             });
@@ -1730,163 +1554,6 @@ mod tests {
         assert_eq!(mapped["command"], "cargo test");
     }
 
-    // ===== extract_json_tool_calls tests =====
-
-    #[test]
-    fn test_extract_json_tool_calls_markdown_block() {
-        let text = r#"Let me read that file for you.
-
-```json
-{"name": "file_read", "arguments": {"path": "/test.txt"}}
-```
-
-I'll show you the contents."#;
-
-        let tools = extract_json_tool_calls(text);
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].0, "file_read");
-    }
-
-    #[test]
-    fn test_extract_json_tool_calls_multiple_blocks() {
-        let text = r#"
-```json
-{"name": "file_read", "arguments": {"path": "/a.txt"}}
-```
-And also:
-```json
-{"name": "file_read", "arguments": {"path": "/b.txt"}}
-```
-"#;
-
-        let tools = extract_json_tool_calls(text);
-        assert_eq!(tools.len(), 2);
-    }
-
-    #[test]
-    fn test_extract_json_tool_calls_no_blocks() {
-        let text = "Just some regular text without any JSON blocks.";
-        let tools = extract_json_tool_calls(text);
-        assert!(tools.is_empty());
-    }
-
-    #[test]
-    fn test_extract_json_tool_calls_invalid_json() {
-        let text = r#"
-```json
-{not valid json}
-```
-"#;
-
-        let tools = extract_json_tool_calls(text);
-        assert!(tools.is_empty());
-    }
-
-    // ===== extract_json_objects_by_braces tests =====
-
-    #[test]
-    fn test_extract_json_objects_by_braces_simple() {
-        let text = r#"{"name": "file_read", "arguments": {"path": "/test.txt"}}"#;
-        let tools = extract_json_objects_by_braces(text);
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].0, "file_read");
-    }
-
-    #[test]
-    fn test_extract_json_objects_by_braces_embedded_in_text() {
-        let text = r#"I will use the tool {"name": "file_read", "input": {"path": "/test.txt"}} to read the file."#;
-        let tools = extract_json_objects_by_braces(text);
-        assert_eq!(tools.len(), 1);
-    }
-
-    #[test]
-    fn test_extract_json_objects_by_braces_nested_braces() {
-        let text = r#"{"name": "shell", "arguments": {"command": "echo '{\"nested\": true}'"}}"#;
-        let tools = extract_json_objects_by_braces(text);
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].0, "shell");
-    }
-
-    #[test]
-    fn test_extract_json_objects_by_braces_escaped_quotes() {
-        let text = r#"{"name": "file_write", "arguments": {"path": "/test.txt", "content": "line with \"quotes\""}}"#;
-        let tools = extract_json_objects_by_braces(text);
-        assert_eq!(tools.len(), 1);
-    }
-
-    #[test]
-    fn test_extract_json_objects_by_braces_ignores_non_tool_json() {
-        // JSON without "name" and "arguments"/"input" should be ignored
-        let text = r#"{"just": "some", "random": "json"}"#;
-        let tools = extract_json_objects_by_braces(text);
-        assert!(tools.is_empty());
-    }
-
-    #[test]
-    fn test_extract_json_objects_by_braces_multiple_tools() {
-        let text = r#"First: {"name": "file_read", "arguments": {"path": "/a.txt"}}
-Second: {"name": "file_read", "arguments": {"path": "/b.txt"}}"#;
-        let tools = extract_json_objects_by_braces(text);
-        assert_eq!(tools.len(), 2);
-    }
-
-    // ===== Additional extract_json_tool_calls tests =====
-
-    #[test]
-    fn test_extract_json_tool_calls_array_in_block() {
-        let text = r#"
-```json
-[
-  {"name": "file_read", "arguments": {"path": "/a.txt"}},
-  {"name": "file_read", "arguments": {"path": "/b.txt"}}
-]
-```
-"#;
-        let tools = extract_json_tool_calls(text);
-        assert_eq!(tools.len(), 2);
-    }
-
-    #[test]
-    fn test_extract_json_tool_calls_generic_block_without_json_marker() {
-        let text = r#"
-```
-{"name": "file_read", "arguments": {"path": "/test.txt"}}
-```
-"#;
-        let tools = extract_json_tool_calls(text);
-        assert_eq!(tools.len(), 1);
-    }
-
-    #[test]
-    fn test_extract_json_tool_calls_generic_block_array() {
-        let text = r#"
-```
-[{"name": "file_read", "arguments": {"path": "/test.txt"}}]
-```
-"#;
-        let tools = extract_json_tool_calls(text);
-        assert_eq!(tools.len(), 1);
-    }
-
-    #[test]
-    fn test_extract_json_tool_calls_generic_block_not_json() {
-        let text = r#"
-```
-This is not JSON at all
-```
-"#;
-        let tools = extract_json_tool_calls(text);
-        assert!(tools.is_empty());
-    }
-
-    #[test]
-    fn test_extract_json_tool_calls_falls_back_to_brace_scan() {
-        // No markdown blocks, but valid JSON in text
-        let text = r#"I'll use this: {"name": "file_read", "input": {"path": "/test.txt"}}"#;
-        let tools = extract_json_tool_calls(text);
-        assert_eq!(tools.len(), 1);
-    }
-
     // ===== Additional map_file_edit_arguments tests =====
 
     #[test]
@@ -2066,36 +1733,6 @@ This is not JSON at all
         let (name, args) = parse_tool_from_json(&value).unwrap();
         assert_eq!(name, "file_edit");
         assert_eq!(args["old_string"], "real content");
-    }
-
-    // ===== Additional extract_json_objects_by_braces tests =====
-
-    #[test]
-    fn test_extract_json_objects_by_braces_unbalanced_braces() {
-        let text = r#"{"name": "file_read", "arguments": {"path": "/test.txt"}"#; // Missing closing brace
-        let tools = extract_json_objects_by_braces(text);
-        assert!(tools.is_empty());
-    }
-
-    #[test]
-    fn test_extract_json_objects_by_braces_empty_string() {
-        let tools = extract_json_objects_by_braces("");
-        assert!(tools.is_empty());
-    }
-
-    #[test]
-    fn test_extract_json_objects_by_braces_no_braces() {
-        let text = "No braces here at all";
-        let tools = extract_json_objects_by_braces(text);
-        assert!(tools.is_empty());
-    }
-
-    #[test]
-    fn test_extract_json_objects_by_braces_deeply_nested() {
-        let text = r#"{"name": "shell", "arguments": {"command": "echo", "nested": {"deep": {"value": 1}}}}"#;
-        let tools = extract_json_objects_by_braces(text);
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].0, "shell");
     }
 
     // ===== Additional extract_history_messages tests =====
@@ -2280,36 +1917,6 @@ This is not JSON at all
     }
 
     #[test]
-    fn test_extract_json_tool_calls_with_qwen_format() {
-        // Qwen sometimes outputs tool calls in a specific format
-        let text = r#"
-I will read the file.
-
-```json
-{
-    "name": "file_read",
-    "arguments": {
-        "path": "/Users/test/file.txt"
-    }
-}
-```
-"#;
-        let tools = extract_json_tool_calls(text);
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].0, "file_read");
-        assert_eq!(tools[0].1["path"], "/Users/test/file.txt");
-    }
-
-    #[test]
-    fn test_extract_json_tool_calls_compact_json() {
-        let text = r#"```json
-{"name":"file_read","arguments":{"path":"/test.txt"}}
-```"#;
-        let tools = extract_json_tool_calls(text);
-        assert_eq!(tools.len(), 1);
-    }
-
-    #[test]
     fn test_parse_tool_from_json_file_create_to_write() {
         let value = json!({"name": "file_create", "arguments": {"path": "/new.txt", "content": "new file"}});
         let (name, _) = parse_tool_from_json(&value).unwrap();
@@ -2419,47 +2026,6 @@ I will read the file.
         let (name, args) = result.unwrap();
         assert_eq!(name, "file_read");
         assert!(args.is_array());
-    }
-
-    // ===== extract_json_objects_by_braces edge cases =====
-
-    #[test]
-    fn test_extract_json_objects_by_braces_only_opening_brace() {
-        let text = "Here is some text with just {";
-        let tools = extract_json_objects_by_braces(text);
-        assert!(tools.is_empty());
-    }
-
-    #[test]
-    fn test_extract_json_objects_by_braces_only_closing_brace() {
-        let text = "Here is some text with just }";
-        let tools = extract_json_objects_by_braces(text);
-        assert!(tools.is_empty());
-    }
-
-    #[test]
-    fn test_extract_json_objects_by_braces_mismatched_braces() {
-        let text = "{{{{}}";
-        let tools = extract_json_objects_by_braces(text);
-        assert!(tools.is_empty());
-    }
-
-    #[test]
-    fn test_extract_json_objects_by_braces_string_with_braces() {
-        // JSON with braces inside strings should be handled correctly
-        let text = r#"{"name": "test", "arguments": {"pattern": "{.*}"}}"#;
-        let tools = extract_json_objects_by_braces(text);
-        // This is valid JSON that DOES match our tool format (has name + arguments)
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].0, "test");
-    }
-
-    #[test]
-    fn test_extract_json_objects_by_braces_multiple_nested_levels() {
-        let text = r#"{"name": "shell", "arguments": {"cmd": {"inner": {"deep": "value"}}}}"#;
-        let tools = extract_json_objects_by_braces(text);
-        // Should find the outer object
-        assert_eq!(tools.len(), 1);
     }
 
     // ===== map_file_edit_arguments more variations =====
@@ -2588,49 +2154,6 @@ I will read the file.
         assert_eq!(restored.len(), 3);
         assert_eq!(restored[0].content, "Q1");
         assert_eq!(restored[2].content, "Q2");
-    }
-
-    // ===== Additional extract_json_tool_calls tests =====
-
-    #[test]
-    fn test_extract_json_tool_calls_nested_code_blocks() {
-        // Code block inside a code block shouldn't confuse the parser
-        let text = r#"```json
-{"name": "file_write", "arguments": {"path": "/test.md", "content": "```python\nprint('hello')\n```"}}
-```"#;
-        let tools = extract_json_tool_calls(text);
-        // This may or may not parse depending on escaping
-        // The important thing is it doesn't panic
-        assert!(tools.len() <= 1);
-    }
-
-    #[test]
-    fn test_extract_json_tool_calls_with_thinking_text() {
-        let text = r#"Let me think about this...
-
-I need to read the file to understand the context.
-
-```json
-{"name": "file_read", "arguments": {"path": "/src/main.rs"}}
-```
-
-After reading, I'll make the necessary changes."#;
-
-        let tools = extract_json_tool_calls(text);
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].0, "file_read");
-    }
-
-    #[test]
-    fn test_extract_json_tool_calls_consecutive_blocks() {
-        let text = r#"```json
-{"name": "file_read", "arguments": {"path": "/a.txt"}}
-```
-```json
-{"name": "file_read", "arguments": {"path": "/b.txt"}}
-```"#;
-        let tools = extract_json_tool_calls(text);
-        assert_eq!(tools.len(), 2);
     }
 
     // ===== map functions with null/missing values =====
@@ -3032,39 +2555,6 @@ After reading, I'll make the necessary changes."#;
     // ===== Additional coverage tests for edge cases =====
 
     #[test]
-    fn test_extract_json_tool_calls_with_leading_text() {
-        let text = "Here's the tool call I'll use: ```json\n{\"name\": \"glob\", \"arguments\": {\"pattern\": \"*.rs\"}}\n```";
-        let tools = extract_json_tool_calls(text);
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].0, "glob");
-    }
-
-    #[test]
-    fn test_extract_json_tool_calls_with_trailing_text() {
-        let text = "```json\n{\"name\": \"grep\", \"arguments\": {\"pattern\": \"TODO\"}}\n``` Let me search for that.";
-        let tools = extract_json_tool_calls(text);
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].0, "grep");
-    }
-
-    #[test]
-    fn test_extract_json_objects_by_braces_with_newlines() {
-        let text = r#"{"name": "file_read",
-"arguments": {
-"path": "/test.txt"
-}}"#;
-        let tools = extract_json_objects_by_braces(text);
-        assert_eq!(tools.len(), 1);
-    }
-
-    #[test]
-    fn test_extract_json_objects_by_braces_with_unicode() {
-        let text = r#"{"name": "shell", "arguments": {"command": "echo 日本語"}}"#;
-        let tools = extract_json_objects_by_braces(text);
-        assert_eq!(tools.len(), 1);
-    }
-
-    #[test]
     fn test_parse_tool_from_json_with_null_value() {
         let value = json!(null);
         assert!(parse_tool_from_json(&value).is_none());
@@ -3095,18 +2585,6 @@ After reading, I'll make the necessary changes."#;
         let mapped = map_file_edit_arguments(&args);
         assert_eq!(mapped["path"], "/test.txt");
         assert_eq!(mapped["line_number"], 42);
-    }
-
-    #[test]
-    fn test_extract_json_tool_calls_empty_string() {
-        let tools = extract_json_tool_calls("");
-        assert!(tools.is_empty());
-    }
-
-    #[test]
-    fn test_extract_json_tool_calls_only_whitespace() {
-        let tools = extract_json_tool_calls("   \n\t   ");
-        assert!(tools.is_empty());
     }
 
     #[test]
@@ -3160,10 +2638,11 @@ After reading, I'll make the necessary changes."#;
                 prompt: Some("Test prompt".to_string()),
                 cap: vec![],
                 model: Some("test-model".to_string()),
-                provider: Some("ollama".to_string()),
+                provider: Some("local".to_string()),
                 resume: None,
                 trust: true,
                 no_stream: false,
+                model_path: None,
                 embedded: true,
                 no_tui: true,
                 history: None,
@@ -3174,12 +2653,11 @@ After reading, I'll make the necessary changes."#;
             }
         }
 
-        /// Create test settings with custom ollama base_url
-        fn create_test_settings(ollama_base_url: &str) -> Settings {
+        /// Create test settings with local provider config
+        fn create_test_settings(_base_url: &str) -> Settings {
             let mut settings = Settings::default();
-            settings.providers.ollama.base_url = ollama_base_url.to_string();
-            settings.providers.ollama.default_model = "test-model".to_string();
-            settings.defaults.provider = "ollama".to_string();
+            settings.providers.local.default_model = "test-model".to_string();
+            settings.defaults.provider = "local".to_string();
             settings.defaults.caps = vec!["base".to_string()];
             settings
         }
@@ -4453,7 +3931,7 @@ After reading, I'll make the necessary changes."#;
 
         // ===== Tests with proper streaming NDJSON format =====
 
-        /// Helper to create a proper Ollama streaming response
+        /// Helper to create a proper streaming response
         fn streaming_response(content: &str) -> String {
             format!(
                 r#"{{"message":{{"role":"assistant","content":"{}"}},"done":false}}
@@ -4465,28 +3943,46 @@ After reading, I'll make the necessary changes."#;
 
         #[tokio::test]
         async fn test_run_embedded_chat_streaming_text_response() {
-            use wiremock::matchers::{method, path};
+            use wiremock::matchers::{header, method, path};
             use wiremock::{Mock, MockServer, ResponseTemplate};
 
             let mock_server = MockServer::start().await;
 
-            // Multi-line streaming response
-            let stream_body = r#"{"message":{"role":"assistant","content":"Hello"},"done":false}
-{"message":{"role":"assistant","content":" there!"},"done":false}
-{"message":{"role":"assistant","content":""},"done":true,"eval_count":3,"prompt_eval_count":5}
-"#;
+            // Anthropic streaming SSE response format
+            let sse_body = "event: message_start\n\
+                data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_test\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"test-model\",\"stop_reason\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n\
+                event: content_block_start\n\
+                data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
+                event: content_block_delta\n\
+                data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello there!\"}}\n\n\
+                event: content_block_stop\n\
+                data: {\"type\":\"content_block_stop\",\"index\":0}\n\n\
+                event: message_delta\n\
+                data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n\n\
+                event: message_stop\n\
+                data: {\"type\":\"message_stop\"}\n\n";
 
             Mock::given(method("POST"))
-                .and(path("/api/chat"))
-                .respond_with(ResponseTemplate::new(200).set_body_string(stream_body))
+                .and(path("/v1/messages"))
+                .and(header("x-api-key", "test-key"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string(sse_body)
+                        .insert_header("content-type", "text/event-stream"),
+                )
                 .mount(&mock_server)
                 .await;
 
-            let args = create_test_chat_args();
-            let settings = create_test_settings(&mock_server.uri());
+            let mut args = create_test_chat_args();
+            args.provider = Some("anthropic".to_string());
+
+            let mut settings = create_test_settings(&mock_server.uri());
+            settings.providers.anthropic.api_key = Some("test-key".to_string());
+            settings.providers.anthropic.base_url =
+                Some(format!("{}/v1/messages", mock_server.uri()));
+            settings.defaults.provider = "anthropic".to_string();
 
             let result = run_embedded_chat(args, settings).await;
-            // Test should succeed - streaming response should be processed
             assert!(result.is_ok(), "Expected success, got: {:?}", result);
         }
 
@@ -4499,54 +3995,6 @@ After reading, I'll make the necessary changes."#;
 
             // Response with native tool_calls field
             let stream_body = r#"{"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"glob","arguments":{"pattern":"*.rs"}}}]},"done":true,"eval_count":10,"prompt_eval_count":5}
-"#;
-
-            Mock::given(method("POST"))
-                .and(path("/api/chat"))
-                .respond_with(ResponseTemplate::new(200).set_body_string(stream_body))
-                .mount(&mock_server)
-                .await;
-
-            let args = create_test_chat_args();
-            let settings = create_test_settings(&mock_server.uri());
-
-            let result = run_embedded_chat(args, settings).await;
-            let _ = result;
-        }
-
-        #[tokio::test]
-        async fn test_run_embedded_chat_streaming_tool_in_text() {
-            use wiremock::matchers::{method, path};
-            use wiremock::{Mock, MockServer, ResponseTemplate};
-
-            let mock_server = MockServer::start().await;
-
-            // Tool call as JSON in text (triggers Ollama text buffering)
-            let stream_body = r#"{"message":{"role":"assistant","content":"{\"name\":\"glob\",\"arguments\":{\"pattern\":\"*.txt\"}}"},"done":true,"eval_count":10,"prompt_eval_count":5}
-"#;
-
-            Mock::given(method("POST"))
-                .and(path("/api/chat"))
-                .respond_with(ResponseTemplate::new(200).set_body_string(stream_body))
-                .mount(&mock_server)
-                .await;
-
-            let args = create_test_chat_args();
-            let settings = create_test_settings(&mock_server.uri());
-
-            let result = run_embedded_chat(args, settings).await;
-            let _ = result;
-        }
-
-        #[tokio::test]
-        async fn test_run_embedded_chat_streaming_markdown_tool() {
-            use wiremock::matchers::{method, path};
-            use wiremock::{Mock, MockServer, ResponseTemplate};
-
-            let mock_server = MockServer::start().await;
-
-            // Tool call in markdown code block (triggers buffering and extraction)
-            let stream_body = r#"{"message":{"role":"assistant","content":"```json\n{\"name\":\"glob\",\"arguments\":{\"pattern\":\"*.md\"}}\n```"},"done":true,"eval_count":10,"prompt_eval_count":5}
 "#;
 
             Mock::given(method("POST"))
@@ -4857,7 +4305,7 @@ After reading, I'll make the necessary changes."#;
 
             let mock_server = MockServer::start().await;
 
-            // Use array of lines for old/new (Ollama sometimes does this)
+            // Use array of lines for old/new (some models do this)
             let stream_body = r#"{"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"file_edit","arguments":{"path":"/tmp/test.txt","old":["line1","line2"],"new":["new1","new2"]}}}]},"done":true,"eval_count":10,"prompt_eval_count":5}
 "#;
 
@@ -4876,38 +4324,6 @@ After reading, I'll make the necessary changes."#;
     }
 
     // ==================== Additional edge case tests ====================
-
-    #[test]
-    fn test_extract_json_objects_by_braces_with_escaped_backslash() {
-        // JSON with escaped backslashes in strings
-        let text = r#"{"name": "shell", "arguments": {"command": "echo \"path\\to\\file\""}}"#;
-        let tools = extract_json_objects_by_braces(text);
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].0, "shell");
-    }
-
-    #[test]
-    fn test_extract_json_objects_by_braces_with_nested_escaped_quotes() {
-        // Complex nested escaping
-        let text = r#"{"name": "file_write", "arguments": {"path": "/test.json", "content": "{\"key\": \"value\"}"}}"#;
-        let tools = extract_json_objects_by_braces(text);
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].0, "file_write");
-    }
-
-    #[test]
-    fn test_extract_json_objects_by_braces_multiple_in_one_line() {
-        let text = r#"First: {"name": "file_read", "arguments": {"path": "/a"}} Second: {"name": "file_read", "arguments": {"path": "/b"}}"#;
-        let tools = extract_json_objects_by_braces(text);
-        assert_eq!(tools.len(), 2);
-    }
-
-    #[test]
-    fn test_extract_json_objects_by_braces_with_array_values() {
-        let text = r#"{"name": "shell", "arguments": {"args": ["a", "b", "c"]}}"#;
-        let tools = extract_json_objects_by_braces(text);
-        assert_eq!(tools.len(), 1);
-    }
 
     #[test]
     fn test_parse_tool_from_json_preserves_path_in_file_write_conversion() {
@@ -4997,42 +4413,6 @@ After reading, I'll make the necessary changes."#;
         assert_eq!(args["int_value"], 42);
         assert_eq!(args["float_value"], 2.5);
         assert_eq!(args["negative"], -100);
-    }
-
-    #[test]
-    fn test_extract_json_tool_calls_with_mixed_content() {
-        // Text with code blocks of different languages, only json should be parsed
-        let text = r#"
-Here's some Python code:
-```python
-print("hello")
-```
-
-And here's the tool call:
-```json
-{"name": "file_read", "arguments": {"path": "/test.txt"}}
-```
-
-And some Rust:
-```rust
-fn main() {}
-```
-"#;
-        let tools = extract_json_tool_calls(text);
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].0, "file_read");
-    }
-
-    #[test]
-    fn test_extract_json_tool_calls_with_malformed_json_block() {
-        // Valid-looking json block marker but invalid JSON inside
-        let text = r#"
-```json
-{"name": "file_read", "arguments": {"path": }
-```
-"#;
-        let tools = extract_json_tool_calls(text);
-        assert!(tools.is_empty());
     }
 
     #[test]
@@ -5152,40 +4532,6 @@ fn main() {}
     }
 
     #[test]
-    fn test_extract_json_tool_calls_multiline_json_in_block() {
-        let text = r#"
-```json
-{
-    "name": "file_write",
-    "arguments": {
-        "path": "/test.txt",
-        "content": "line1\nline2\nline3"
-    }
-}
-```
-"#;
-        let tools = extract_json_tool_calls(text);
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].0, "file_write");
-    }
-
-    #[test]
-    fn test_extract_json_objects_by_braces_at_start() {
-        let text = r#"{"name": "glob", "arguments": {"pattern": "*.rs"}} followed by text"#;
-        let tools = extract_json_objects_by_braces(text);
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].0, "glob");
-    }
-
-    #[test]
-    fn test_extract_json_objects_by_braces_at_end() {
-        let text = r#"Text followed by {"name": "grep", "arguments": {"pattern": "TODO"}}"#;
-        let tools = extract_json_objects_by_braces(text);
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].0, "grep");
-    }
-
-    #[test]
     fn test_history_message_with_special_characters() {
         let msg = HistoryMessage {
             role: "user".to_string(),
@@ -5233,13 +4579,6 @@ fn main() {}
         let (name, args) = parse_tool_from_json(&value).unwrap();
         assert_eq!(name, "file_write");
         assert_eq!(args["content"], "direct write");
-    }
-
-    #[test]
-    fn test_extract_json_tool_calls_with_extra_whitespace() {
-        let text = "   \n\n```json\n  {\"name\": \"file_read\", \"arguments\": {\"path\": \"/test\"}}  \n```\n\n   ";
-        let tools = extract_json_tool_calls(text);
-        assert_eq!(tools.len(), 1);
     }
 
     #[test]

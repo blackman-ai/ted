@@ -38,7 +38,7 @@ impl ModelTier {
 #[serde(rename_all = "lowercase")]
 pub enum Provider {
     Anthropic,
-    Ollama,
+    Local,
     OpenRouter,
     Blackman,
 }
@@ -48,7 +48,7 @@ impl Provider {
     pub fn display_name(&self) -> &'static str {
         match self {
             Provider::Anthropic => "Anthropic",
-            Provider::Ollama => "Ollama",
+            Provider::Local => "Local",
             Provider::OpenRouter => "OpenRouter",
             Provider::Blackman => "Blackman",
         }
@@ -61,7 +61,7 @@ impl FromStr for Provider {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "anthropic" => Ok(Provider::Anthropic),
-            "ollama" => Ok(Provider::Ollama),
+            "local" => Ok(Provider::Local),
             "openrouter" => Ok(Provider::OpenRouter),
             "blackman" => Ok(Provider::Blackman),
             _ => Err(format!("Unknown provider: {}", s)),
@@ -189,7 +189,7 @@ pub struct ModelsConfig {
     pub anthropic: ProviderModels,
 
     #[serde(default)]
-    pub ollama: ProviderModels,
+    pub local: ProviderModels,
 
     #[serde(default)]
     pub openrouter: ProviderModels,
@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn test_provider_from_str() {
         assert_eq!(Provider::from_str("anthropic"), Ok(Provider::Anthropic));
-        assert_eq!(Provider::from_str("OLLAMA"), Ok(Provider::Ollama));
+        assert_eq!(Provider::from_str("LOCAL"), Ok(Provider::Local));
         assert_eq!(Provider::from_str("OpenRouter"), Ok(Provider::OpenRouter));
         assert!(Provider::from_str("unknown").is_err());
     }
@@ -249,7 +249,7 @@ models = [
     { id = "claude-sonnet-4", tier = "high", context_size = 200000 }
 ]
 
-[ollama]
+[local]
 models = [
     { id = "qwen2.5-coder:14b", tier = "medium", vram_gb = 12.0 }
 ]
@@ -258,8 +258,8 @@ models = [
         let config: ModelsConfig = toml::from_str(toml).unwrap();
         assert_eq!(config.anthropic.models.len(), 1);
         assert_eq!(config.anthropic.models[0].id, "claude-sonnet-4");
-        assert_eq!(config.ollama.models.len(), 1);
-        assert_eq!(config.ollama.models[0].vram_gb, Some(12.0));
+        assert_eq!(config.local.models.len(), 1);
+        assert_eq!(config.local.models[0].vram_gb, Some(12.0));
     }
 
     // ===== Additional Coverage Tests =====
@@ -267,7 +267,7 @@ models = [
     #[test]
     fn test_provider_display_name() {
         assert_eq!(Provider::Anthropic.display_name(), "Anthropic");
-        assert_eq!(Provider::Ollama.display_name(), "Ollama");
+        assert_eq!(Provider::Local.display_name(), "Local");
         assert_eq!(Provider::OpenRouter.display_name(), "OpenRouter");
         assert_eq!(Provider::Blackman.display_name(), "Blackman");
     }
@@ -353,7 +353,7 @@ models = [
     fn test_models_config_default() {
         let config = ModelsConfig::default();
         assert!(config.anthropic.models.is_empty());
-        assert!(config.ollama.models.is_empty());
+        assert!(config.local.models.is_empty());
         assert!(config.openrouter.models.is_empty());
         assert!(config.blackman.models.is_empty());
     }
@@ -377,10 +377,10 @@ models = [
         use std::collections::HashSet;
         let mut set = HashSet::new();
         set.insert(Provider::Anthropic);
-        set.insert(Provider::Ollama);
+        set.insert(Provider::Local);
 
         assert!(set.contains(&Provider::Anthropic));
-        assert!(set.contains(&Provider::Ollama));
+        assert!(set.contains(&Provider::Local));
         assert!(!set.contains(&Provider::OpenRouter));
     }
 

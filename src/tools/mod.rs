@@ -750,7 +750,7 @@ mod tests {
     #[test]
     fn test_tool_registry_len() {
         let registry = ToolRegistry::with_builtins();
-        assert_eq!(registry.len(), 12); // 12 built-in tools (8 core + 4 database)
+        assert_eq!(registry.len(), 15); // 15 built-in tools (11 core + 4 database)
     }
 
     #[test]

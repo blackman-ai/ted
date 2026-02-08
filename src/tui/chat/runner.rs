@@ -45,33 +45,23 @@ use super::app::ChatMode;
 use super::state::{AgentTracker, DisplayMessage, DisplayToolCall, InputState};
 use super::ChatTuiConfig;
 
-/// Discover locally downloaded GGUF models
+/// Discover locally available GGUF models from all standard locations
 fn discover_local_models() -> Vec<String> {
-    let mut models = Vec::new();
+    let discovered = crate::models::scanner::scan_for_models();
 
-    // Check ~/.ted/models/local/ for GGUF files
-    if let Some(home) = dirs::home_dir() {
-        let models_dir = home.join(".ted").join("models").join("local");
-        if models_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&models_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|s| s.to_str()) == Some("gguf") {
-                        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                            models.push(stem.to_string());
-                        }
-                    }
-                }
-            }
-        }
+    if discovered.is_empty() {
+        return vec!["(no models - use /model download)".to_string()];
     }
 
-    // If no models found, show a placeholder
-    if models.is_empty() {
-        models.push("(no models - use /model download)".to_string());
-    }
-
-    models
+    discovered
+        .into_iter()
+        .filter_map(|m| {
+            m.path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+        })
+        .collect()
 }
 
 /// Settings section tabs
@@ -182,10 +172,9 @@ impl SettingsState {
     ) -> Self {
         let providers = vec![
             "anthropic".to_string(),
-            "ollama".to_string(),
+            "local".to_string(),
             "openrouter".to_string(),
             "blackman".to_string(),
-            "local".to_string(),
         ];
         let provider_index = providers
             .iter()
@@ -201,17 +190,6 @@ impl SettingsState {
                 "claude-opus-4-20250514".to_string(),
                 "claude-3-5-sonnet-20241022".to_string(),
                 "claude-3-5-haiku-20241022".to_string(),
-            ],
-        );
-        models_by_provider.insert(
-            "ollama".to_string(),
-            vec![
-                "llama3.2".to_string(),
-                "llama3.1".to_string(),
-                "mistral".to_string(),
-                "codellama".to_string(),
-                "deepseek-coder".to_string(),
-                "qwen2.5-coder".to_string(),
             ],
         );
         models_by_provider.insert(
@@ -272,7 +250,6 @@ impl SettingsState {
                 .clone()
                 .unwrap_or_default(),
         );
-        api_keys_by_provider.insert("ollama".to_string(), String::new()); // ollama doesn't need API key
         api_keys_by_provider.insert("local".to_string(), String::new()); // local doesn't need API key
 
         // Get API key for current provider
@@ -381,8 +358,8 @@ impl SettingsState {
         ) {
             return;
         }
-        // Don't allow editing API key for ollama (not needed)
-        if self.selected_field() == SettingsField::ApiKey && self.provider == "ollama" {
+        // Don't allow editing API key for local (not needed)
+        if self.selected_field() == SettingsField::ApiKey && self.provider == "local" {
             return;
         }
         self.is_editing = true;
@@ -517,7 +494,7 @@ impl SettingsState {
                 )
             }
             SettingsField::ApiKey => {
-                if self.provider == "ollama" {
+                if self.provider == "local" {
                     "(not required)".to_string()
                 } else if self.api_key.is_empty() {
                     "(not set)".to_string()
@@ -1832,9 +1809,6 @@ fn handle_settings_key(state: &mut TuiState, key: crossterm::event::KeyEvent) ->
                         "anthropic" => {
                             file_settings.providers.anthropic.default_model = new_model.clone()
                         }
-                        "ollama" => {
-                            file_settings.providers.ollama.default_model = new_model.clone()
-                        }
                         "openrouter" => {
                             file_settings.providers.openrouter.default_model = new_model.clone()
                         }
@@ -1842,8 +1816,8 @@ fn handle_settings_key(state: &mut TuiState, key: crossterm::event::KeyEvent) ->
                             file_settings.providers.blackman.default_model = new_model.clone()
                         }
                         "local" | "llama-cpp" => {
-                            // Update llama_cpp settings with selected model
-                            file_settings.providers.llama_cpp.default_model = new_model.clone();
+                            // Update local settings with selected model
+                            file_settings.providers.local.default_model = new_model.clone();
                             // Update model path to point to the selected model
                             if let Some(home) = dirs::home_dir() {
                                 let model_path = home
@@ -1852,7 +1826,7 @@ fn handle_settings_key(state: &mut TuiState, key: crossterm::event::KeyEvent) ->
                                     .join("local")
                                     .join(format!("{}.gguf", new_model));
                                 if model_path.exists() {
-                                    file_settings.providers.llama_cpp.model_path = model_path;
+                                    file_settings.providers.local.model_path = model_path;
                                 }
                             }
                         }
@@ -2962,7 +2936,7 @@ mod tests {
         assert_eq!(state.provider_index, 0);
 
         state.cycle_provider(true);
-        assert_eq!(state.provider, "ollama");
+        assert_eq!(state.provider, "local");
         assert!(state.has_changes);
 
         state.cycle_provider(true);
@@ -2971,15 +2945,12 @@ mod tests {
         state.cycle_provider(true);
         assert_eq!(state.provider, "blackman");
 
-        state.cycle_provider(true);
-        assert_eq!(state.provider, "local");
-
         state.cycle_provider(true); // Wrap around
         assert_eq!(state.provider, "anthropic");
 
         // Test backward cycling
         state.cycle_provider(false);
-        assert_eq!(state.provider, "local");
+        assert_eq!(state.provider, "blackman");
     }
 
     #[test]
@@ -2988,8 +2959,8 @@ mod tests {
         assert_eq!(state.provider_index, 0);
 
         state.cycle_provider(false);
-        assert_eq!(state.provider, "local");
-        assert_eq!(state.provider_index, 4);
+        assert_eq!(state.provider, "blackman");
+        assert_eq!(state.provider_index, 3);
     }
 
     #[test]
@@ -3004,7 +2975,7 @@ mod tests {
         // Provider and Model now show cycling UI with arrows and index
         assert_eq!(
             state.current_value(SettingsField::Provider),
-            "◀ anthropic ▶  (1/5)"
+            "◀ anthropic ▶  (1/4)"
         );
         // Model shows the current model with cycling UI (models list has 4 anthropic models)
         assert_eq!(
@@ -3309,7 +3280,7 @@ mod tests {
         // Test cycling forward through providers
         assert_eq!(state.provider, "anthropic");
         state.cycle_provider(true);
-        assert_eq!(state.provider, "ollama");
+        assert_eq!(state.provider, "local");
         assert!(state.has_changes);
 
         state.cycle_provider(true);
@@ -4598,7 +4569,7 @@ mod tests {
 
         // Enter on Provider cycles it
         let settings = state.settings_state.as_ref().unwrap();
-        assert_eq!(settings.provider, "ollama");
+        assert_eq!(settings.provider, "local");
     }
 
     #[test]
@@ -4704,7 +4675,7 @@ mod tests {
 
         // Space on Provider cycles it
         let settings = state.settings_state.as_ref().unwrap();
-        assert_eq!(settings.provider, "ollama");
+        assert_eq!(settings.provider, "local");
     }
 
     #[test]
@@ -4713,8 +4684,8 @@ mod tests {
         state.mode = ChatMode::Settings;
         if let Some(ref mut settings) = state.settings_state {
             settings.selected_index = 0; // Provider
-            settings.provider_index = 1; // ollama
-            settings.provider = "ollama".to_string();
+            settings.provider_index = 1; // local
+            settings.provider = "local".to_string();
         }
 
         let key = crossterm::event::KeyEvent::new(
@@ -4744,7 +4715,7 @@ mod tests {
 
         // Right on Provider cycles forward
         let settings = state.settings_state.as_ref().unwrap();
-        assert_eq!(settings.provider, "ollama");
+        assert_eq!(settings.provider, "local");
     }
 
     #[test]
@@ -4754,7 +4725,7 @@ mod tests {
         if let Some(ref mut settings) = state.settings_state {
             settings.selected_index = 0; // Provider
             settings.provider_index = 1;
-            settings.provider = "ollama".to_string();
+            settings.provider = "local".to_string();
         }
 
         let key = crossterm::event::KeyEvent::new(
@@ -4784,7 +4755,7 @@ mod tests {
 
         // l on Provider cycles forward
         let settings = state.settings_state.as_ref().unwrap();
-        assert_eq!(settings.provider, "ollama");
+        assert_eq!(settings.provider, "local");
     }
 
     #[test]

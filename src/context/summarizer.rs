@@ -592,7 +592,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_summarize_conversation_short() {
-        use crate::llm::providers::ollama::OllamaProvider;
+        use crate::llm::providers::AnthropicProvider;
 
         let messages = vec![
             create_test_message(Role::User, "Hello"),
@@ -600,7 +600,7 @@ mod tests {
         ];
 
         // Create a dummy provider (won't be used for short conversations)
-        let provider = OllamaProvider::new();
+        let provider = AnthropicProvider::new("dummy-key");
 
         let summary = summarize_conversation(&messages, &provider).await.unwrap();
 
@@ -610,10 +610,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_summarize_conversation_empty() {
-        use crate::llm::providers::ollama::OllamaProvider;
+        use crate::llm::providers::AnthropicProvider;
 
         let messages: Vec<Message> = vec![];
-        let provider = OllamaProvider::new();
+        let provider = AnthropicProvider::new("dummy-key");
 
         let summary = summarize_conversation(&messages, &provider).await.unwrap();
 
@@ -623,7 +623,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_summarize_conversation_long() {
-        use crate::llm::providers::ollama::OllamaProvider;
+        use crate::llm::providers::AnthropicProvider;
 
         // Create a long conversation
         let long_text = "This is a very long message that contains a lot of content. ".repeat(50);
@@ -632,7 +632,7 @@ mod tests {
             create_test_message(Role::Assistant, &long_text),
         ];
 
-        let provider = OllamaProvider::new();
+        let provider = AnthropicProvider::new("dummy-key");
 
         let summary = summarize_conversation(&messages, &provider).await.unwrap();
 
@@ -649,7 +649,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_summarize_conversation_with_system_role() {
-        use crate::llm::providers::ollama::OllamaProvider;
+        use crate::llm::providers::AnthropicProvider;
 
         // Test that System role messages are skipped in summarize_conversation
         let messages = vec![
@@ -665,7 +665,7 @@ mod tests {
             create_test_message(Role::Assistant, "Hi"),
         ];
 
-        let provider = OllamaProvider::new();
+        let provider = AnthropicProvider::new("dummy-key");
         let summary = summarize_conversation(&messages, &provider).await.unwrap();
 
         // Summary should not include the system message content
@@ -676,7 +676,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_summarize_conversation_long_with_many_lines() {
-        use crate::llm::providers::ollama::OllamaProvider;
+        use crate::llm::providers::AnthropicProvider;
 
         // Create a long conversation with many lines (> 5 lines after processing)
         // This tests the first/middle/last extraction logic (lines 52, 54-56)
@@ -715,7 +715,7 @@ mod tests {
             ),
         ];
 
-        let provider = OllamaProvider::new();
+        let provider = AnthropicProvider::new("dummy-key");
         let summary = summarize_conversation(&messages, &provider).await.unwrap();
 
         // Summary should be truncated to 300 chars
@@ -724,7 +724,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_summarize_conversation_exactly_5_lines() {
-        use crate::llm::providers::ollama::OllamaProvider;
+        use crate::llm::providers::AnthropicProvider;
 
         // Test the boundary case of exactly 5 lines (goes to else branch: lines.join(" "))
         // Need content > 500 chars with exactly 5 non-empty lines
@@ -736,7 +736,7 @@ mod tests {
             create_test_message(Role::User, "Fifth and final line"),
         ];
 
-        let provider = OllamaProvider::new();
+        let provider = AnthropicProvider::new("dummy-key");
         let summary = summarize_conversation(&messages, &provider).await.unwrap();
 
         // Summary should be generated without error
@@ -745,7 +745,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_summarize_conversation_only_system_messages() {
-        use crate::llm::providers::ollama::OllamaProvider;
+        use crate::llm::providers::AnthropicProvider;
 
         // Test that only system messages results in empty summary
         let messages = vec![
@@ -767,7 +767,7 @@ mod tests {
             },
         ];
 
-        let provider = OllamaProvider::new();
+        let provider = AnthropicProvider::new("dummy-key");
         let summary = summarize_conversation(&messages, &provider).await.unwrap();
 
         // Should be empty since system messages are ignored

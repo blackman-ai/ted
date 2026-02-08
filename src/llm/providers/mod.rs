@@ -5,16 +5,10 @@
 
 pub mod anthropic;
 pub mod blackman;
-pub mod ollama;
+pub mod local;
 pub mod openrouter;
-
-#[cfg(feature = "local-llm")]
-pub mod llama_cpp;
 
 pub use anthropic::AnthropicProvider;
 pub use blackman::BlackmanProvider;
-pub use ollama::OllamaProvider;
+pub use local::LocalProvider;
 pub use openrouter::OpenRouterProvider;
-
-#[cfg(feature = "local-llm")]
-pub use llama_cpp::{LlamaCppConfig, LlamaCppProvider};

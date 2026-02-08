@@ -59,9 +59,9 @@ pub struct ProvidersConfig {
     #[serde(default)]
     pub anthropic: AnthropicConfig,
 
-    /// Ollama local model configuration
+    /// Local LLM configuration (llama-server subprocess)
     #[serde(default)]
-    pub ollama: OllamaConfig,
+    pub local: LocalLlmConfig,
 
     /// OpenRouter configuration (100+ models via single API)
     #[serde(default)]
@@ -70,10 +70,6 @@ pub struct ProvidersConfig {
     /// Blackman AI configuration (optimized routing with cost savings)
     #[serde(default)]
     pub blackman: BlackmanConfig,
-
-    /// LlamaCpp local model configuration (bundled inference)
-    #[serde(default)]
-    pub llama_cpp: LlamaCppSettingsConfig,
 
     /// OpenAI configuration (future)
     #[serde(default)]
@@ -104,21 +100,28 @@ pub struct AnthropicConfig {
     pub base_url: Option<String>,
 }
 
-/// Ollama local model configuration
+/// Local LLM configuration (llama-server subprocess)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OllamaConfig {
-    /// Base URL for Ollama API
-    #[serde(default = "default_ollama_base_url")]
-    pub base_url: String,
+pub struct LocalLlmConfig {
+    /// Port for llama-server (default: 8847)
+    #[serde(default = "default_local_port")]
+    pub port: u16,
 
-    /// Default model to use with Ollama
-    #[serde(default = "default_ollama_model")]
+    /// GPU layers to offload (None = auto-detect)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_layers: Option<i32>,
+
+    /// Context size (None = model default)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ctx_size: Option<u32>,
+
+    /// Default model name for identification
+    #[serde(default = "default_local_model")]
     pub default_model: String,
 
-    /// Use OpenAI-compatible API endpoint (/v1/chat/completions) instead of native Ollama API
-    /// This can improve tool calling reliability for some models (see QwenLM/Qwen3-Coder#475)
-    #[serde(default)]
-    pub use_openai_api: bool,
+    /// Path to the GGUF model file
+    #[serde(default = "default_local_model_path")]
+    pub model_path: PathBuf,
 }
 
 /// OpenRouter configuration (100+ models via single API)
@@ -172,38 +175,14 @@ impl Default for BlackmanConfig {
     }
 }
 
-/// LlamaCpp local model configuration (bundled inference)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LlamaCppSettingsConfig {
-    /// Path to the GGUF model file
-    #[serde(default = "default_llama_cpp_model_path")]
-    pub model_path: PathBuf,
-
-    /// Context size (default 4096)
-    #[serde(default = "default_llama_cpp_context_size")]
-    pub context_size: u32,
-
-    /// GPU layers to offload (default 0 = CPU only)
-    #[serde(default = "default_llama_cpp_gpu_layers")]
-    pub gpu_layers: u32,
-
-    /// Number of threads (optional, auto-detect if None)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub threads: Option<u32>,
-
-    /// Default model name for identification
-    #[serde(default = "default_llama_cpp_model_name")]
-    pub default_model: String,
-}
-
-impl Default for LlamaCppSettingsConfig {
+impl Default for LocalLlmConfig {
     fn default() -> Self {
         Self {
-            model_path: default_llama_cpp_model_path(),
-            context_size: default_llama_cpp_context_size(),
-            gpu_layers: default_llama_cpp_gpu_layers(),
-            threads: None,
-            default_model: default_llama_cpp_model_name(),
+            port: default_local_port(),
+            gpu_layers: None,
+            ctx_size: None,
+            default_model: default_local_model(),
+            model_path: default_local_model_path(),
         }
     }
 }
@@ -287,13 +266,12 @@ pub struct AppearanceConfig {
 /// Embeddings configuration for semantic search
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingsConfig {
-    /// Backend to use: "bundled" (default, no deps) or "ollama"
+    /// Backend to use: "bundled" (default, no deps)
     #[serde(default = "default_embeddings_backend")]
     pub backend: String,
 
-    /// Model name (interpretation depends on backend)
-    /// Bundled: "all-minilm-l6-v2", "nomic-embed-text-v1.5", "bge-small-en-v1.5"
-    /// Ollama: "nomic-embed-text", "mxbai-embed-large", etc.
+    /// Model name for bundled embeddings
+    /// Options: "all-minilm-l6-v2", "nomic-embed-text-v1.5", "bge-small-en-v1.5"
     #[serde(default = "default_embeddings_model")]
     pub model: String,
 
@@ -510,12 +488,21 @@ fn default_anthropic_model() -> String {
     "claude-sonnet-4-20250514".to_string()
 }
 
-fn default_ollama_base_url() -> String {
-    "http://localhost:11434".to_string()
+fn default_local_port() -> u16 {
+    8847
 }
 
-fn default_ollama_model() -> String {
-    "qwen2.5-coder:14b".to_string()
+fn default_local_model() -> String {
+    "local".to_string()
+}
+
+fn default_local_model_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".ted")
+        .join("models")
+        .join("local")
+        .join("model.gguf")
 }
 
 fn default_openrouter_api_key_env() -> String {
@@ -536,27 +523,6 @@ fn default_blackman_model() -> String {
 
 fn default_blackman_base_url() -> String {
     "https://app.useblackman.ai".to_string()
-}
-
-fn default_llama_cpp_model_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".ted")
-        .join("models")
-        .join("local")
-        .join("model.gguf")
-}
-
-fn default_llama_cpp_context_size() -> u32 {
-    4096
-}
-
-fn default_llama_cpp_gpu_layers() -> u32 {
-    0 // CPU-only by default for maximum compatibility
-}
-
-fn default_llama_cpp_model_name() -> String {
-    "local".to_string()
 }
 
 fn default_caps() -> Vec<String> {
@@ -655,16 +621,6 @@ impl Default for AnthropicConfig {
     }
 }
 
-impl Default for OllamaConfig {
-    fn default() -> Self {
-        Self {
-            base_url: default_ollama_base_url(),
-            default_model: default_ollama_model(),
-            use_openai_api: false,
-        }
-    }
-}
-
 impl Default for OpenRouterConfig {
     fn default() -> Self {
         Self {
@@ -739,16 +695,69 @@ impl Settings {
         self.save_to(&Self::default_path())
     }
 
-    /// Save settings to a specific path
+    /// Save settings to a specific path, merging with existing file content
+    /// to preserve unknown keys from other code versions or hand edits.
     pub fn save_to(&self, path: &PathBuf) -> Result<()> {
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
+        // Serialize current struct to Value
+        let new_value = serde_json::to_value(self)?;
+
+        // If an existing file exists, load it and deep-merge
+        let merged = if path.exists() {
+            let existing_content = std::fs::read_to_string(path)?;
+            match serde_json::from_str::<serde_json::Value>(&existing_content) {
+                Ok(existing_value) => Self::deep_merge(existing_value, new_value),
+                Err(_) => new_value, // Corrupt file, overwrite entirely
+            }
+        } else {
+            new_value
+        };
+
+        let content = serde_json::to_string_pretty(&merged)?;
+        std::fs::write(path, content)?;
+        Ok(())
+    }
+
+    /// Save settings to the default path, fully overwriting (no merge).
+    /// Used for explicit resets.
+    pub fn save_clean(&self) -> Result<()> {
+        self.save_to_clean(&Self::default_path())
+    }
+
+    /// Save settings to a specific path, fully overwriting (no merge).
+    pub fn save_to_clean(&self, path: &PathBuf) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         let content = serde_json::to_string_pretty(self)?;
         std::fs::write(path, content)?;
         Ok(())
+    }
+
+    /// Deep-merge two JSON Values. `base` is the existing file content,
+    /// `overlay` is the new serialized struct. Overlay values take priority.
+    /// For objects, keys are merged recursively. For all other types,
+    /// overlay replaces base entirely.
+    fn deep_merge(base: serde_json::Value, overlay: serde_json::Value) -> serde_json::Value {
+        use serde_json::Value;
+        match (base, overlay) {
+            (Value::Object(mut base_map), Value::Object(overlay_map)) => {
+                for (key, overlay_val) in overlay_map {
+                    let merged = if let Some(base_val) = base_map.remove(&key) {
+                        Self::deep_merge(base_val, overlay_val)
+                    } else {
+                        overlay_val
+                    };
+                    base_map.insert(key, merged);
+                }
+                Value::Object(base_map)
+            }
+            (_base, overlay) => overlay,
+        }
     }
 
     /// Get the API key for Anthropic, checking env var first
@@ -773,6 +782,19 @@ impl Settings {
         std::env::var(&self.providers.blackman.api_key_env)
             .ok()
             .or_else(|| self.providers.blackman.api_key.clone())
+    }
+
+    /// Check if the given provider has a usable configuration.
+    /// Local provider is always considered configured.
+    /// API-based providers need an API key.
+    pub fn is_provider_configured(&self, provider: &str) -> bool {
+        match provider {
+            "local" => true,
+            "anthropic" => self.get_anthropic_api_key().is_some(),
+            "openrouter" => self.get_openrouter_api_key().is_some(),
+            "blackman" => self.get_blackman_api_key().is_some(),
+            _ => false,
+        }
     }
 
     /// Get the Blackman base URL, checking env var first
@@ -882,10 +904,10 @@ impl Settings {
             tier,
             HardwareTier::UltraTiny | HardwareTier::Ancient | HardwareTier::Tiny
         ) {
-            self.defaults.provider = "ollama".to_string();
+            self.defaults.provider = "local".to_string();
             let models = tier.recommended_models();
             if !models.is_empty() {
-                self.providers.ollama.default_model = models[0].to_string();
+                self.providers.local.default_model = models[0].to_string();
             }
         }
     }
@@ -1226,7 +1248,7 @@ mod tests {
 
         assert_eq!(settings.context.max_warm_chunks, 10);
         assert_eq!(settings.defaults.max_tokens, 1024);
-        assert_eq!(settings.defaults.provider, "ollama");
+        assert_eq!(settings.defaults.provider, "local");
     }
 
     #[test]
@@ -1256,46 +1278,30 @@ mod tests {
     }
 
     #[test]
-    fn test_ollama_config_default() {
-        let config = OllamaConfig::default();
-        assert_eq!(config.base_url, "http://localhost:11434");
-        assert_eq!(config.default_model, "qwen2.5-coder:14b");
-        assert!(!config.use_openai_api);
+    fn test_local_llm_config_default() {
+        let config = LocalLlmConfig::default();
+        assert_eq!(config.port, 8847);
+        assert_eq!(config.default_model, "local");
+        assert!(config.gpu_layers.is_none());
+        assert!(config.ctx_size.is_none());
     }
 
     #[test]
-    fn test_ollama_config_serialization() {
-        let config = OllamaConfig {
-            base_url: "http://custom:8080".to_string(),
-            default_model: "llama3.2:latest".to_string(),
-            use_openai_api: true,
+    fn test_local_llm_config_serialization() {
+        let config = LocalLlmConfig {
+            port: 9999,
+            gpu_layers: Some(32),
+            ctx_size: Some(8192),
+            default_model: "qwen2.5-coder".to_string(),
+            model_path: PathBuf::from("/models/test.gguf"),
         };
 
         let json = serde_json::to_string(&config).unwrap();
-        let parsed: OllamaConfig = serde_json::from_str(&json).unwrap();
+        let parsed: LocalLlmConfig = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(parsed.base_url, "http://custom:8080");
-        assert_eq!(parsed.default_model, "llama3.2:latest");
-        assert!(parsed.use_openai_api);
-    }
-
-    #[test]
-    fn test_ollama_default_functions() {
-        assert_eq!(default_ollama_base_url(), "http://localhost:11434");
-        assert_eq!(default_ollama_model(), "qwen2.5-coder:14b");
-    }
-
-    #[test]
-    fn test_settings_with_ollama_provider() {
-        let mut settings = Settings::default();
-        settings.providers.ollama.base_url = "http://custom:8080".to_string();
-        settings.providers.ollama.default_model = "codellama:latest".to_string();
-
-        let json = serde_json::to_string(&settings).unwrap();
-        let parsed: Settings = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(parsed.providers.ollama.base_url, "http://custom:8080");
-        assert_eq!(parsed.providers.ollama.default_model, "codellama:latest");
+        assert_eq!(parsed.port, 9999);
+        assert_eq!(parsed.gpu_layers, Some(32));
+        assert_eq!(parsed.ctx_size, Some(8192));
     }
 
     #[test]
@@ -1489,8 +1495,8 @@ mod tests {
 
         settings.apply_hardware_adaptive_config();
 
-        // UltraTiny should set provider to ollama
-        assert_eq!(settings.defaults.provider, "ollama");
+        // UltraTiny should set provider to local
+        assert_eq!(settings.defaults.provider, "local");
     }
 
     #[test]
@@ -1507,8 +1513,8 @@ mod tests {
 
         settings.apply_hardware_adaptive_config();
 
-        // Tiny should set provider to ollama
-        assert_eq!(settings.defaults.provider, "ollama");
+        // Tiny should set provider to local
+        assert_eq!(settings.defaults.provider, "local");
     }
 
     #[test]
@@ -1762,5 +1768,175 @@ mod tests {
 
         let limit = config.get_for_model("custom-model");
         assert_eq!(limit.tokens_per_minute, 200_000);
+    }
+
+    // ===== Deep merge and merge-save tests =====
+
+    #[test]
+    fn test_deep_merge() {
+        let base: serde_json::Value = serde_json::json!({
+            "a": 1,
+            "b": {"c": 2, "d": 3},
+            "e": "old"
+        });
+        let overlay: serde_json::Value = serde_json::json!({
+            "b": {"c": 99},
+            "e": "new",
+            "f": true
+        });
+
+        let merged = Settings::deep_merge(base, overlay);
+
+        assert_eq!(merged["a"], 1); // from base only
+        assert_eq!(merged["b"]["c"], 99); // overlay wins
+        assert_eq!(merged["b"]["d"], 3); // from base only (nested)
+        assert_eq!(merged["e"], "new"); // overlay wins
+        assert_eq!(merged["f"], true); // from overlay only
+    }
+
+    #[test]
+    fn test_save_preserves_unknown_keys() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("settings.json");
+
+        // Write a file with an extra key the struct doesn't know about
+        let initial = r#"{
+            "defaults": {"temperature": 0.5},
+            "future_feature": {"enabled": true, "threshold": 42}
+        }"#;
+        std::fs::write(&path, initial).unwrap();
+
+        // Load, modify, save
+        let mut settings = Settings::load_from(&path).unwrap();
+        settings.defaults.temperature = 0.9;
+        settings.save_to(&path).unwrap();
+
+        // Read back as raw Value and verify the unknown key survived
+        let content = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        let temp = value["defaults"]["temperature"].as_f64().unwrap();
+        assert!((temp - 0.9).abs() < 0.001);
+        assert_eq!(value["future_feature"]["enabled"], true);
+        assert_eq!(value["future_feature"]["threshold"], 42);
+    }
+
+    #[test]
+    fn test_save_preserves_nested_unknown_keys() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("settings.json");
+
+        // Write a file with nested extra keys inside a known section
+        let initial = r#"{
+            "providers": {
+                "anthropic": {"api_key": "sk-old"},
+                "future_provider": {"url": "https://example.com"}
+            }
+        }"#;
+        std::fs::write(&path, initial).unwrap();
+
+        let mut settings = Settings::load_from(&path).unwrap();
+        settings.providers.anthropic.api_key = Some("sk-new".to_string());
+        settings.save_to(&path).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        assert_eq!(value["providers"]["anthropic"]["api_key"], "sk-new");
+        assert_eq!(
+            value["providers"]["future_provider"]["url"],
+            "https://example.com"
+        );
+    }
+
+    #[test]
+    fn test_save_to_new_file_works() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("new_settings.json");
+
+        let settings = Settings::default();
+        settings.save_to(&path).unwrap();
+
+        assert!(path.exists());
+        let loaded = Settings::load_from(&path).unwrap();
+        assert_eq!(loaded.defaults.temperature, 0.7);
+    }
+
+    #[test]
+    fn test_save_overwrites_corrupt_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("settings.json");
+
+        std::fs::write(&path, "this is not json{{{").unwrap();
+
+        let settings = Settings::default();
+        settings.save_to(&path).unwrap();
+
+        let loaded = Settings::load_from(&path).unwrap();
+        assert_eq!(loaded.defaults.temperature, 0.7);
+    }
+
+    #[test]
+    fn test_save_clean_does_full_overwrite() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("settings.json");
+
+        let initial = r#"{"future_feature": {"enabled": true}}"#;
+        std::fs::write(&path, initial).unwrap();
+
+        let settings = Settings::default();
+        settings.save_to_clean(&path).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        // The unknown key should NOT survive a clean save
+        assert!(value.get("future_feature").is_none());
+    }
+
+    // ===== is_provider_configured tests =====
+
+    #[test]
+    fn test_is_provider_configured_local() {
+        let settings = Settings::default();
+        assert!(settings.is_provider_configured("local"));
+    }
+
+    #[test]
+    fn test_is_provider_configured_anthropic_no_key() {
+        let mut settings = Settings::default();
+        settings.providers.anthropic.api_key = None;
+        settings.providers.anthropic.api_key_env = "NONEXISTENT_ENV_VAR_12345".to_string();
+        assert!(!settings.is_provider_configured("anthropic"));
+    }
+
+    #[test]
+    fn test_is_provider_configured_anthropic_with_key() {
+        let mut settings = Settings::default();
+        settings.providers.anthropic.api_key = Some("sk-test".to_string());
+        settings.providers.anthropic.api_key_env = "NONEXISTENT_ENV_VAR_12345".to_string();
+        assert!(settings.is_provider_configured("anthropic"));
+    }
+
+    #[test]
+    fn test_is_provider_configured_openrouter_with_key() {
+        let mut settings = Settings::default();
+        settings.providers.openrouter.api_key = Some("or-test".to_string());
+        settings.providers.openrouter.api_key_env = "NONEXISTENT_ENV_VAR_12345".to_string();
+        assert!(settings.is_provider_configured("openrouter"));
+    }
+
+    #[test]
+    fn test_is_provider_configured_blackman_with_key() {
+        let mut settings = Settings::default();
+        settings.providers.blackman.api_key = Some("bm-test".to_string());
+        settings.providers.blackman.api_key_env = "NONEXISTENT_ENV_VAR_12345".to_string();
+        assert!(settings.is_provider_configured("blackman"));
+    }
+
+    #[test]
+    fn test_is_provider_configured_unknown() {
+        let settings = Settings::default();
+        assert!(!settings.is_provider_configured("nonexistent"));
     }
 }

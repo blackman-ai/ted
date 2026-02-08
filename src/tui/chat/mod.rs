@@ -154,7 +154,7 @@ mod tests {
         let session_id = uuid::Uuid::new_v4();
         let config = ChatTuiConfig {
             session_id,
-            provider_name: "ollama".to_string(),
+            provider_name: "local".to_string(),
             model: "llama3".to_string(),
             caps: vec!["base".to_string(), "code-review".to_string()],
             trust_mode: true,
@@ -162,7 +162,7 @@ mod tests {
         };
 
         assert_eq!(config.session_id, session_id);
-        assert_eq!(config.provider_name, "ollama");
+        assert_eq!(config.provider_name, "local");
         assert_eq!(config.model, "llama3");
         assert_eq!(config.caps.len(), 2);
         assert!(config.trust_mode);
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn test_chat_tui_config_provider_variants() {
-        let providers = ["anthropic", "ollama", "openrouter", "blackman"];
+        let providers = ["anthropic", "local", "openrouter", "blackman"];
 
         for provider in providers {
             let config = ChatTuiConfig {

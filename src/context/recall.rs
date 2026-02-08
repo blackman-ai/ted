@@ -136,7 +136,7 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[tokio::test]
-    #[ignore] // Requires Ollama running
+    #[ignore] // Requires embeddings backend
     async fn test_recall_and_store() {
         let temp_file = NamedTempFile::new().unwrap();
         let generator = EmbeddingGenerator::new();

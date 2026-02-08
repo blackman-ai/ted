@@ -70,8 +70,8 @@ fn test_tool_registry_definitions() {
     let registry = ToolRegistry::with_builtins();
     let definitions = registry.definitions();
 
-    // Should have 12 built-in tools (8 core + 4 database)
-    assert_eq!(definitions.len(), 12);
+    // Should have 15 built-in tools (11 core + 4 database)
+    assert_eq!(definitions.len(), 15);
 
     // Each definition should have a name
     for def in &definitions {

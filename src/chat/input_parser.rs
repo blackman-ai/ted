@@ -139,7 +139,7 @@ pub fn parse_cap_command(input: &str) -> Option<(&str, Option<&str>)> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderChoice {
     Anthropic,
-    Ollama,
+    Local,
     OpenRouter,
     Settings,
     Invalid,
@@ -150,7 +150,7 @@ pub enum ProviderChoice {
 pub fn parse_provider_choice(input: &str) -> ProviderChoice {
     match input.trim().to_lowercase().as_str() {
         "1" | "anthropic" => ProviderChoice::Anthropic,
-        "2" | "ollama" => ProviderChoice::Ollama,
+        "2" | "local" => ProviderChoice::Local,
         "3" | "openrouter" => ProviderChoice::OpenRouter,
         "s" | "settings" => ProviderChoice::Settings,
         _ => ProviderChoice::Invalid,
@@ -1096,10 +1096,10 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_provider_choice_ollama() {
-        assert_eq!(parse_provider_choice("2"), ProviderChoice::Ollama);
-        assert_eq!(parse_provider_choice("ollama"), ProviderChoice::Ollama);
-        assert_eq!(parse_provider_choice("OLLAMA"), ProviderChoice::Ollama);
+    fn test_parse_provider_choice_local() {
+        assert_eq!(parse_provider_choice("2"), ProviderChoice::Local);
+        assert_eq!(parse_provider_choice("local"), ProviderChoice::Local);
+        assert_eq!(parse_provider_choice("LOCAL"), ProviderChoice::Local);
     }
 
     #[test]
@@ -1430,7 +1430,7 @@ mod tests {
 
     #[test]
     fn test_provider_choice_clone() {
-        let choice = ProviderChoice::Ollama;
+        let choice = ProviderChoice::Local;
         let cloned = choice.clone();
         assert_eq!(choice, cloned);
     }
@@ -1438,7 +1438,7 @@ mod tests {
     #[test]
     fn test_provider_choice_eq() {
         assert_eq!(ProviderChoice::Anthropic, ProviderChoice::Anthropic);
-        assert_ne!(ProviderChoice::Anthropic, ProviderChoice::Ollama);
+        assert_ne!(ProviderChoice::Anthropic, ProviderChoice::Local);
     }
 
     // ==================== Edge cases and regression tests ====================

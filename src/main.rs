@@ -28,12 +28,13 @@ use ted::config::Settings;
 use ted::context::{ContextManager, SessionId};
 use ted::error::{ApiError, Result, TedError};
 use ted::history::{HistoryStore, SessionInfo};
+use ted::llm::factory::ProviderFactory;
 use ted::llm::message::{ContentBlock, Conversation, Message, MessageContent};
 use ted::llm::provider::{
     CompletionRequest, ContentBlockDelta, ContentBlockResponse, LlmProvider, StopReason,
     StreamEvent,
 };
-use ted::llm::providers::{AnthropicProvider, OllamaProvider, OpenRouterProvider};
+use ted::llm::providers::{AnthropicProvider, OpenRouterProvider};
 use ted::plans::PlanStore;
 use ted::tools::{ToolContext, ToolExecutor, ToolResult};
 use ted::tui::chat::{run_chat_tui_loop, ChatTuiConfig};
@@ -131,19 +132,13 @@ async fn main() -> Result<()> {
 
 /// Check if provider is configured and prompt user to set up if not
 fn check_provider_configuration(settings: &Settings, provider_name: &str) -> Result<Settings> {
-    match provider_name {
-        "ollama" => {
-            // Ollama doesn't require an API key, just needs to be running
-            // We'll check connectivity later
-            Ok(settings.clone())
-        }
-        _ => {
-            // Anthropic (default) requires an API key
-            if settings.get_anthropic_api_key().is_some() {
-                return Ok(settings.clone());
-            }
+    // If the requested provider is already configured, proceed
+    if settings.is_provider_configured(provider_name) {
+        return Ok(settings.clone());
+    }
 
-            // No API key configured - prompt the user
+    {
+            // No provider configured - prompt the user
             let mut stdout = io::stdout();
             println!();
             stdout.execute(SetForegroundColor(Color::Cyan))?;
@@ -162,8 +157,8 @@ fn check_provider_configuration(settings: &Settings, provider_name: &str) -> Res
             stdout.execute(SetForegroundColor(Color::Yellow))?;
             print!("  2.");
             stdout.execute(ResetColor)?;
-            println!(" Use Ollama for local models (free, runs on your machine)");
-            println!("     Install from: https://ollama.ai");
+            println!(" Use local models (runs on your machine)");
+            println!("     Download a model with: ted model download");
             println!();
             print!("Choose an option [1/2], or 's' for settings: ");
             stdout.flush()?;
@@ -175,16 +170,16 @@ fn check_provider_configuration(settings: &Settings, provider_name: &str) -> Res
             let mut updated_settings = settings.clone();
 
             match choice.as_str() {
-                "2" | "ollama" => {
-                    // Switch to Ollama
-                    updated_settings.defaults.provider = "ollama".to_string();
+                "2" | "local" => {
+                    // Switch to Local
+                    updated_settings.defaults.provider = "local".to_string();
                     updated_settings.save()?;
                     println!();
                     stdout.execute(SetForegroundColor(Color::Green))?;
-                    print!("Provider set to Ollama.");
+                    print!("Provider set to Local.");
                     stdout.execute(ResetColor)?;
                     println!();
-                    println!("Make sure Ollama is running: ollama serve");
+                    println!("Download a model with: ted model download");
                     println!();
                     Ok(updated_settings)
                 }
@@ -229,9 +224,7 @@ fn check_provider_configuration(settings: &Settings, provider_name: &str) -> Res
                     // Reload settings after TUI
                     let reloaded = Settings::load()?;
                     // Check again if provider is now configured
-                    if reloaded.defaults.provider == "ollama"
-                        || reloaded.get_anthropic_api_key().is_some()
-                    {
+                    if reloaded.is_provider_configured(&reloaded.defaults.provider) {
                         Ok(reloaded)
                     } else {
                         Err(TedError::Config(
@@ -243,7 +236,6 @@ fn check_provider_configuration(settings: &Settings, provider_name: &str) -> Res
                     "Invalid choice. Run 'ted' again to configure.".to_string(),
                 )),
             }
-        }
     }
 }
 
@@ -282,27 +274,14 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
         .clone()
         .unwrap_or_else(|| settings.defaults.provider.clone());
 
+    // Override local model path if specified via CLI
+    if let Some(ref model_path) = args.model_path {
+        settings.providers.local.model_path = model_path.clone();
+    }
+
     // Create the appropriate provider (mutable so it can be changed via /settings)
     let mut provider: Arc<dyn LlmProvider> = match provider_name.as_str() {
-        "ollama" => {
-            let ollama_provider = OllamaProvider::with_openai_api(
-                &settings.providers.ollama.base_url,
-                settings.providers.ollama.use_openai_api,
-            );
-            // Perform health check
-            if let Err(e) = ollama_provider.health_check().await {
-                let mut stdout = io::stdout();
-                println!();
-                stdout.execute(SetForegroundColor(Color::Yellow))?;
-                print!("Ollama is not running.");
-                stdout.execute(ResetColor)?;
-                println!();
-                println!("Start Ollama with: ollama serve");
-                println!("Or switch to Anthropic: ted settings");
-                return Err(e);
-            }
-            Arc::new(ollama_provider)
-        }
+        "local" => ProviderFactory::create_local(&settings).await?,
         "openrouter" => {
             let api_key = settings.get_openrouter_api_key().ok_or_else(|| {
                 TedError::Config(
@@ -342,7 +321,7 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
         .clone()
         .or_else(|| merged_cap.preferred_model().map(|s| s.to_string()))
         .unwrap_or_else(|| match provider_name.as_str() {
-            "ollama" => settings.providers.ollama.default_model.clone(),
+            "local" => settings.providers.local.default_model.clone(),
             "openrouter" => settings.providers.openrouter.default_model.clone(),
             _ => settings.providers.anthropic.default_model.clone(),
         });
@@ -832,7 +811,7 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
 
                         // Check if model changed (use correct provider's default model)
                         let new_model = match new_settings.defaults.provider.as_str() {
-                            "ollama" => new_settings.providers.ollama.default_model.clone(),
+                            "local" => new_settings.providers.local.default_model.clone(),
                             "openrouter" => new_settings.providers.openrouter.default_model.clone(),
                             _ => new_settings.providers.anthropic.default_model.clone(),
                         };
@@ -848,17 +827,17 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
 
                             // Recreate the provider for the new backend
                             match provider_name.as_str() {
-                                "ollama" => {
-                                    let ollama_provider = OllamaProvider::with_openai_api(
-                                        &new_settings.providers.ollama.base_url,
-                                        new_settings.providers.ollama.use_openai_api,
-                                    );
-                                    // Perform health check
-                                    if let Err(e) = ollama_provider.health_check().await {
-                                        eprintln!("Warning: Ollama is not running: {}", e);
-                                        eprintln!("Start Ollama with: ollama serve");
-                                    } else {
-                                        provider = Arc::new(ollama_provider);
+                                "local" => {
+                                    match ProviderFactory::create_local(&new_settings).await {
+                                        Ok(new_provider) => {
+                                            provider = new_provider;
+                                        }
+                                        Err(e) => {
+                                            eprintln!(
+                                                "Warning: Failed to create local provider: {}",
+                                                e
+                                            );
+                                        }
                                     }
                                 }
                                 "openrouter" => {
@@ -2009,16 +1988,8 @@ async fn run_ask(args: ted::cli::AskArgs, settings: Settings, verbose: u8) -> Re
         .unwrap_or_else(|| settings.defaults.provider.clone());
 
     // Create the appropriate provider
-    let provider: Box<dyn LlmProvider> = match provider_name.as_str() {
-        "ollama" => {
-            let ollama_provider = OllamaProvider::with_openai_api(
-                &settings.providers.ollama.base_url,
-                settings.providers.ollama.use_openai_api,
-            );
-            // Perform health check
-            ollama_provider.health_check().await?;
-            Box::new(ollama_provider)
-        }
+    let provider: Arc<dyn LlmProvider> = match provider_name.as_str() {
+        "local" => ProviderFactory::create_local(&settings).await?,
         "openrouter" => {
             let api_key = settings
                 .get_openrouter_api_key()
@@ -2028,18 +1999,18 @@ async fn run_ask(args: ted::cli::AskArgs, settings: Settings, verbose: u8) -> Re
             } else {
                 OpenRouterProvider::new(api_key)
             };
-            Box::new(provider)
+            Arc::new(provider)
         }
         _ => {
             let api_key = settings
                 .get_anthropic_api_key()
                 .ok_or_else(|| TedError::Config("No Anthropic API key found.".to_string()))?;
-            Box::new(AnthropicProvider::new(api_key))
+            Arc::new(AnthropicProvider::new(api_key))
         }
     };
 
     let model = args.model.unwrap_or_else(|| match provider_name.as_str() {
-        "ollama" => settings.providers.ollama.default_model.clone(),
+        "local" => settings.providers.local.default_model.clone(),
         "openrouter" => settings.providers.openrouter.default_model.clone(),
         _ => settings.providers.anthropic.default_model.clone(),
     });
@@ -2110,7 +2081,7 @@ fn run_settings_command(args: ted::cli::SettingsArgs, mut settings: Settings) ->
                 "model" => {
                     // Set model for the current default provider
                     match settings.defaults.provider.as_str() {
-                        "ollama" => settings.providers.ollama.default_model = value,
+                        "local" => settings.providers.local.default_model = value,
                         _ => settings.providers.anthropic.default_model = value,
                     }
                 }
@@ -2125,7 +2096,7 @@ fn run_settings_command(args: ted::cli::SettingsArgs, mut settings: Settings) ->
                         .map_err(|_| TedError::InvalidInput("Invalid boolean value".to_string()))?;
                 }
                 "provider" => {
-                    let valid_providers = ["anthropic", "ollama"];
+                    let valid_providers = ["anthropic", "local"];
                     if valid_providers.contains(&value.as_str()) {
                         settings.defaults.provider = value;
                     } else {
@@ -2136,11 +2107,13 @@ fn run_settings_command(args: ted::cli::SettingsArgs, mut settings: Settings) ->
                         )));
                     }
                 }
-                "ollama.base_url" => {
-                    settings.providers.ollama.base_url = value;
+                "local.port" => {
+                    settings.providers.local.port = value
+                        .parse()
+                        .map_err(|_| TedError::InvalidInput("Invalid port value".to_string()))?;
                 }
-                "ollama.model" => {
-                    settings.providers.ollama.default_model = value;
+                "local.model" => {
+                    settings.providers.local.default_model = value;
                 }
                 _ => {
                     return Err(TedError::InvalidInput(format!("Unknown setting: {}", key)));
@@ -2152,14 +2125,14 @@ fn run_settings_command(args: ted::cli::SettingsArgs, mut settings: Settings) ->
         Some(ted::cli::SettingsCommands::Get { key }) => {
             let value = match key.as_str() {
                 "model" => match settings.defaults.provider.as_str() {
-                    "ollama" => settings.providers.ollama.default_model.clone(),
+                    "local" => settings.providers.local.default_model.clone(),
                     _ => settings.providers.anthropic.default_model.clone(),
                 },
                 "temperature" => settings.defaults.temperature.to_string(),
                 "stream" => settings.defaults.stream.to_string(),
                 "provider" => settings.defaults.provider.clone(),
-                "ollama.base_url" => settings.providers.ollama.base_url.clone(),
-                "ollama.model" => settings.providers.ollama.default_model.clone(),
+                "local.port" => settings.providers.local.port.to_string(),
+                "local.model" => settings.providers.local.default_model.clone(),
                 _ => {
                     return Err(TedError::InvalidInput(format!("Unknown setting: {}", key)));
                 }
@@ -2168,7 +2141,7 @@ fn run_settings_command(args: ted::cli::SettingsArgs, mut settings: Settings) ->
         }
         Some(ted::cli::SettingsCommands::Reset) => {
             let default_settings = Settings::default();
-            default_settings.save()?;
+            default_settings.save_clean()?;
             println!("Settings reset to defaults.");
         }
         None => {
@@ -3661,18 +3634,18 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_provider_choice_ollama() {
+    fn test_parse_provider_choice_local() {
         assert_eq!(
             input_parser::parse_provider_choice("2"),
-            ProviderChoice::Ollama
+            ProviderChoice::Local
         );
         assert_eq!(
-            input_parser::parse_provider_choice("ollama"),
-            ProviderChoice::Ollama
+            input_parser::parse_provider_choice("local"),
+            ProviderChoice::Local
         );
         assert_eq!(
-            input_parser::parse_provider_choice("OLLAMA"),
-            ProviderChoice::Ollama
+            input_parser::parse_provider_choice("LOCAL"),
+            ProviderChoice::Local
         );
     }
 
@@ -3871,7 +3844,7 @@ mod tests {
 
     #[test]
     fn test_provider_choice_clone() {
-        let choice = ProviderChoice::Ollama;
+        let choice = ProviderChoice::Local;
         let cloned = choice.clone();
         assert_eq!(choice, cloned);
     }
@@ -4842,9 +4815,9 @@ mod tests {
     // ==================== Provider configuration tests ====================
 
     #[test]
-    fn test_check_provider_configuration_ollama() {
+    fn test_check_provider_configuration_local() {
         let settings = Settings::default();
-        let result = check_provider_configuration(&settings, "ollama");
+        let result = check_provider_configuration(&settings, "local");
         assert!(result.is_ok());
     }
 
@@ -5072,11 +5045,11 @@ mod tests {
     }
 
     #[test]
-    fn test_run_settings_command_get_ollama_base_url() {
+    fn test_run_settings_command_get_local_port() {
         let settings = Settings::default();
         let args = ted::cli::SettingsArgs {
             command: Some(ted::cli::SettingsCommands::Get {
-                key: "ollama.base_url".to_string(),
+                key: "local.port".to_string(),
             }),
         };
 
@@ -5085,11 +5058,11 @@ mod tests {
     }
 
     #[test]
-    fn test_run_settings_command_get_ollama_model() {
+    fn test_run_settings_command_get_local_model() {
         let settings = Settings::default();
         let args = ted::cli::SettingsArgs {
             command: Some(ted::cli::SettingsCommands::Get {
-                key: "ollama.model".to_string(),
+                key: "local.model".to_string(),
             }),
         };
 
@@ -5098,9 +5071,9 @@ mod tests {
     }
 
     #[test]
-    fn test_run_settings_command_get_model_ollama_provider() {
+    fn test_run_settings_command_get_model_local_provider() {
         let mut settings = Settings::default();
-        settings.defaults.provider = "ollama".to_string();
+        settings.defaults.provider = "local".to_string();
         let args = ted::cli::SettingsArgs {
             command: Some(ted::cli::SettingsCommands::Get {
                 key: "model".to_string(),
@@ -5128,12 +5101,12 @@ mod tests {
     }
 
     #[test]
-    fn test_run_settings_command_set_valid_provider_ollama() {
+    fn test_run_settings_command_set_valid_provider_local() {
         let settings = Settings::default();
         let args = ted::cli::SettingsArgs {
             command: Some(ted::cli::SettingsCommands::Set {
                 key: "provider".to_string(),
-                value: "ollama".to_string(),
+                value: "local".to_string(),
             }),
         };
 
@@ -5544,9 +5517,9 @@ mod tests {
     // ==================== Additional Welcome message tests ====================
 
     #[test]
-    fn test_print_welcome_ollama_provider() {
+    fn test_print_welcome_local_provider() {
         let session_id = SessionId::new();
-        let result = print_welcome("ollama", "llama3", false, &session_id, &[]);
+        let result = print_welcome("local", "llama3", false, &session_id, &[]);
         assert!(result.is_ok());
     }
 
@@ -5967,12 +5940,12 @@ mod tests {
     }
 
     #[test]
-    fn test_run_settings_command_set_ollama_base_url() {
+    fn test_run_settings_command_set_local_port() {
         let settings = Settings::default();
         let args = ted::cli::SettingsArgs {
             command: Some(ted::cli::SettingsCommands::Set {
-                key: "ollama.base_url".to_string(),
-                value: "http://localhost:11434".to_string(),
+                key: "local.port".to_string(),
+                value: "9999".to_string(),
             }),
         };
 
@@ -5981,11 +5954,11 @@ mod tests {
     }
 
     #[test]
-    fn test_run_settings_command_set_ollama_model() {
+    fn test_run_settings_command_set_local_model() {
         let settings = Settings::default();
         let args = ted::cli::SettingsArgs {
             command: Some(ted::cli::SettingsCommands::Set {
-                key: "ollama.model".to_string(),
+                key: "local.model".to_string(),
                 value: "llama3".to_string(),
             }),
         };
@@ -6007,9 +5980,9 @@ mod tests {
     }
 
     #[test]
-    fn test_run_settings_command_set_model_ollama_provider() {
+    fn test_run_settings_command_set_model_local_provider() {
         let mut settings = Settings::default();
-        settings.defaults.provider = "ollama".to_string();
+        settings.defaults.provider = "local".to_string();
         let args = ted::cli::SettingsArgs {
             command: Some(ted::cli::SettingsCommands::Set {
                 key: "model".to_string(),
@@ -6631,9 +6604,9 @@ mod tests {
     }
 
     #[test]
-    fn test_ollama_provider_info() {
-        let provider_name = "ollama";
-        assert_eq!(provider_name, "ollama");
+    fn test_local_provider_info() {
+        let provider_name = "local";
+        assert_eq!(provider_name, "local");
     }
 
     #[test]
@@ -7631,10 +7604,10 @@ mod tests {
     // ==================== check_provider_configuration tests ====================
 
     #[test]
-    fn test_check_provider_configuration_ollama_always_ok() {
-        // Ollama doesn't require API key
+    fn test_check_provider_configuration_local_always_ok() {
+        // Local provider doesn't require API key
         let settings = Settings::default();
-        let result = check_provider_configuration(&settings, "ollama");
+        let result = check_provider_configuration(&settings, "local");
         assert!(result.is_ok());
     }
 

@@ -38,7 +38,7 @@ pub struct ChatSession {
     /// LLM provider for completions
     pub provider: Arc<dyn LlmProvider>,
 
-    /// Provider name (e.g., "anthropic", "ollama")
+    /// Provider name (e.g., "anthropic", "local")
     pub provider_name: String,
 
     /// Current model name
@@ -161,7 +161,7 @@ impl ChatSessionBuilder {
                 .preferred_model()
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| match self.provider_name.as_str() {
-                    "ollama" => self.settings.providers.ollama.default_model.clone(),
+                    "local" => self.settings.providers.local.default_model.clone(),
                     "openrouter" => self.settings.providers.openrouter.default_model.clone(),
                     _ => self.settings.providers.anthropic.default_model.clone(),
                 })
@@ -395,10 +395,10 @@ mod tests {
     #[test]
     fn test_chat_session_builder_new_with_settings() {
         let mut settings = Settings::default();
-        settings.defaults.provider = "ollama".to_string();
+        settings.defaults.provider = "local".to_string();
         let builder = ChatSessionBuilder::new(settings.clone());
 
-        assert_eq!(builder.settings.defaults.provider, "ollama");
+        assert_eq!(builder.settings.defaults.provider, "local");
     }
 
     // ===== with_model() tests =====

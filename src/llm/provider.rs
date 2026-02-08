@@ -755,10 +755,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_model_info_default_impl() {
-        use crate::llm::providers::ollama::OllamaProvider;
+        use crate::llm::providers::AnthropicProvider;
 
-        // OllamaProvider uses the default get_model_info implementation
-        let provider = OllamaProvider::new();
+        // AnthropicProvider uses the default get_model_info implementation
+        let provider = AnthropicProvider::new("dummy-key");
 
         // Test finding a model that exists
         let models = provider.available_models();

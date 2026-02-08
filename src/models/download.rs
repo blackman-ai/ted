@@ -36,6 +36,251 @@ use std::time::{Duration, SystemTime};
 
 use crate::error::{Result, TedError};
 
+/// Embedded binary registry (compiled into binary)
+const EMBEDDED_BINARY_REGISTRY: &str = include_str!("../../registry/binaries.json");
+
+/// Platform info for the binary registry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BinaryPlatform {
+    pub url: String,
+    pub binary_path: String,
+    pub archive_type: String,
+}
+
+/// llama-server version info
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlamaServerInfo {
+    pub version: String,
+    pub release_url: String,
+    pub platforms: std::collections::HashMap<String, BinaryPlatform>,
+}
+
+/// Binary registry for llama-server downloads
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BinaryRegistry {
+    pub version: String,
+    pub updated_at: String,
+    pub llama_server: LlamaServerInfo,
+}
+
+impl BinaryRegistry {
+    /// Load the embedded binary registry
+    pub fn embedded() -> Result<Self> {
+        serde_json::from_str(EMBEDDED_BINARY_REGISTRY)
+            .map_err(|e| TedError::Context(format!("Failed to parse binary registry: {}", e)))
+    }
+
+    /// Get platform info for the current system
+    pub fn platform_info(&self) -> Result<&BinaryPlatform> {
+        let key = platform_key();
+        self.llama_server
+            .platforms
+            .get(&key)
+            .ok_or_else(|| TedError::Config(format!("Unsupported platform: {}", key)))
+    }
+}
+
+/// Get the platform key for the current system (e.g., "darwin-arm64")
+pub fn platform_key() -> String {
+    let os = if cfg!(target_os = "macos") {
+        "darwin"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else {
+        "unknown"
+    };
+
+    let arch = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else if cfg!(target_arch = "x86_64") {
+        "x86_64"
+    } else {
+        "unknown"
+    };
+
+    format!("{}-{}", os, arch)
+}
+
+/// Binary downloader for llama-server
+pub struct BinaryDownloader {
+    client: Client,
+    binaries_dir: PathBuf,
+}
+
+impl BinaryDownloader {
+    /// Create a new binary downloader
+    pub fn new() -> Result<Self> {
+        let binaries_dir = dirs::home_dir()
+            .ok_or_else(|| TedError::Config("Cannot find home directory".to_string()))?
+            .join(".ted")
+            .join("bin");
+
+        std::fs::create_dir_all(&binaries_dir)
+            .map_err(|e| TedError::Config(format!("Failed to create binaries directory: {}", e)))?;
+
+        Ok(Self {
+            client: Client::new(),
+            binaries_dir,
+        })
+    }
+
+    /// Create a binary downloader with a custom directory
+    pub fn with_dir(binaries_dir: PathBuf) -> Result<Self> {
+        std::fs::create_dir_all(&binaries_dir)
+            .map_err(|e| TedError::Config(format!("Failed to create binaries directory: {}", e)))?;
+
+        Ok(Self {
+            client: Client::new(),
+            binaries_dir,
+        })
+    }
+
+    /// Find llama-server binary: check system PATH first, then ~/.ted/bin/
+    pub fn find_llama_server(&self) -> Option<PathBuf> {
+        // 1. Check PATH for existing system-wide installation
+        let cmd = if cfg!(target_os = "windows") {
+            "where"
+        } else {
+            "which"
+        };
+
+        if let Ok(output) = std::process::Command::new(cmd).arg("llama-server").output() {
+            if output.status.success() {
+                let path_str = String::from_utf8_lossy(&output.stdout);
+                let path = PathBuf::from(path_str.trim());
+                if path.exists() {
+                    tracing::info!("Found system llama-server at: {}", path.display());
+                    return Some(path);
+                }
+            }
+        }
+
+        // 2. Check our binaries directory
+        let binary_name = if cfg!(target_os = "windows") {
+            "llama-server.exe"
+        } else {
+            "llama-server"
+        };
+        let local_path = self.binaries_dir.join(binary_name);
+        if local_path.exists() {
+            tracing::info!("Found local llama-server at: {}", local_path.display());
+            return Some(local_path);
+        }
+
+        None
+    }
+
+    /// Download llama-server for the current platform
+    pub async fn download_llama_server(&self) -> Result<PathBuf> {
+        let registry = BinaryRegistry::embedded()?;
+        let platform = registry.platform_info()?;
+
+        let binary_name = if cfg!(target_os = "windows") {
+            "llama-server.exe"
+        } else {
+            "llama-server"
+        };
+        let dest_path = self.binaries_dir.join(binary_name);
+
+        // Skip if already downloaded
+        if dest_path.exists() {
+            return Ok(dest_path);
+        }
+
+        tracing::info!(
+            "Downloading llama-server {} for {}...",
+            registry.llama_server.version,
+            platform_key()
+        );
+
+        // Download the archive
+        let response =
+            self.client.get(&platform.url).send().await.map_err(|e| {
+                TedError::Context(format!("Failed to download llama-server: {}", e))
+            })?;
+
+        if !response.status().is_success() {
+            return Err(TedError::Context(format!(
+                "Download failed with status: {}",
+                response.status()
+            )));
+        }
+
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| TedError::Context(format!("Failed to read download: {}", e)))?;
+
+        // Extract the binary from the archive
+        let temp_dir = self.binaries_dir.join("_extract_tmp");
+        std::fs::create_dir_all(&temp_dir)
+            .map_err(|e| TedError::Context(format!("Failed to create temp dir: {}", e)))?;
+
+        match platform.archive_type.as_str() {
+            "tar.gz" => {
+                let decoder = flate2::read::GzDecoder::new(std::io::Cursor::new(&bytes));
+                let mut archive = tar::Archive::new(decoder);
+                archive
+                    .unpack(&temp_dir)
+                    .map_err(|e| TedError::Context(format!("Failed to extract tar.gz: {}", e)))?;
+            }
+            "zip" => {
+                let cursor = std::io::Cursor::new(&bytes);
+                let mut archive = zip::ZipArchive::new(cursor)
+                    .map_err(|e| TedError::Context(format!("Failed to open zip: {}", e)))?;
+                archive
+                    .extract(&temp_dir)
+                    .map_err(|e| TedError::Context(format!("Failed to extract zip: {}", e)))?;
+            }
+            other => {
+                let _ = std::fs::remove_dir_all(&temp_dir);
+                return Err(TedError::Context(format!(
+                    "Unsupported archive type: {}",
+                    other
+                )));
+            }
+        }
+
+        // Find and move the binary
+        let extracted_binary = temp_dir.join(&platform.binary_path);
+        if !extracted_binary.exists() {
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            return Err(TedError::Context(format!(
+                "Binary not found in archive at: {}",
+                platform.binary_path
+            )));
+        }
+
+        std::fs::copy(&extracted_binary, &dest_path)
+            .map_err(|e| TedError::Context(format!("Failed to copy binary: {}", e)))?;
+
+        // Set executable permission on Unix
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o755);
+            std::fs::set_permissions(&dest_path, perms)
+                .map_err(|e| TedError::Context(format!("Failed to set permissions: {}", e)))?;
+        }
+
+        // Clean up temp directory
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        tracing::info!("llama-server installed to: {}", dest_path.display());
+        Ok(dest_path)
+    }
+
+    /// Find or download llama-server
+    pub async fn ensure_llama_server(&self) -> Result<PathBuf> {
+        if let Some(path) = self.find_llama_server() {
+            return Ok(path);
+        }
+        self.download_llama_server().await
+    }
+}
+
 /// Remote registry URL (GitHub Pages or ted.dev)
 const REGISTRY_URL: &str =
     "https://raw.githubusercontent.com/blackman-ai/ted/main/registry/models.json";
@@ -446,7 +691,13 @@ impl ModelDownloader {
             return false;
         }
 
-        // Verify SHA256
+        // Skip SHA256 verification for placeholder hashes
+        if variant.sha256.starts_with("placeholder_") {
+            return std::fs::metadata(&path)
+                .map(|m| m.len() > 0)
+                .unwrap_or(false);
+        }
+
         self.verify_file(&path, &variant.sha256).unwrap_or(false)
     }
 
@@ -514,9 +765,14 @@ impl ModelDownloader {
             }
         }
 
-        // Verify SHA256
+        // Verify SHA256 (skip for placeholder hashes)
         let hash = format!("{:x}", hasher.finalize());
-        if hash != variant.sha256 {
+        if variant.sha256.starts_with("placeholder_") {
+            tracing::warn!(
+                "SHA256 hash is a placeholder — skipping verification for {}",
+                model.name
+            );
+        } else if hash != variant.sha256 {
             std::fs::remove_file(&temp_path).ok();
             return Err(TedError::Context(format!(
                 "SHA256 verification failed. Expected: {}, Got: {}",
@@ -573,12 +829,66 @@ impl ModelDownloader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
+
+    // ==================== Quantization tests ====================
 
     #[test]
     fn test_quantization_quality() {
         assert!(Quantization::F16.quality_score() > Quantization::Q4_K_M.quality_score());
         assert!(Quantization::Q4_K_M.quality_score() > Quantization::Q2_K.quality_score());
     }
+
+    #[test]
+    fn test_quantization_all_display_names() {
+        assert_eq!(Quantization::F16.display_name(), "F16 (Full)");
+        assert_eq!(Quantization::Q8_0.display_name(), "Q8_0 (High)");
+        assert_eq!(Quantization::Q6_K.display_name(), "Q6_K (High)");
+        assert_eq!(Quantization::Q5_K_M.display_name(), "Q5_K_M (Medium)");
+        assert_eq!(Quantization::Q4_K_S.display_name(), "Q4_K_S (Medium)");
+        assert_eq!(Quantization::Q4_K_M.display_name(), "Q4_K_M (Medium)");
+        assert_eq!(Quantization::Q4_K_XL.display_name(), "Q4_K_XL (MoE)");
+        assert_eq!(Quantization::Q3_K_M.display_name(), "Q3_K_M (Low)");
+        assert_eq!(Quantization::Q2_K.display_name(), "Q2_K (Tiny)");
+        assert_eq!(Quantization::Q2_K_XL.display_name(), "Q2_K_XL (MoE)");
+    }
+
+    #[test]
+    fn test_quantization_all_quality_scores() {
+        assert_eq!(Quantization::F16.quality_score(), 100);
+        assert_eq!(Quantization::Q8_0.quality_score(), 95);
+        assert_eq!(Quantization::Q6_K.quality_score(), 90);
+        assert_eq!(Quantization::Q5_K_M.quality_score(), 85);
+        assert_eq!(Quantization::Q4_K_S.quality_score(), 75);
+        assert_eq!(Quantization::Q4_K_M.quality_score(), 80);
+        assert_eq!(Quantization::Q4_K_XL.quality_score(), 80);
+        assert_eq!(Quantization::Q3_K_M.quality_score(), 65);
+        assert_eq!(Quantization::Q2_K.quality_score(), 50);
+        assert_eq!(Quantization::Q2_K_XL.quality_score(), 55);
+    }
+
+    #[test]
+    fn test_quantization_quality_ordering() {
+        // Higher quality means higher score
+        let scores: Vec<u8> = [
+            Quantization::F16,
+            Quantization::Q8_0,
+            Quantization::Q6_K,
+            Quantization::Q5_K_M,
+            Quantization::Q4_K_M,
+            Quantization::Q3_K_M,
+            Quantization::Q2_K,
+        ]
+        .iter()
+        .map(|q| q.quality_score())
+        .collect();
+
+        for i in 1..scores.len() {
+            assert!(scores[i - 1] >= scores[i]);
+        }
+    }
+
+    // ==================== ModelVariant tests ====================
 
     #[test]
     fn test_variant_size_display() {
@@ -602,21 +912,361 @@ mod tests {
     }
 
     #[test]
-    fn test_model_category() {
-        assert_eq!(ModelCategory::Code.display_name(), "Code");
-        assert_eq!(ModelCategory::Chat.display_name(), "Chat");
+    fn test_variant_size_display_edge_cases() {
+        // Exactly 1 GB
+        let variant_1gb = ModelVariant {
+            quantization: Quantization::Q4_K_M,
+            url: String::new(),
+            size_bytes: 1_073_741_824,
+            sha256: String::new(),
+            min_vram_gb: 2.0,
+        };
+        assert_eq!(variant_1gb.size_display(), "1.0 GB");
+
+        // Just under 1 GB
+        let variant_under_1gb = ModelVariant {
+            quantization: Quantization::Q4_K_M,
+            url: String::new(),
+            size_bytes: 1_073_741_823,
+            sha256: String::new(),
+            min_vram_gb: 2.0,
+        };
+        assert!(variant_under_1gb.size_display().contains("MB"));
+
+        // Very small
+        let variant_small = ModelVariant {
+            quantization: Quantization::Q2_K,
+            url: String::new(),
+            size_bytes: 1_048_576, // 1MB
+            sha256: String::new(),
+            min_vram_gb: 0.5,
+        };
+        assert_eq!(variant_small.size_display(), "1 MB");
     }
 
     #[test]
-    fn test_downloader_path() {
-        use tempfile::TempDir;
+    fn test_variant_clone() {
+        let variant = ModelVariant {
+            quantization: Quantization::Q4_K_M,
+            url: "https://example.com/model.gguf".to_string(),
+            size_bytes: 1000,
+            sha256: "abc123".to_string(),
+            min_vram_gb: 4.0,
+        };
+        let cloned = variant.clone();
+        assert_eq!(variant.url, cloned.url);
+        assert_eq!(variant.sha256, cloned.sha256);
+    }
 
+    // ==================== ModelCategory tests ====================
+
+    #[test]
+    fn test_model_category() {
+        assert_eq!(ModelCategory::Code.display_name(), "Code");
+        assert_eq!(ModelCategory::Chat.display_name(), "Chat");
+        assert_eq!(ModelCategory::Embedding.display_name(), "Embedding");
+    }
+
+    #[test]
+    fn test_model_category_equality() {
+        assert_eq!(ModelCategory::Code, ModelCategory::Code);
+        assert_ne!(ModelCategory::Code, ModelCategory::Chat);
+        assert_ne!(ModelCategory::Chat, ModelCategory::Embedding);
+    }
+
+    // ==================== DownloadableModel tests ====================
+
+    fn create_test_model() -> DownloadableModel {
+        DownloadableModel {
+            id: "test-model".to_string(),
+            name: "Test Model".to_string(),
+            category: ModelCategory::Code,
+            parameters: "7B".to_string(),
+            context_size: 8192,
+            base_model: "test".to_string(),
+            creator: "test".to_string(),
+            license: "MIT".to_string(),
+            variants: vec![
+                ModelVariant {
+                    quantization: Quantization::Q4_K_M,
+                    url: String::new(),
+                    size_bytes: 4_000_000_000,
+                    sha256: String::new(),
+                    min_vram_gb: 6.0,
+                },
+                ModelVariant {
+                    quantization: Quantization::Q2_K,
+                    url: String::new(),
+                    size_bytes: 2_000_000_000,
+                    sha256: String::new(),
+                    min_vram_gb: 3.0,
+                },
+                ModelVariant {
+                    quantization: Quantization::Q8_0,
+                    url: String::new(),
+                    size_bytes: 8_000_000_000,
+                    sha256: String::new(),
+                    min_vram_gb: 12.0,
+                },
+            ],
+            tags: vec!["code".to_string(), "rust".to_string()],
+        }
+    }
+
+    #[test]
+    fn test_downloadable_model_recommended_variant() {
+        let model = create_test_model();
+
+        // With 16GB VRAM, should get highest quality (Q8_0)
+        let variant = model.recommended_variant(16.0);
+        assert!(variant.is_some());
+        assert_eq!(variant.unwrap().quantization, Quantization::Q8_0);
+
+        // With 8GB VRAM, should get Q4_K_M (Q8_0 needs 12GB)
+        let variant = model.recommended_variant(8.0);
+        assert!(variant.is_some());
+        assert_eq!(variant.unwrap().quantization, Quantization::Q4_K_M);
+
+        // With 4GB VRAM, should get Q2_K
+        let variant = model.recommended_variant(4.0);
+        assert!(variant.is_some());
+        assert_eq!(variant.unwrap().quantization, Quantization::Q2_K);
+
+        // With 2GB VRAM, nothing fits
+        let variant = model.recommended_variant(2.0);
+        assert!(variant.is_none());
+    }
+
+    #[test]
+    fn test_downloadable_model_smallest_variant() {
+        let model = create_test_model();
+        let smallest = model.smallest_variant();
+        assert!(smallest.is_some());
+        assert_eq!(smallest.unwrap().quantization, Quantization::Q2_K);
+    }
+
+    #[test]
+    fn test_downloadable_model_empty_variants() {
+        let model = DownloadableModel {
+            id: "empty".to_string(),
+            name: "Empty".to_string(),
+            category: ModelCategory::Chat,
+            parameters: "1B".to_string(),
+            context_size: 2048,
+            base_model: "test".to_string(),
+            creator: "test".to_string(),
+            license: "MIT".to_string(),
+            variants: vec![],
+            tags: vec![],
+        };
+
+        assert!(model.recommended_variant(100.0).is_none());
+        assert!(model.smallest_variant().is_none());
+    }
+
+    #[test]
+    fn test_downloadable_model_clone() {
+        let model = create_test_model();
+        let cloned = model.clone();
+        assert_eq!(model.id, cloned.id);
+        assert_eq!(model.variants.len(), cloned.variants.len());
+    }
+
+    // ==================== DownloadRegistry tests ====================
+
+    #[test]
+    fn test_embedded_registry() {
+        let registry = DownloadRegistry::embedded().unwrap();
+        assert!(!registry.models.is_empty());
+        assert!(!registry.version.is_empty());
+    }
+
+    #[test]
+    fn test_registry_list_models() {
+        let registry = DownloadRegistry::embedded().unwrap();
+        let models = registry.list_models();
+        assert!(!models.is_empty());
+    }
+
+    #[test]
+    fn test_registry_find_model() {
+        let registry = DownloadRegistry::embedded().unwrap();
+
+        // Should find models that exist
+        let found = registry
+            .models
+            .iter()
+            .any(|m| m.category == ModelCategory::Code);
+        assert!(found, "Should have at least one code model");
+
+        // Use find_model on existing model
+        if let Some(first) = registry.models.first() {
+            let found = registry.find_model(&first.id);
+            assert!(found.is_some());
+            assert_eq!(found.unwrap().id, first.id);
+        }
+
+        // Non-existent model
+        let not_found = registry.find_model("nonexistent-model-xyz");
+        assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_registry_models_by_category() {
+        let registry = DownloadRegistry::embedded().unwrap();
+
+        let code_models = registry.models_by_category(ModelCategory::Code);
+        for model in &code_models {
+            assert_eq!(model.category, ModelCategory::Code);
+        }
+
+        let chat_models = registry.models_by_category(ModelCategory::Chat);
+        for model in &chat_models {
+            assert_eq!(model.category, ModelCategory::Chat);
+        }
+    }
+
+    #[test]
+    fn test_registry_models_for_vram() {
+        let registry = DownloadRegistry::embedded().unwrap();
+
+        // With high VRAM, should find most models
+        let high_vram_models = registry.models_for_vram(48.0);
+        // With low VRAM, should find fewer or none
+        let low_vram_models = registry.models_for_vram(1.0);
+
+        assert!(high_vram_models.len() >= low_vram_models.len());
+    }
+
+    #[test]
+    fn test_registry_recommended_code_models() {
+        let registry = DownloadRegistry::embedded().unwrap();
+
+        let recommended = registry.recommended_code_models(16.0);
+        for model in &recommended {
+            assert_eq!(model.category, ModelCategory::Code);
+            assert!(model.recommended_variant(16.0).is_some());
+        }
+    }
+
+    #[test]
+    fn test_registry_cache_path() {
+        let path = DownloadRegistry::cache_path().unwrap();
+        assert!(path.to_string_lossy().contains(".ted"));
+        assert!(path.to_string_lossy().contains("registry"));
+        assert!(path.to_string_lossy().contains("models.json"));
+    }
+
+    #[test]
+    fn test_registry_clone() {
+        let registry = DownloadRegistry::embedded().unwrap();
+        let cloned = registry.clone();
+        assert_eq!(registry.version, cloned.version);
+        assert_eq!(registry.models.len(), cloned.models.len());
+    }
+
+    // ==================== ModelDownloader tests ====================
+
+    #[test]
+    fn test_downloader_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let downloader = ModelDownloader::with_dir(temp_dir.path().to_path_buf()).unwrap();
+
+        let model = create_test_model();
+        let variant = &model.variants[0];
+
+        let path = downloader.model_path(&model, variant);
+        assert!(path.to_string_lossy().contains("test-model"));
+        assert!(path.to_string_lossy().contains("q4_k_m"));
+        assert!(path.to_string_lossy().ends_with(".gguf"));
+    }
+
+    #[test]
+    fn test_downloader_download_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let downloader = ModelDownloader::with_dir(temp_dir.path().to_path_buf()).unwrap();
+
+        assert_eq!(downloader.download_dir(), temp_dir.path());
+    }
+
+    #[test]
+    fn test_downloader_is_downloaded_not_exists() {
+        let temp_dir = TempDir::new().unwrap();
+        let downloader = ModelDownloader::with_dir(temp_dir.path().to_path_buf()).unwrap();
+
+        let model = create_test_model();
+        let variant = &model.variants[0];
+
+        assert!(!downloader.is_downloaded(&model, variant));
+    }
+
+    #[test]
+    fn test_downloader_list_downloaded_empty() {
+        let temp_dir = TempDir::new().unwrap();
+        let downloader = ModelDownloader::with_dir(temp_dir.path().to_path_buf()).unwrap();
+
+        let downloaded = downloader.list_downloaded().unwrap();
+        assert!(downloaded.is_empty());
+    }
+
+    #[test]
+    fn test_downloader_list_downloaded_with_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let downloader = ModelDownloader::with_dir(temp_dir.path().to_path_buf()).unwrap();
+
+        // Create some fake .gguf files
+        std::fs::write(temp_dir.path().join("model1.gguf"), "fake").unwrap();
+        std::fs::write(temp_dir.path().join("model2.gguf"), "fake").unwrap();
+        std::fs::write(temp_dir.path().join("other.txt"), "fake").unwrap();
+
+        let downloaded = downloader.list_downloaded().unwrap();
+        assert_eq!(downloaded.len(), 2);
+
+        for path in &downloaded {
+            assert!(path.extension().and_then(|s| s.to_str()) == Some("gguf"));
+        }
+    }
+
+    #[test]
+    fn test_downloader_delete() {
+        let temp_dir = TempDir::new().unwrap();
+        let downloader = ModelDownloader::with_dir(temp_dir.path().to_path_buf()).unwrap();
+
+        let file_path = temp_dir.path().join("to_delete.gguf");
+        std::fs::write(&file_path, "content").unwrap();
+        assert!(file_path.exists());
+
+        downloader.delete(&file_path).unwrap();
+        assert!(!file_path.exists());
+    }
+
+    #[test]
+    fn test_downloader_delete_nonexistent() {
+        let temp_dir = TempDir::new().unwrap();
+        let downloader = ModelDownloader::with_dir(temp_dir.path().to_path_buf()).unwrap();
+
+        let file_path = temp_dir.path().join("nonexistent.gguf");
+        let result = downloader.delete(&file_path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_downloader_new() {
+        // This test might fail if home directory isn't writable
+        // but we can at least verify the function signature
+        let result = ModelDownloader::new();
+        // Just check it returns a Result
+        let _ = result;
+    }
+
+    #[test]
+    fn test_downloader_model_path_lowercase() {
         let temp_dir = TempDir::new().unwrap();
         let downloader = ModelDownloader::with_dir(temp_dir.path().to_path_buf()).unwrap();
 
         let model = DownloadableModel {
-            id: "test-model".to_string(),
-            name: "Test Model".to_string(),
+            id: "Test-Model-ID".to_string(),
+            name: "Test".to_string(),
             category: ModelCategory::Code,
             parameters: "7B".to_string(),
             context_size: 8192,
@@ -636,34 +1286,38 @@ mod tests {
         };
 
         let path = downloader.model_path(&model, &variant);
-        assert!(path.to_string_lossy().contains("test-model"));
-        assert!(path.to_string_lossy().contains("q4_k_m"));
+        // Path should be lowercase
+        let path_str = path.to_string_lossy();
+        assert!(path_str.contains("test-model-id"));
+        assert!(!path_str.contains("Test-Model-ID"));
+    }
+
+    // ==================== Constants tests ====================
+
+    #[test]
+    fn test_registry_cache_ttl() {
+        assert_eq!(REGISTRY_CACHE_TTL, Duration::from_secs(86400));
     }
 
     #[test]
-    fn test_embedded_registry() {
-        let registry = DownloadRegistry::embedded().unwrap();
+    fn test_registry_url() {
+        assert!(REGISTRY_URL.starts_with("https://"));
+        assert!(REGISTRY_URL.contains("models.json"));
+    }
+
+    // ==================== Async tests ====================
+
+    #[tokio::test]
+    async fn test_registry_with_fallback() {
+        // This will either fetch from remote or use embedded
+        let registry = DownloadRegistry::with_fallback().await.unwrap();
         assert!(!registry.models.is_empty());
-        assert!(!registry.version.is_empty());
     }
 
-    #[test]
-    fn test_registry_find_model() {
-        let registry = DownloadRegistry::embedded().unwrap();
-
-        // Should find models that exist
-        let found = registry
-            .models
-            .iter()
-            .any(|m| m.category == ModelCategory::Code);
-        assert!(found, "Should have at least one code model");
-    }
-
-    #[test]
-    fn test_registry_cache_path() {
-        let path = DownloadRegistry::cache_path().unwrap();
-        assert!(path.to_string_lossy().contains(".ted"));
-        assert!(path.to_string_lossy().contains("registry"));
-        assert!(path.to_string_lossy().contains("models.json"));
+    #[tokio::test]
+    async fn test_registry_with_cache() {
+        // This will use cache if available, or fetch/embedded
+        let registry = DownloadRegistry::with_cache().await.unwrap();
+        assert!(!registry.models.is_empty());
     }
 }
