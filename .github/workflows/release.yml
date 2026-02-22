@@ -64,6 +64,24 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
         shell: bash
 
+      - name: Release smoke diagnostics (host-matching targets only)
+        if: ${{ !matrix.cross }}
+        run: |
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          target="${{ matrix.target }}"
+          if [ "$host" != "$target" ]; then
+            echo "Skipping runtime smoke test: target ${target} does not match host ${host}"
+            exit 0
+          fi
+
+          bin="target/${target}/release/ted"
+          case "$target" in
+            *windows*) bin="${bin}.exe" ;;
+          esac
+
+          ./scripts/release-smoke.sh "$bin"
+        shell: bash
+
       - name: Package (Unix)
         if: matrix.archive == 'tar.gz'
         run: |
@@ -71,11 +89,23 @@ jobs:
           tar czvf ../../../ted-${{ matrix.target }}.tar.gz ted
         shell: bash
 
+      - name: Verify package contents (Unix)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          tar tzf ted-${{ matrix.target }}.tar.gz | grep -E '(^|/)ted$'
+        shell: bash
+
       - name: Package (Windows)
         if: matrix.archive == 'zip'
         run: |
           cd target/${{ matrix.target }}/release
           7z a ../../../ted-${{ matrix.target }}.zip ted.exe
+        shell: bash
+
+      - name: Verify package contents (Windows)
+        if: matrix.archive == 'zip'
+        run: |
+          7z l ted-${{ matrix.target }}.zip | grep -i 'ted\.exe'
         shell: bash
 
       - name: Upload artifact
@@ -125,7 +155,66 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ !contains(github.ref, '-beta') && !contains(github.ref, '-alpha') && !contains(github.ref, '-rc') }}
     steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
       - name: Trigger Homebrew tap update
+        env:
+          HOMEBREW_TAP_REPO: ${{ secrets.HOMEBREW_TAP_REPO }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          echo "TODO: Add Homebrew tap update logic"
-          echo "This would update a homebrew-ted repository with the new version"
+          if [ -z "${HOMEBREW_TAP_REPO}" ] || [ -z "${HOMEBREW_TAP_TOKEN}" ]; then
+            echo "Homebrew tap secrets are not configured; skipping tap update."
+            exit 0
+          fi
+
+          cd artifacts
+          find . -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec mv {} . \;
+          rm -rf ted-*/
+
+          VERSION="${GITHUB_REF_NAME#v}"
+          ARM_FILE="ted-aarch64-apple-darwin.tar.gz"
+          AMD_FILE="ted-x86_64-apple-darwin.tar.gz"
+
+          if [ ! -f "${ARM_FILE}" ] || [ ! -f "${AMD_FILE}" ]; then
+            echo "Missing macOS release artifacts; skipping Homebrew tap update."
+            exit 0
+          fi
+
+          ARM_SHA="$(sha256sum "${ARM_FILE}" | awk '{print $1}')"
+          AMD_SHA="$(sha256sum "${AMD_FILE}" | awk '{print $1}')"
+
+          PAYLOAD="$(jq -n \
+            --arg version "${VERSION}" \
+            --arg tag "${GITHUB_REF_NAME}" \
+            --arg arm_file "${ARM_FILE}" \
+            --arg arm_sha "${ARM_SHA}" \
+            --arg amd_file "${AMD_FILE}" \
+            --arg amd_sha "${AMD_SHA}" \
+            '{
+              event_type: "ted-release",
+              client_payload: {
+                version: $version,
+                tag: $tag,
+                artifacts: {
+                  darwin_arm64: {
+                    filename: $arm_file,
+                    sha256: $arm_sha
+                  },
+                  darwin_amd64: {
+                    filename: $amd_file,
+                    sha256: $amd_sha
+                  }
+                }
+              }
+            }')"
+
+          curl --fail --silent --show-error \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: token ${HOMEBREW_TAP_TOKEN}" \
+            "https://api.github.com/repos/${HOMEBREW_TAP_REPO}/dispatches" \
+            -d "${PAYLOAD}"
+
+          echo "Triggered Homebrew tap update for ${VERSION} in ${HOMEBREW_TAP_REPO}."

@@ -136,7 +136,6 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[tokio::test]
-    #[ignore] // Requires embeddings backend
     async fn test_recall_and_store() {
         let temp_file = NamedTempFile::new().unwrap();
         let generator = EmbeddingGenerator::new();
@@ -170,6 +169,44 @@ mod tests {
         assert!(recalled.is_some());
         let context = recalled.unwrap();
         assert!(context.contains("authentication") || context.contains("Relevant"));
+    }
+
+    #[tokio::test]
+    async fn test_recall_relevant_context_empty_store_returns_none() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let generator = EmbeddingGenerator::new();
+        let store = MemoryStore::open(temp_file.path(), generator).unwrap();
+
+        let recalled = recall_relevant_context("anything", &store, 3)
+            .await
+            .unwrap();
+        assert!(recalled.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_store_conversation_persists_memory() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let generator = EmbeddingGenerator::new();
+        let store = MemoryStore::open(temp_file.path(), generator.clone()).unwrap();
+        let conversation_id = Uuid::new_v4();
+
+        store_conversation(
+            conversation_id,
+            "Implemented CLI model selection".to_string(),
+            vec!["src/main.rs".to_string()],
+            vec!["cli".to_string()],
+            "User asked for model selector; assistant added command support.".to_string(),
+            &generator,
+            &store,
+        )
+        .await
+        .unwrap();
+
+        let stored = store.get(conversation_id).unwrap();
+        assert!(stored.is_some());
+        let stored = stored.unwrap();
+        assert!(stored.summary.contains("CLI"));
+        assert_eq!(stored.files_changed, vec!["src/main.rs".to_string()]);
     }
 
     // ==================== ConversationMemory struct tests ====================

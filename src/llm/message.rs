@@ -157,6 +157,18 @@ impl Message {
         }
     }
 
+    /// Create a new user message with content blocks
+    pub fn user_blocks(blocks: Vec<ContentBlock>) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            role: Role::User,
+            content: MessageContent::Blocks(blocks),
+            timestamp: Utc::now(),
+            tool_use_id: None,
+            token_count: None,
+        }
+    }
+
     /// Create a tool result message
     pub fn tool_result(
         tool_use_id: impl Into<String>,
@@ -555,6 +567,18 @@ mod tests {
         ];
         let msg = Message::assistant_blocks(blocks);
         assert_eq!(msg.role, Role::Assistant);
+        assert!(matches!(msg.content, MessageContent::Blocks(_)));
+    }
+
+    #[test]
+    fn test_message_user_blocks() {
+        let blocks = vec![ContentBlock::ToolResult {
+            tool_use_id: "tool1".to_string(),
+            content: ToolResultContent::Text("Done".to_string()),
+            is_error: None,
+        }];
+        let msg = Message::user_blocks(blocks);
+        assert_eq!(msg.role, Role::User);
         assert!(matches!(msg.content, MessageContent::Blocks(_)));
     }
 

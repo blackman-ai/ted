@@ -10,6 +10,7 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { debugLog } from '../utils/logger';
 
 const VERCEL_API_BASE = 'https://api.vercel.com';
 
@@ -232,18 +233,18 @@ export async function deployProject(options: DeploymentOptions): Promise<Deploym
     const finalProjectName = projectName || settings.name;
 
     // Get all project files
-    console.log('[Vercel] Scanning project files...');
+    debugLog('[Vercel] Scanning project files...');
     const files = await getProjectFiles(projectPath);
-    console.log(`[Vercel] Found ${files.length} files`);
+    debugLog(`[Vercel] Found ${files.length} files`);
 
     // Upload files
-    console.log('[Vercel] Uploading files...');
+    debugLog('[Vercel] Uploading files...');
     await uploadFiles(projectPath, files, vercelToken);
-    console.log('[Vercel] Files uploaded');
+    debugLog('[Vercel] Files uploaded');
 
     // Create deployment
-    console.log('[Vercel] Creating deployment...');
-    const deploymentPayload: any = {
+    debugLog('[Vercel] Creating deployment...');
+    const deploymentPayload: Record<string, unknown> = {
       name: finalProjectName,
       files: files.map(f => ({
         file: f.file,
@@ -278,7 +279,7 @@ export async function deployProject(options: DeploymentOptions): Promise<Deploym
     }
 
     const deployment = await response.json();
-    console.log('[Vercel] Deployment created:', deployment.id);
+    debugLog('[Vercel] Deployment created:', deployment.id);
 
     return {
       success: true,

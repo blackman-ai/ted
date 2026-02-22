@@ -32,7 +32,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime};
+use walkdir::WalkDir;
 
 use crate::error::{Result, TedError};
 
@@ -103,6 +105,190 @@ pub fn platform_key() -> String {
     format!("{}-{}", os, arch)
 }
 
+/// Locate a binary in an extracted archive.
+///
+/// Archives occasionally change internal folder layout between releases.
+/// We first try the registry's expected relative path, then fall back to
+/// searching for the binary filename anywhere under the extraction root.
+fn find_extracted_binary(
+    extract_root: &Path,
+    expected_relative_path: &str,
+    binary_name: &str,
+) -> Option<PathBuf> {
+    let expected = extract_root.join(expected_relative_path);
+    if expected.is_file() {
+        return Some(expected);
+    }
+
+    WalkDir::new(extract_root)
+        .follow_links(true)
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+        .find_map(|entry| {
+            if entry.file_type().is_file() && entry.file_name() == std::ffi::OsStr::new(binary_name)
+            {
+                Some(entry.into_path())
+            } else {
+                None
+            }
+        })
+}
+
+/// Check whether a llama-server binary can start far enough to print help.
+/// This catches missing runtime dependencies (e.g., shared libraries).
+fn is_runnable_binary(binary_path: &Path) -> bool {
+    match Command::new(binary_path)
+        .arg("--help")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+    {
+        Ok(status) => status.success(),
+        Err(_) => false,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_macos_dylib_major_links(dir: &Path) -> Result<usize> {
+    use std::os::unix::fs::symlink;
+
+    let mut created = 0usize;
+
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| TedError::Context(format!("Failed to read dir: {}", e)))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| TedError::Context(format!("Failed to read entry: {}", e)))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|e| TedError::Context(format!("Failed to read entry type: {}", e)))?;
+        if !file_type.is_file() {
+            continue;
+        }
+
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        if !name.ends_with(".dylib") {
+            continue;
+        }
+
+        let stem = &name[..name.len() - ".dylib".len()];
+        let parts: Vec<&str> = stem.split('.').collect();
+        if parts.len() < 4 {
+            continue;
+        }
+
+        let major = parts[parts.len() - 3];
+        let minor = parts[parts.len() - 2];
+        let patch = parts[parts.len() - 1];
+
+        if !major.chars().all(|c| c.is_ascii_digit())
+            || !minor.chars().all(|c| c.is_ascii_digit())
+            || !patch.chars().all(|c| c.is_ascii_digit())
+        {
+            continue;
+        }
+
+        let prefix = parts[..parts.len() - 3].join(".");
+        if prefix.is_empty() {
+            continue;
+        }
+
+        let link_name = format!("{}.{}.dylib", prefix, major);
+        if link_name == name {
+            continue;
+        }
+
+        let link_path = dir.join(&link_name);
+        if std::fs::symlink_metadata(&link_path).is_ok() {
+            continue;
+        }
+
+        symlink(name, &link_path)
+            .map_err(|e| TedError::Context(format!("Failed to create dylib symlink: {}", e)))?;
+        created += 1;
+    }
+
+    Ok(created)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn ensure_macos_dylib_major_links(_dir: &Path) -> Result<usize> {
+    Ok(0)
+}
+
+fn repair_local_runtime_layout(dir: &Path) {
+    if let Ok(created) = ensure_macos_dylib_major_links(dir) {
+        if created > 0 {
+            tracing::info!(
+                "Created {} macOS dylib compatibility links in {}",
+                created,
+                dir.display()
+            );
+        }
+    }
+}
+
+/// Copy files colocated with the extracted binary (runtime companions like
+/// shared libraries and shader blobs) into destination directory.
+fn copy_binary_companions(extracted_binary: &Path, dest_dir: &Path) -> Result<usize> {
+    let Some(parent) = extracted_binary.parent() else {
+        return Ok(0);
+    };
+
+    let mut copied = 0usize;
+    let binary_name = extracted_binary.file_name();
+
+    let entries = std::fs::read_dir(parent).map_err(|e| {
+        TedError::Context(format!("Failed to read extracted binary directory: {}", e))
+    })?;
+
+    for entry in entries {
+        let entry = entry
+            .map_err(|e| TedError::Context(format!("Failed to read extracted entry: {}", e)))?;
+        let path = entry.path();
+
+        let file_type = entry.file_type().map_err(|e| {
+            TedError::Context(format!("Failed to read extracted entry type: {}", e))
+        })?;
+
+        if !file_type.is_file() {
+            #[cfg(unix)]
+            if file_type.is_symlink() {
+                use std::os::unix::fs::symlink;
+
+                let link_target = std::fs::read_link(&path).map_err(|e| {
+                    TedError::Context(format!("Failed to read companion symlink: {}", e))
+                })?;
+                let dest = dest_dir.join(entry.file_name());
+
+                if std::fs::symlink_metadata(&dest).is_ok() {
+                    let _ = std::fs::remove_file(&dest);
+                }
+
+                symlink(&link_target, &dest).map_err(|e| {
+                    TedError::Context(format!("Failed to copy companion symlink: {}", e))
+                })?;
+                copied += 1;
+            }
+            continue;
+        }
+
+        if Some(entry.file_name().as_os_str()) == binary_name {
+            continue;
+        }
+
+        let dest = dest_dir.join(entry.file_name());
+        std::fs::copy(&path, &dest)
+            .map_err(|e| TedError::Context(format!("Failed to copy companion file: {}", e)))?;
+        copied += 1;
+    }
+
+    Ok(copied)
+}
+
 /// Binary downloader for llama-server
 pub struct BinaryDownloader {
     client: Client,
@@ -150,9 +336,14 @@ impl BinaryDownloader {
             if output.status.success() {
                 let path_str = String::from_utf8_lossy(&output.stdout);
                 let path = PathBuf::from(path_str.trim());
-                if path.exists() {
+                if path.exists() && is_runnable_binary(&path) {
                     tracing::info!("Found system llama-server at: {}", path.display());
                     return Some(path);
+                } else if path.exists() {
+                    tracing::warn!(
+                        "Ignoring non-runnable system llama-server at {}",
+                        path.display()
+                    );
                 }
             }
         }
@@ -164,9 +355,22 @@ impl BinaryDownloader {
             "llama-server"
         };
         let local_path = self.binaries_dir.join(binary_name);
-        if local_path.exists() {
+        if local_path.exists() && is_runnable_binary(&local_path) {
             tracing::info!("Found local llama-server at: {}", local_path.display());
             return Some(local_path);
+        } else if local_path.exists() {
+            repair_local_runtime_layout(&self.binaries_dir);
+            if is_runnable_binary(&local_path) {
+                tracing::info!(
+                    "Recovered local llama-server runtime layout at: {}",
+                    local_path.display()
+                );
+                return Some(local_path);
+            }
+            tracing::warn!(
+                "Ignoring non-runnable local llama-server at {}; will re-download",
+                local_path.display()
+            );
         }
 
         None
@@ -184,9 +388,17 @@ impl BinaryDownloader {
         };
         let dest_path = self.binaries_dir.join(binary_name);
 
-        // Skip if already downloaded
-        if dest_path.exists() {
+        // Skip if already downloaded and still runnable.
+        // If the binary exists but cannot start (missing runtime dependencies),
+        // remove it and reinstall from archive.
+        if dest_path.exists() && is_runnable_binary(&dest_path) {
             return Ok(dest_path);
+        } else if dest_path.exists() {
+            tracing::warn!(
+                "Existing llama-server is not runnable at {}; reinstalling",
+                dest_path.display()
+            );
+            let _ = std::fs::remove_file(&dest_path);
         }
 
         tracing::info!(
@@ -244,7 +456,30 @@ impl BinaryDownloader {
         }
 
         // Find and move the binary
-        let extracted_binary = temp_dir.join(&platform.binary_path);
+        let expected_binary = temp_dir.join(&platform.binary_path);
+        let extracted_binary = match find_extracted_binary(
+            &temp_dir,
+            &platform.binary_path,
+            binary_name,
+        ) {
+            Some(path) => path,
+            None => {
+                let _ = std::fs::remove_dir_all(&temp_dir);
+                return Err(TedError::Context(format!(
+                        "Binary not found in archive. Expected '{}' and could not find '{}' anywhere in extracted files",
+                        platform.binary_path, binary_name
+                    )));
+            }
+        };
+
+        if extracted_binary != expected_binary {
+            tracing::warn!(
+                "llama-server archive layout changed: expected '{}' but found '{}'",
+                platform.binary_path,
+                extracted_binary.display()
+            );
+        }
+
         if !extracted_binary.exists() {
             let _ = std::fs::remove_dir_all(&temp_dir);
             return Err(TedError::Context(format!(
@@ -255,6 +490,16 @@ impl BinaryDownloader {
 
         std::fs::copy(&extracted_binary, &dest_path)
             .map_err(|e| TedError::Context(format!("Failed to copy binary: {}", e)))?;
+
+        let companion_files = copy_binary_companions(&extracted_binary, &self.binaries_dir)?;
+        if companion_files > 0 {
+            tracing::info!(
+                "Copied {} llama-server companion files to {}",
+                companion_files,
+                self.binaries_dir.display()
+            );
+        }
+        repair_local_runtime_layout(&self.binaries_dir);
 
         // Set executable permission on Unix
         #[cfg(unix)]
@@ -831,6 +1076,23 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn write_mock_runnable_binary(path: &Path) {
+        #[cfg(windows)]
+        {
+            let script = "@echo off\r\nexit /b 0\r\n";
+            std::fs::write(path, script).unwrap();
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let script = "#!/bin/sh\nexit 0\n";
+            std::fs::write(path, script).unwrap();
+            let perms = std::fs::Permissions::from_mode(0o755);
+            std::fs::set_permissions(path, perms).unwrap();
+        }
+    }
+
     // ==================== Quantization tests ====================
 
     #[test]
@@ -1305,6 +1567,115 @@ mod tests {
         assert!(REGISTRY_URL.contains("models.json"));
     }
 
+    #[test]
+    fn test_find_extracted_binary_prefers_expected_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let expected = temp_dir
+            .path()
+            .join("build")
+            .join("bin")
+            .join("llama-server");
+        std::fs::create_dir_all(expected.parent().unwrap()).unwrap();
+        std::fs::write(&expected, b"binary").unwrap();
+
+        let found =
+            find_extracted_binary(temp_dir.path(), "build/bin/llama-server", "llama-server");
+        assert_eq!(found.as_deref(), Some(expected.as_path()));
+    }
+
+    #[test]
+    fn test_find_extracted_binary_falls_back_to_filename_search() {
+        let temp_dir = TempDir::new().unwrap();
+        let actual = temp_dir
+            .path()
+            .join("llama-b7951-bin-macos-arm64")
+            .join("bin")
+            .join("llama-server");
+        std::fs::create_dir_all(actual.parent().unwrap()).unwrap();
+        std::fs::write(&actual, b"binary").unwrap();
+
+        let found =
+            find_extracted_binary(temp_dir.path(), "build/bin/llama-server", "llama-server");
+        assert_eq!(found.as_deref(), Some(actual.as_path()));
+    }
+
+    #[test]
+    fn test_find_extracted_binary_returns_none_when_absent() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("README.txt"), b"no binary here").unwrap();
+
+        let found =
+            find_extracted_binary(temp_dir.path(), "build/bin/llama-server", "llama-server");
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn test_copy_binary_companions_copies_sibling_files_except_binary() {
+        let src_dir = TempDir::new().unwrap();
+        let dst_dir = TempDir::new().unwrap();
+
+        let binary = src_dir.path().join("llama-server");
+        let dylib = src_dir.path().join("libmtmd.0.dylib");
+        let shader = src_dir.path().join("ggml-metal.metal");
+        let subdir = src_dir.path().join("nested");
+
+        std::fs::write(&binary, b"bin").unwrap();
+        std::fs::write(&dylib, b"lib").unwrap();
+        std::fs::write(&shader, b"shader").unwrap();
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::write(subdir.join("ignored.txt"), b"x").unwrap();
+
+        let copied = copy_binary_companions(&binary, dst_dir.path()).unwrap();
+        assert_eq!(copied, 2);
+
+        assert!(dst_dir.path().join("libmtmd.0.dylib").exists());
+        assert!(dst_dir.path().join("ggml-metal.metal").exists());
+        assert!(!dst_dir.path().join("llama-server").exists());
+        assert!(!dst_dir.path().join("ignored.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_copy_binary_companions_copies_sibling_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let src_dir = TempDir::new().unwrap();
+        let dst_dir = TempDir::new().unwrap();
+
+        let binary = src_dir.path().join("llama-server");
+        let versioned = src_dir.path().join("libmtmd.0.0.7951.dylib");
+        let link = src_dir.path().join("libmtmd.0.dylib");
+
+        std::fs::write(&binary, b"bin").unwrap();
+        std::fs::write(&versioned, b"lib").unwrap();
+        symlink("libmtmd.0.0.7951.dylib", &link).unwrap();
+
+        let copied = copy_binary_companions(&binary, dst_dir.path()).unwrap();
+        assert_eq!(copied, 2);
+
+        let copied_link = dst_dir.path().join("libmtmd.0.dylib");
+        assert!(std::fs::symlink_metadata(&copied_link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_ensure_macos_dylib_major_links_creates_major_link() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("libmtmd.0.0.7951.dylib"), b"lib").unwrap();
+
+        let created = ensure_macos_dylib_major_links(dir.path()).unwrap();
+        assert_eq!(created, 1);
+        assert!(
+            std::fs::symlink_metadata(dir.path().join("libmtmd.0.dylib"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
     // ==================== Async tests ====================
 
     #[tokio::test]
@@ -1319,5 +1690,198 @@ mod tests {
         // This will use cache if available, or fetch/embedded
         let registry = DownloadRegistry::with_cache().await.unwrap();
         assert!(!registry.models.is_empty());
+    }
+
+    #[test]
+    fn test_binary_registry_platform_info_for_current_platform() {
+        let registry = BinaryRegistry::embedded().expect("embedded binary registry should load");
+        let info = registry.platform_info();
+
+        // Current CI/dev platforms should be represented in the embedded registry.
+        assert!(
+            info.is_ok(),
+            "platform '{}' should be supported in binaries.json",
+            platform_key()
+        );
+    }
+
+    #[test]
+    fn test_binary_downloader_prefers_local_binary_when_present() {
+        let temp_dir = TempDir::new().unwrap();
+        let downloader = BinaryDownloader::with_dir(temp_dir.path().to_path_buf()).unwrap();
+        let binary_name = if cfg!(target_os = "windows") {
+            "llama-server.exe"
+        } else {
+            "llama-server"
+        };
+        let local_binary = temp_dir.path().join(binary_name);
+        write_mock_runnable_binary(&local_binary);
+
+        let found = downloader.find_llama_server();
+        assert_eq!(found.as_deref(), Some(local_binary.as_path()));
+    }
+
+    #[tokio::test]
+    async fn test_binary_downloader_ensure_llama_server_uses_existing_local_binary() {
+        let temp_dir = TempDir::new().unwrap();
+        let downloader = BinaryDownloader::with_dir(temp_dir.path().to_path_buf()).unwrap();
+        let binary_name = if cfg!(target_os = "windows") {
+            "llama-server.exe"
+        } else {
+            "llama-server"
+        };
+        let local_binary = temp_dir.path().join(binary_name);
+        write_mock_runnable_binary(&local_binary);
+
+        let path = downloader.ensure_llama_server().await.unwrap();
+        assert_eq!(path, local_binary);
+    }
+
+    #[test]
+    fn test_downloader_is_downloaded_with_placeholder_hash_checks_nonempty_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let downloader = ModelDownloader::with_dir(temp_dir.path().to_path_buf()).unwrap();
+        let model = create_test_model();
+        let variant = ModelVariant {
+            quantization: Quantization::Q4_K_M,
+            url: "http://example.invalid/model.gguf".to_string(),
+            size_bytes: 4,
+            sha256: "placeholder_q4".to_string(),
+            min_vram_gb: 1.0,
+        };
+        let path = downloader.model_path(&model, &variant);
+        std::fs::write(&path, b"data").unwrap();
+
+        assert!(downloader.is_downloaded(&model, &variant));
+    }
+
+    #[test]
+    fn test_downloader_is_downloaded_with_real_hash_true_and_false() {
+        let temp_dir = TempDir::new().unwrap();
+        let downloader = ModelDownloader::with_dir(temp_dir.path().to_path_buf()).unwrap();
+        let model = create_test_model();
+        let good_hash =
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".to_string();
+        let variant = ModelVariant {
+            quantization: Quantization::Q2_K,
+            url: "http://example.invalid/model.gguf".to_string(),
+            size_bytes: 5,
+            sha256: good_hash.clone(),
+            min_vram_gb: 1.0,
+        };
+        let path = downloader.model_path(&model, &variant);
+        std::fs::write(&path, b"hello").unwrap();
+        assert!(downloader.is_downloaded(&model, &variant));
+
+        let bad_variant = ModelVariant {
+            sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            ..variant
+        };
+        assert!(!downloader.is_downloaded(&model, &bad_variant));
+    }
+
+    #[tokio::test]
+    async fn test_downloader_download_returns_existing_file_without_network() {
+        let temp_dir = TempDir::new().unwrap();
+        let downloader = ModelDownloader::with_dir(temp_dir.path().to_path_buf()).unwrap();
+        let model = create_test_model();
+        let variant = ModelVariant {
+            quantization: Quantization::Q4_K_M,
+            url: "http://127.0.0.1:9/unused".to_string(),
+            size_bytes: 4,
+            sha256: "placeholder_skip".to_string(),
+            min_vram_gb: 1.0,
+        };
+        let path = downloader.model_path(&model, &variant);
+        std::fs::write(&path, b"done").unwrap();
+
+        let result_path = downloader.download(&model, &variant).await.unwrap();
+        assert_eq!(result_path, path);
+    }
+
+    #[tokio::test]
+    async fn test_downloader_download_http_error_status() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/model.gguf"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock_server)
+            .await;
+
+        let temp_dir = TempDir::new().unwrap();
+        let downloader = ModelDownloader::with_dir(temp_dir.path().to_path_buf()).unwrap();
+        let model = create_test_model();
+        let variant = ModelVariant {
+            quantization: Quantization::Q5_K_M,
+            url: format!("{}/model.gguf", mock_server.uri()),
+            size_bytes: 4,
+            sha256: "placeholder_skip".to_string(),
+            min_vram_gb: 1.0,
+        };
+
+        let err = downloader.download(&model, &variant).await.unwrap_err();
+        assert!(err.to_string().contains("Download failed with status"));
+    }
+
+    #[tokio::test]
+    async fn test_downloader_download_sha_mismatch_removes_temp_file() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/model.bin"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"abc".to_vec()))
+            .mount(&mock_server)
+            .await;
+
+        let temp_dir = TempDir::new().unwrap();
+        let downloader = ModelDownloader::with_dir(temp_dir.path().to_path_buf()).unwrap();
+        let model = create_test_model();
+        let variant = ModelVariant {
+            quantization: Quantization::Q3_K_M,
+            url: format!("{}/model.bin", mock_server.uri()),
+            size_bytes: 3,
+            sha256: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string(),
+            min_vram_gb: 1.0,
+        };
+        let path = downloader.model_path(&model, &variant);
+        let temp_path = path.with_extension("tmp");
+
+        let err = downloader.download(&model, &variant).await.unwrap_err();
+        assert!(err.to_string().contains("SHA256 verification failed"));
+        assert!(!temp_path.exists());
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_downloader_download_success_with_placeholder_hash() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/model-success.gguf"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"hello".to_vec()))
+            .mount(&mock_server)
+            .await;
+
+        let temp_dir = TempDir::new().unwrap();
+        let downloader = ModelDownloader::with_dir(temp_dir.path().to_path_buf()).unwrap();
+        let model = create_test_model();
+        let variant = ModelVariant {
+            quantization: Quantization::Q6_K,
+            url: format!("{}/model-success.gguf", mock_server.uri()),
+            size_bytes: 5,
+            sha256: "placeholder_skip".to_string(),
+            min_vram_gb: 1.0,
+        };
+
+        let path = downloader.download(&model, &variant).await.unwrap();
+        assert!(path.exists());
+        assert_eq!(std::fs::read(&path).unwrap(), b"hello");
     }
 }

@@ -9,6 +9,7 @@
 
 import { spawn, ChildProcess } from 'child_process';
 import * as bundled from '../bundled/manager';
+import { debugLog } from '../utils/logger';
 
 export interface TunnelOptions {
   port: number;
@@ -61,7 +62,7 @@ async function startTunnelOnce(options: TunnelOptions): Promise<TunnelResult> {
       args.push('--hostname', `${subdomain}.trycloudflare.com`);
     }
 
-    console.log('[CF Tunnel] Starting cloudflared:', cloudflaredPath, args.join(' '));
+    debugLog('[CF Tunnel] Starting cloudflared:', cloudflaredPath, args.join(' '));
 
     const child = spawn(cloudflaredPath, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -73,14 +74,14 @@ async function startTunnelOnce(options: TunnelOptions): Promise<TunnelResult> {
     // Parse stdout for tunnel URL
     child.stdout?.on('data', (data: Buffer) => {
       const output = data.toString();
-      console.log('[CF Tunnel] stdout:', output);
+      debugLog('[CF Tunnel] stdout:', output);
 
       // Look for the tunnel URL in output
       // Format: "Your quick Tunnel has been created! Visit it at: https://..."
       const urlMatch = output.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
       if (urlMatch && !tunnelUrl) {
         tunnelUrl = urlMatch[0];
-        console.log('[CF Tunnel] Found URL:', tunnelUrl);
+        debugLog('[CF Tunnel] Found URL:', tunnelUrl);
 
         // Store tunnel state
         activeTunnels.set(port, {
@@ -102,13 +103,13 @@ async function startTunnelOnce(options: TunnelOptions): Promise<TunnelResult> {
 
     child.stderr?.on('data', (data: Buffer) => {
       const output = data.toString();
-      console.log('[CF Tunnel] stderr:', output);
+      debugLog('[CF Tunnel] stderr:', output);
 
       // Also check stderr for URL (cloudflared outputs there too)
       const urlMatch = output.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
       if (urlMatch && !tunnelUrl) {
         tunnelUrl = urlMatch[0];
-        console.log('[CF Tunnel] Found URL in stderr:', tunnelUrl);
+        debugLog('[CF Tunnel] Found URL in stderr:', tunnelUrl);
 
         activeTunnels.set(port, {
           process: child,
@@ -139,7 +140,7 @@ async function startTunnelOnce(options: TunnelOptions): Promise<TunnelResult> {
     });
 
     child.on('exit', (code, signal) => {
-      console.log('[CF Tunnel] Process exited:', code, signal);
+      debugLog('[CF Tunnel] Process exited:', code, signal);
       activeTunnels.delete(port);
 
       if (!resolved) {
@@ -196,7 +197,7 @@ export async function startTunnel(options: TunnelOptions): Promise<TunnelResult>
   let lastError: string | undefined;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    console.log(`[CF Tunnel] Attempt ${attempt}/${maxRetries}`);
+    debugLog(`[CF Tunnel] Attempt ${attempt}/${maxRetries}`);
     const result = await startTunnelOnce(options);
 
     if (result.success) {
@@ -216,7 +217,7 @@ export async function startTunnel(options: TunnelOptions): Promise<TunnelResult>
 
     // Wait before retrying (exponential backoff: 1s, 2s, 4s)
     const delay = Math.pow(2, attempt - 1) * 1000;
-    console.log(`[CF Tunnel] Retryable error, waiting ${delay}ms before retry...`);
+    debugLog(`[CF Tunnel] Retryable error, waiting ${delay}ms before retry...`);
     await new Promise(resolve => setTimeout(resolve, delay));
   }
 
@@ -306,7 +307,8 @@ export async function autoInstallCloudflared(): Promise<{ success: boolean; path
   try {
     const path = await bundled.downloadCloudflared();
     return { success: true, path };
-  } catch (err: any) {
-    return { success: false, error: err.message };
+  } catch (err: unknown) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    return { success: false, error: errorMessage };
   }
 }

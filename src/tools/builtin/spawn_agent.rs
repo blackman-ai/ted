@@ -21,6 +21,33 @@ use crate::llm::rate_budget::TokenRateCoordinator;
 use crate::skills::SkillRegistry;
 use crate::tools::{PermissionRequest, SchemaBuilder, Tool, ToolContext, ToolResult};
 
+/// Status of a tool call entry in the agent conversation log
+#[derive(Debug, Clone)]
+pub enum ToolCallEntryStatus {
+    /// Tool is currently executing
+    Running,
+    /// Tool completed successfully
+    Success { preview: Option<String> },
+    /// Tool failed
+    Failed { error: String },
+}
+
+/// An entry in the agent's conversation log (for TUI split-pane display)
+#[derive(Debug, Clone)]
+pub enum AgentConversationEntry {
+    /// Agent's LLM response text
+    AssistantMessage(String),
+    /// A tool call with its current status
+    ToolCall {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+        input_summary: String,
+        status: ToolCallEntryStatus,
+        output_full: Option<String>,
+    },
+}
+
 /// Progress state for an agent execution
 #[derive(Debug, Clone)]
 pub struct AgentProgressState {
@@ -34,6 +61,16 @@ pub struct AgentProgressState {
     pub current_tool: Option<String>,
     /// Last tool activity for display (persists after tool completes)
     pub last_activity: String,
+    /// Conversation log for split-pane display
+    pub conversation: Vec<AgentConversationEntry>,
+    /// Agent type (e.g., "explore", "implement")
+    pub agent_type: String,
+    /// Task description
+    pub task: String,
+    /// Whether the agent is currently rate limited
+    pub rate_limited: bool,
+    /// How long the agent is waiting for rate limit (seconds)
+    pub rate_limit_wait_secs: f64,
 }
 
 impl Default for AgentProgressState {
@@ -44,6 +81,11 @@ impl Default for AgentProgressState {
             completed: false,
             current_tool: None,
             last_activity: "Starting...".to_string(),
+            conversation: Vec::new(),
+            agent_type: String::new(),
+            task: String::new(),
+            rate_limited: false,
+            rate_limit_wait_secs: 0.0,
         }
     }
 }
@@ -390,6 +432,11 @@ impl Tool for SpawnAgentTool {
                         completed: false,
                         current_tool: None,
                         last_activity: format!("Starting {} agent...", agent_type),
+                        conversation: Vec::new(),
+                        agent_type: agent_type.to_string(),
+                        task: task.to_string(),
+                        rate_limited: false,
+                        rate_limit_wait_secs: 0.0,
                     },
                 );
             }
@@ -405,6 +452,12 @@ impl Tool for SpawnAgentTool {
                 while let Some(event) = progress_rx.recv().await {
                     let mut tracker = tracker_clone.lock().await;
                     if let Some(state) = tracker.get_mut(&tool_use_id_clone) {
+                        // Clear rate limit flag on any non-rate-limit event
+                        if !matches!(&event, AgentProgressEvent::RateLimited { .. }) {
+                            state.rate_limited = false;
+                            state.rate_limit_wait_secs = 0.0;
+                        }
+
                         match &event {
                             AgentProgressEvent::Started { .. } => {
                                 state.last_activity = "Starting...".to_string();
@@ -438,12 +491,69 @@ impl Tool for SpawnAgentTool {
                             AgentProgressEvent::RateLimited { wait_secs } => {
                                 state.current_tool = None;
                                 state.last_activity = format!("Rate limited ({:.1}s)", wait_secs);
+                                state.rate_limited = true;
+                                state.rate_limit_wait_secs = *wait_secs;
                             }
                             AgentProgressEvent::Completed { success, .. } => {
                                 state.completed = true;
                                 state.current_tool = None;
                                 state.last_activity =
                                     if *success { "Completed" } else { "Failed" }.to_string();
+                            }
+                            AgentProgressEvent::AssistantMessage { text } => {
+                                state
+                                    .conversation
+                                    .push(AgentConversationEntry::AssistantMessage(text.clone()));
+                            }
+                            AgentProgressEvent::ToolCallStarted {
+                                tool_id,
+                                tool_name,
+                                input,
+                            } => {
+                                let input_summary =
+                                    summarize_tool_input_for_display(tool_name, input);
+                                state.conversation.push(AgentConversationEntry::ToolCall {
+                                    id: tool_id.clone(),
+                                    name: tool_name.clone(),
+                                    input: input.clone(),
+                                    input_summary,
+                                    status: ToolCallEntryStatus::Running,
+                                    output_full: None,
+                                });
+                            }
+                            AgentProgressEvent::ToolCallCompleted {
+                                tool_id,
+                                tool_name: _,
+                                success,
+                                output_preview,
+                                output_full,
+                            } => {
+                                // Find and update the matching tool call
+                                for entry in state.conversation.iter_mut().rev() {
+                                    if let AgentConversationEntry::ToolCall {
+                                        id,
+                                        status,
+                                        output_full: entry_output,
+                                        ..
+                                    } = entry
+                                    {
+                                        if id == tool_id {
+                                            *status = if *success {
+                                                ToolCallEntryStatus::Success {
+                                                    preview: output_preview.clone(),
+                                                }
+                                            } else {
+                                                ToolCallEntryStatus::Failed {
+                                                    error: output_preview
+                                                        .clone()
+                                                        .unwrap_or_default(),
+                                                }
+                                            };
+                                            *entry_output = output_full.clone();
+                                            break;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -497,6 +607,50 @@ fn truncate_str(s: &str, max_len: usize) -> String {
         s.to_string()
     } else {
         format!("{}...", &s[..max_len])
+    }
+}
+
+/// Summarize tool input for display in the conversation pane
+fn summarize_tool_input_for_display(tool_name: &str, input: &serde_json::Value) -> String {
+    match tool_name {
+        "file_read" | "glob" => input
+            .get("path")
+            .or_else(|| input.get("pattern"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "grep" => input
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .map(|p| format!("/{}/", p))
+            .unwrap_or_default(),
+        "file_write" | "file_edit" => input
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "shell" => {
+            let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            if cmd.len() > 50 {
+                format!("{}...", &cmd[..47])
+            } else {
+                cmd.to_string()
+            }
+        }
+        _ => {
+            // Try to find a meaningful string value
+            if let Some(obj) = input.as_object() {
+                for val in obj.values() {
+                    if let Some(s) = val.as_str() {
+                        if s.len() <= 50 {
+                            return s.to_string();
+                        }
+                        return format!("{}...", &s[..47]);
+                    }
+                }
+            }
+            String::new()
+        }
     }
 }
 
@@ -766,6 +920,7 @@ mod tests {
             completed: false,
             current_tool: Some("file_read".to_string()),
             last_activity: "Reading...".to_string(),
+            ..Default::default()
         };
 
         let status = state.display_status();
@@ -782,6 +937,7 @@ mod tests {
             completed: false,
             current_tool: None,
             last_activity: "Processing results".to_string(),
+            ..Default::default()
         };
 
         let status = state.display_status();
@@ -797,6 +953,7 @@ mod tests {
             completed: false,
             current_tool: None,
             last_activity: String::new(),
+            ..Default::default()
         };
 
         let status = state.display_status();
@@ -812,6 +969,7 @@ mod tests {
             completed: true,
             current_tool: Some("shell".to_string()),
             last_activity: "Done".to_string(),
+            ..Default::default()
         };
 
         let cloned = state.clone();
@@ -930,6 +1088,7 @@ mod tests {
             completed: false,
             current_tool: None,
             last_activity: "At max".to_string(),
+            ..Default::default()
         };
 
         let status = state.display_status();
@@ -944,6 +1103,7 @@ mod tests {
             completed: false,
             current_tool: Some("very_long_tool_name_with_lots_of_characters".to_string()),
             last_activity: String::new(),
+            ..Default::default()
         };
 
         let status = state.display_status();
@@ -1316,5 +1476,164 @@ mod tests {
                 | crate::llm::rate_budget::RatePriority::Normal
                 | crate::llm::rate_budget::RatePriority::Background
         ));
+    }
+
+    #[test]
+    fn test_summarize_tool_input_for_display_variants() {
+        assert_eq!(
+            summarize_tool_input_for_display(
+                "file_read",
+                &serde_json::json!({"path":"src/main.rs"})
+            ),
+            "src/main.rs"
+        );
+        assert_eq!(
+            summarize_tool_input_for_display("glob", &serde_json::json!({"pattern":"**/*.rs"})),
+            "**/*.rs"
+        );
+        assert_eq!(
+            summarize_tool_input_for_display("grep", &serde_json::json!({"pattern":"TODO"})),
+            "/TODO/"
+        );
+        assert_eq!(
+            summarize_tool_input_for_display("file_write", &serde_json::json!({"path":"a.txt"})),
+            "a.txt"
+        );
+        assert_eq!(
+            summarize_tool_input_for_display("file_edit", &serde_json::json!({"path":"b.txt"})),
+            "b.txt"
+        );
+
+        let long_cmd = "echo ".to_string() + &"x".repeat(80);
+        let summarized =
+            summarize_tool_input_for_display("shell", &serde_json::json!({"command": long_cmd}));
+        assert!(summarized.len() <= 50);
+        assert!(summarized.ends_with("..."));
+
+        assert_eq!(
+            summarize_tool_input_for_display("unknown", &serde_json::json!({"name":"short"})),
+            "short"
+        );
+        let fallback_long = summarize_tool_input_for_display(
+            "unknown",
+            &serde_json::json!({"name":"this string is definitely much longer than fifty characters to force truncation"}),
+        );
+        assert!(fallback_long.ends_with("..."));
+        assert_eq!(
+            summarize_tool_input_for_display("unknown", &serde_json::json!({"value": 123})),
+            ""
+        );
+    }
+
+    #[tokio::test]
+    async fn test_spawn_agent_execute_missing_agent_type_returns_error() {
+        let tool = create_test_spawn_agent_tool();
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let context = crate::tools::ToolContext::new(
+            temp_dir.path().to_path_buf(),
+            Some(temp_dir.path().to_path_buf()),
+            uuid::Uuid::new_v4(),
+            false,
+        );
+
+        let input = serde_json::json!({
+            "task": "Find important files"
+        });
+
+        let result = tool
+            .execute("missing-agent-type".to_string(), input, &context)
+            .await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("agent_type is required"));
+    }
+
+    #[tokio::test]
+    async fn test_spawn_agent_execute_missing_task_returns_error() {
+        let tool = create_test_spawn_agent_tool();
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let context = crate::tools::ToolContext::new(
+            temp_dir.path().to_path_buf(),
+            Some(temp_dir.path().to_path_buf()),
+            uuid::Uuid::new_v4(),
+            false,
+        );
+
+        let input = serde_json::json!({
+            "agent_type": "explore"
+        });
+
+        let result = tool
+            .execute("missing-task".to_string(), input, &context)
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("task is required"));
+    }
+
+    #[tokio::test]
+    async fn test_spawn_agent_execute_invalid_memory_strategy_returns_tool_error() {
+        let tool = create_test_spawn_agent_tool();
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let context = crate::tools::ToolContext::new(
+            temp_dir.path().to_path_buf(),
+            Some(temp_dir.path().to_path_buf()),
+            uuid::Uuid::new_v4(),
+            false,
+        );
+
+        let input = serde_json::json!({
+            "agent_type": "explore",
+            "task": "Investigate project",
+            "memory_strategy": "invalid"
+        });
+
+        let result = tool
+            .execute("invalid-memory".to_string(), input, &context)
+            .await
+            .unwrap();
+        assert!(result.is_error());
+        assert!(result.output_text().contains("Invalid memory_strategy"));
+    }
+
+    #[tokio::test]
+    async fn test_spawn_agent_execute_background_mode_returns_success() {
+        let tool = create_test_spawn_agent_tool();
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let context = crate::tools::ToolContext::new(
+            temp_dir.path().to_path_buf(),
+            Some(temp_dir.path().to_path_buf()),
+            uuid::Uuid::new_v4(),
+            false,
+        );
+
+        let input = serde_json::json!({
+            "agent_type": "explore",
+            "task": "Map repository layout",
+            "background": true
+        });
+
+        let result = tool
+            .execute("background-agent".to_string(), input, &context)
+            .await
+            .unwrap();
+        assert!(!result.is_error());
+        assert!(result.output_text().contains("Spawned background agent"));
+    }
+
+    #[test]
+    fn test_permission_request_and_requires_permission() {
+        let tool = create_test_spawn_agent_tool();
+        let input = serde_json::json!({
+            "agent_type": "implement",
+            "task": "a".repeat(200)
+        });
+
+        let request = tool.permission_request(&input).expect("permission request");
+        assert_eq!(request.tool_name, "spawn_agent");
+        assert!(request.action_description.contains("Spawn implement agent"));
+        assert!(request.action_description.contains("..."));
+        assert!(tool.requires_permission());
     }
 }

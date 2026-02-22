@@ -17,7 +17,7 @@ export interface RecentProject {
 export interface ProjectContext {
   fileTree: string[];
   readme: string | null;
-  packageJson: any | null;
+  packageJson: Record<string, unknown> | null;
   lastScanned: number;
 }
 
@@ -42,15 +42,38 @@ export interface TedSettings {
   model: string;
   anthropicApiKey: string;
   anthropicModel: string;
-  ollamaBaseUrl: string;
-  ollamaModel: string;
+  localPort: number;
+  localModel: string;
+  localBaseUrl?: string;
+  localModelPath?: string;
   openrouterApiKey: string;
   openrouterModel: string;
+  blackmanApiKey?: string;
+  blackmanBaseUrl?: string;
+  blackmanModel?: string;
   vercelToken: string;
   netlifyToken: string;
   hardware: HardwareInfo | null;
   /** User's experience level - affects verbosity and explanations */
   experienceLevel: 'beginner' | 'intermediate' | 'advanced';
+}
+
+export interface LocalModelSetupResult {
+  success: boolean;
+  model?: string;
+  modelPath?: string;
+  downloaded?: boolean;
+  message?: string;
+  error?: string;
+}
+
+export interface SettingsSaveResult {
+  success: boolean;
+  downloaded?: boolean;
+  model?: string;
+  modelPath?: string;
+  message?: string;
+  error?: string;
 }
 
 export interface SessionInfo {
@@ -134,6 +157,15 @@ export interface PostgresConfig {
   user?: string;
 }
 
+export interface ConversationMemory {
+  id: string;
+  timestamp: string;
+  summary: string;
+  files_changed: string[];
+  tags: string[];
+  content: string;
+}
+
 export interface TeddyAPI {
   // Dialog
   openFolderDialog: () => Promise<string | null>;
@@ -179,6 +211,11 @@ export interface TeddyAPI {
     isDirectory: boolean;
     path: string;
   }>>;
+  searchFiles: (query: string, limit?: number) => Promise<Array<{
+    name: string;
+    isDirectory: boolean;
+    path: string;
+  }>>;
 
   // Shell operations (run commands directly without Ted)
   runShell: (command: string, port?: number) => Promise<{ success: boolean; pid?: number }>;
@@ -189,8 +226,9 @@ export interface TeddyAPI {
 
   // Settings
   getSettings: () => Promise<TedSettings>;
-  saveSettings: (settings: TedSettings) => Promise<{ success: boolean }>;
+  saveSettings: (settings: TedSettings) => Promise<SettingsSaveResult>;
   detectHardware: () => Promise<HardwareInfo>;
+  setupRecommendedLocalModel: () => Promise<LocalModelSetupResult>;
 
   // Deployment - Vercel
   deployVercel: (options: DeploymentOptions) => Promise<DeploymentResult>;
@@ -239,6 +277,10 @@ export interface TeddyAPI {
   postgresTestConnection: () => Promise<{ success: boolean; error?: string }>;
   postgresGetDatabaseUrl: () => Promise<{ databaseUrl: string }>;
 
+  // Memory
+  memoryGetRecent: (limit?: number) => Promise<ConversationMemory[]>;
+  memorySearch: (query: string, limit?: number) => Promise<ConversationMemory[]>;
+
   // Event listeners
   onTedEvent: (callback: (event: TedEvent) => void) => () => void;
   onTedStderr: (callback: (text: string) => void) => () => void;
@@ -284,6 +326,7 @@ const api: TeddyAPI = {
   writeFile: (path: string, content: string) => ipcRenderer.invoke('file:write', path, content),
   deleteFile: (path: string) => ipcRenderer.invoke('file:delete', path),
   listFiles: (dirPath?: string) => ipcRenderer.invoke('file:list', dirPath),
+  searchFiles: (query: string, limit?: number) => ipcRenderer.invoke('file:search', query, limit),
 
   // Shell operations
   runShell: (command: string, port?: number) => ipcRenderer.invoke('shell:run', command, port),
@@ -296,6 +339,7 @@ const api: TeddyAPI = {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   saveSettings: (settings: TedSettings) => ipcRenderer.invoke('settings:save', settings),
   detectHardware: () => ipcRenderer.invoke('settings:detectHardware'),
+  setupRecommendedLocalModel: () => ipcRenderer.invoke('settings:setupRecommendedLocalModel'),
 
   // Deployment - Vercel
   deployVercel: (options: DeploymentOptions) => ipcRenderer.invoke('deploy:vercel', options),
@@ -340,45 +384,49 @@ const api: TeddyAPI = {
   postgresTestConnection: () => ipcRenderer.invoke('postgres:testConnection'),
   postgresGetDatabaseUrl: () => ipcRenderer.invoke('postgres:getDatabaseUrl'),
 
+  // Memory
+  memoryGetRecent: (limit?: number) => ipcRenderer.invoke('memory:getRecent', limit),
+  memorySearch: (query: string, limit?: number) => ipcRenderer.invoke('memory:search', query, limit),
+
   // Event listeners
   onTedEvent: (callback) => {
-    const listener = (_: any, event: TedEvent) => callback(event);
+    const listener = (_: unknown, event: TedEvent) => callback(event);
     ipcRenderer.on('ted:event', listener);
     return () => ipcRenderer.removeListener('ted:event', listener);
   },
 
   onTedStderr: (callback) => {
-    const listener = (_: any, text: string) => callback(text);
+    const listener = (_: unknown, text: string) => callback(text);
     ipcRenderer.on('ted:stderr', listener);
     return () => ipcRenderer.removeListener('ted:stderr', listener);
   },
 
   onTedError: (callback) => {
-    const listener = (_: any, error: string) => callback(error);
+    const listener = (_: unknown, error: string) => callback(error);
     ipcRenderer.on('ted:error', listener);
     return () => ipcRenderer.removeListener('ted:error', listener);
   },
 
   onTedExit: (callback) => {
-    const listener = (_: any, info: { code: number | null; signal: string | null }) => callback(info);
+    const listener = (_: unknown, info: { code: number | null; signal: string | null }) => callback(info);
     ipcRenderer.on('ted:exit', listener);
     return () => ipcRenderer.removeListener('ted:exit', listener);
   },
 
   onFileChanged: (callback) => {
-    const listener = (_: any, info: { type: string; path: string }) => callback(info);
+    const listener = (_: unknown, info: { type: string; path: string }) => callback(info);
     ipcRenderer.on('file:changed', listener);
     return () => ipcRenderer.removeListener('file:changed', listener);
   },
 
   onFileExternalChange: (callback) => {
-    const listener = (_: any, event: { type: string; path: string; relativePath: string }) => callback(event);
+    const listener = (_: unknown, event: { type: string; path: string; relativePath: string }) => callback(event);
     ipcRenderer.on('file:externalChange', listener);
     return () => ipcRenderer.removeListener('file:externalChange', listener);
   },
 
   onGitCommitted: (callback) => {
-    const listener = (_: any, info: { files: string[]; summary: string }) => callback(info);
+    const listener = (_: unknown, info: { files: string[]; summary: string }) => callback(info);
     ipcRenderer.on('git:committed', listener);
     return () => ipcRenderer.removeListener('git:committed', listener);
   },

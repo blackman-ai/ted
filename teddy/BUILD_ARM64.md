@@ -98,7 +98,7 @@ chmod +x teddy-<version>-arm64.AppImage
 
 The Raspberry Pi 5 (8GB) is classified as **UltraTiny tier** hardware:
 
-- **Recommended Models**: qwen2.5-coder:1.5b, deepseek-coder:1.3b, tinyllama:1.1b
+- **Recommended Models**: qwen2.5-coder:1.5b, qwen2.5-coder:3b, qwen2.5-coder:7b (optional)
 - **Expected Response Time**: 15-45 seconds
 - **Capabilities**:
   - Simple web apps (HTML/CSS/JS)
@@ -115,23 +115,19 @@ The Raspberry Pi 5 (8GB) is classified as **UltraTiny tier** hardware:
 
 For optimal performance on Raspberry Pi 5:
 
-1. **Install Ollama** for local AI:
+1. **Prepare a local GGUF model** for local AI:
    ```bash
-   curl -fsSL https://ollama.com/install.sh | sh
+   mkdir -p ~/.ted/models/local
+   # Place model.gguf in ~/.ted/models/local/model.gguf
    ```
 
-2. **Pull a compatible model**:
-   ```bash
-   ollama pull qwen2.5-coder:1.5b
-   ```
-
-3. **Configure Teddy**:
+2. **Configure Teddy**:
    - Open Settings → AI Providers
-   - Select "Ollama (Local)"
-   - Set Model to: `qwen2.5-coder:1.5b`
-   - Base URL: `http://localhost:11434`
+   - Select "Local (llama.cpp)"
+   - Set Model to: `local`
+   - Set Port to: `8847`
 
-4. **Use lightweight projects**:
+3. **Use lightweight projects**:
    - Avoid large frameworks
    - Keep dependencies minimal
    - Use static site generators when possible
@@ -168,5 +164,5 @@ git push origin teddy-v0.1.0
 ## See Also
 
 - [Raspberry Pi OS Installation](https://www.raspberrypi.com/software/)
-- [Ollama Documentation](https://ollama.com/docs)
+- [llama.cpp](https://github.com/ggml-org/llama.cpp)
 - [Ted Hardware Detection](../src/tools/builtin/hardware.rs)

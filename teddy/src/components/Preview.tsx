@@ -2,6 +2,7 @@
 // Copyright (C) 2025 Blackman Artificial Intelligence Technologies Inc.
 
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { debugLog } from '../utils/logger';
 import './Preview.css';
 
 interface PreviewProps {
@@ -9,6 +10,11 @@ interface PreviewProps {
 }
 
 type ProjectType = 'vite' | 'nextjs' | 'static' | 'unknown';
+type PackageJsonLike = {
+  scripts?: Record<string, string>;
+  dependencies?: Record<string, unknown>;
+  devDependencies?: Record<string, unknown>;
+};
 
 // Track server state globally so it persists across tab switches
 let globalServerRunning = false;
@@ -45,11 +51,6 @@ export function Preview({ projectPath }: PreviewProps) {
   const [tunnelUrl, setTunnelUrl] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const deployMenuRef = useRef<HTMLDivElement>(null);
-
-  // Detect project type on mount or when project changes
-  useEffect(() => {
-    detectProjectType();
-  }, [projectPath]);
 
   // Sync with global state on mount/project change and refresh with cache-busting
   useEffect(() => {
@@ -90,7 +91,7 @@ export function Preview({ projectPath }: PreviewProps) {
     const unsubscribe = window.teddy.onFileExternalChange((event) => {
       // Only refresh for actual file changes (not directories)
       if (isRunning && (event.type === 'change' || event.type === 'add' || event.type === 'unlink')) {
-        console.log('[Preview] File changed, refreshing preview:', event.relativePath);
+        debugLog('[Preview] File changed, refreshing preview:', event.relativePath);
 
         // Debounce refresh to avoid multiple rapid refreshes
         if (debounceTimer) {
@@ -116,10 +117,10 @@ export function Preview({ projectPath }: PreviewProps) {
     try {
       // Check for package.json
       const packageJsonPath = `${projectPath}/package.json`;
-      let packageJson: any = null;
+      let packageJson: PackageJsonLike | null = null;
       try {
         const result = await window.teddy.readFile(packageJsonPath);
-        packageJson = JSON.parse(result.content);
+        packageJson = JSON.parse(result.content) as PackageJsonLike;
       } catch (err) {
         // No package.json, probably static site
         setProjectType('static');
@@ -147,14 +148,17 @@ export function Preview({ projectPath }: PreviewProps) {
           setUrl('http://localhost:3000');
         } else {
           // Check dependencies
-          const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
-          if (deps.vite) {
+          const deps = {
+            ...(packageJson.dependencies || {}),
+            ...(packageJson.devDependencies || {}),
+          };
+          if (deps.vite !== undefined) {
             setProjectType('vite');
             globalProjectType = 'vite';
             setPort(5173);
             globalServerPort = 5173;
             setUrl('http://localhost:5173');
-          } else if (deps.next) {
+          } else if (deps.next !== undefined) {
             setProjectType('nextjs');
             globalProjectType = 'nextjs';
             setPort(3000);
@@ -177,6 +181,11 @@ export function Preview({ projectPath }: PreviewProps) {
       setDetecting(false);
     }
   }, [projectPath]);
+
+  // Detect project type on mount or when project changes
+  useEffect(() => {
+    detectProjectType();
+  }, [detectProjectType]);
 
   const startServer = useCallback(async () => {
     if (isRunning) {
@@ -244,7 +253,7 @@ export function Preview({ projectPath }: PreviewProps) {
     // Clear Electron's HTTP cache first
     try {
       await window.teddy.clearCache();
-      console.log('[Preview] Cache cleared');
+      debugLog('[Preview] Cache cleared');
     } catch (err) {
       console.error('[Preview] Failed to clear cache:', err);
     }
@@ -293,7 +302,6 @@ export function Preview({ projectPath }: PreviewProps) {
       const settings = await window.teddy.getSettings();
 
       if (!settings.vercelToken) {
-        alert('Please configure your Vercel token in Settings → Deployment tab first');
         setServerOutput('✗ Deployment failed: No Vercel token configured');
         return;
       }
@@ -310,12 +318,10 @@ export function Preview({ projectPath }: PreviewProps) {
         setServerOutput(`✓ Deployed successfully! Click to open: ${result.url}`);
       } else {
         setServerOutput(`✗ Deployment failed: ${result.error || 'Unknown error'}`);
-        alert(`Deployment failed: ${result.error}`);
       }
     } catch (err) {
       console.error('Deployment error:', err);
       setServerOutput(`✗ Deployment failed: ${err}`);
-      alert(`Deployment failed: ${err}`);
     } finally {
       setDeploying(false);
     }
@@ -332,7 +338,6 @@ export function Preview({ projectPath }: PreviewProps) {
       const settings = await window.teddy.getSettings();
 
       if (!settings.netlifyToken) {
-        alert('Please configure your Netlify token in Settings → Deployment tab first');
         setServerOutput('✗ Deployment failed: No Netlify token configured');
         return;
       }
@@ -349,12 +354,10 @@ export function Preview({ projectPath }: PreviewProps) {
         setServerOutput(`✓ Deployed successfully! Click to open: ${result.url}`);
       } else {
         setServerOutput(`✗ Deployment failed: ${result.error || 'Unknown error'}`);
-        alert(`Deployment failed: ${result.error}`);
       }
     } catch (err) {
       console.error('Deployment error:', err);
       setServerOutput(`✗ Deployment failed: ${err}`);
-      alert(`Deployment failed: ${err}`);
     } finally {
       setDeploying(false);
     }
@@ -375,7 +378,7 @@ export function Preview({ projectPath }: PreviewProps) {
     }
 
     if (!isRunning) {
-      alert('Please start the dev server first before sharing');
+      setServerOutput('✗ Start the dev server before sharing');
       return;
     }
 
@@ -396,8 +399,7 @@ export function Preview({ projectPath }: PreviewProps) {
 
         if (!shouldInstall) {
           const { instructions } = await window.teddy.tunnelGetInstallInstructions();
-          alert(`Installation cancelled.\n\nTo install manually:\n\n${instructions}`);
-          setServerOutput('✗ cloudflared not installed');
+          setServerOutput(`✗ cloudflared not installed. Manual install:\n${instructions}`);
           return;
         }
 
@@ -406,8 +408,7 @@ export function Preview({ projectPath }: PreviewProps) {
         const installResult = await window.teddy.tunnelAutoInstall();
 
         if (!installResult.success) {
-          alert(`Failed to install cloudflared: ${installResult.error}`);
-          setServerOutput('✗ Failed to install cloudflared');
+          setServerOutput(`✗ Failed to install cloudflared: ${installResult.error || 'Unknown error'}`);
           return;
         }
 
@@ -427,12 +428,10 @@ export function Preview({ projectPath }: PreviewProps) {
         navigator.clipboard.writeText(result.previewUrl).catch(() => {});
       } else {
         setServerOutput(`✗ Failed to create share link: ${result.error}`);
-        alert(`Failed to create share link: ${result.error}`);
       }
     } catch (err) {
       console.error('Share error:', err);
       setServerOutput(`✗ Share failed: ${err}`);
-      alert(`Share failed: ${err}`);
     } finally {
       setSharingTunnel(false);
     }

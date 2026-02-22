@@ -3,15 +3,18 @@
 
 import { spawn, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
+import { existsSync, statSync } from 'fs';
 import path from 'path';
 import { TedParser } from './parser';
 import { TedEvent } from '../types/protocol';
+import { debugLog } from '../utils/logger';
 
 export interface TedRunnerOptions {
   tedBinaryPath?: string;  // Path to Ted binary (defaults to bundled)
   workingDirectory: string; // Project directory
   trust?: boolean;          // Auto-approve tool uses
-  provider?: string;        // LLM provider (ollama, anthropic, blackman)
+  noTools?: boolean;        // Disable all tool definitions/execution for chat-only turns
+  provider?: string;        // LLM provider (local, anthropic, openrouter, blackman)
   model?: string;           // Model to use
   caps?: string[];          // Active caps
   historyFile?: string;     // Path to conversation history JSON file
@@ -38,10 +41,34 @@ export class TedRunner extends EventEmitter {
   private parser: TedParser;
   private options: TedRunnerOptions;
 
+  on(event: 'event', listener: (event: TedEvent) => void): this;
+  on(event: 'plan', listener: (event: Extract<TedEvent, { type: 'plan' }>) => void): this;
+  on(event: 'file_create', listener: (event: Extract<TedEvent, { type: 'file_create' }>) => void): this;
+  on(event: 'file_edit', listener: (event: Extract<TedEvent, { type: 'file_edit' }>) => void): this;
+  on(event: 'file_delete', listener: (event: Extract<TedEvent, { type: 'file_delete' }>) => void): this;
+  on(event: 'command', listener: (event: Extract<TedEvent, { type: 'command' }>) => void): this;
+  on(event: 'status', listener: (event: Extract<TedEvent, { type: 'status' }>) => void): this;
+  on(event: 'completion', listener: (event: Extract<TedEvent, { type: 'completion' }>) => void): this;
+  on(event: 'message', listener: (event: Extract<TedEvent, { type: 'message' }>) => void): this;
+  on(
+    event: 'conversation_history',
+    listener: (event: Extract<TedEvent, { type: 'conversation_history' }>) => void
+  ): this;
+  on(event: 'stderr', listener: (text: string) => void): this;
+  on(event: 'error', listener: (err: Error) => void): this;
+  on(event: 'parse_error', listener: (err: Error) => void): this;
+  on(
+    event: 'exit',
+    listener: (info: { code: number | null; signal: NodeJS.Signals | null }) => void
+  ): this;
+  on(event: string | symbol, listener: Parameters<EventEmitter['on']>[1]): this {
+    return super.on(event, listener);
+  }
+
   constructor(options: TedRunnerOptions) {
     super();
     this.options = options;
-    this.parser = new TedParser();
+    this.parser = new TedParser({ enableSyntheticEvents: !options.noTools });
 
     // Forward parser events
     this.parser.on('event', (event) => this.emit('event', event));
@@ -149,15 +176,13 @@ export class TedRunner extends EventEmitter {
    * Get the path to the Ted binary
    */
   private getTedBinaryPath(): string {
-    const fs = require('fs');
-
-    console.log('[TED_RUNNER] getTedBinaryPath called');
-    console.log('[TED_RUNNER] __dirname:', __dirname);
-    console.log('[TED_RUNNER] NODE_ENV:', process.env.NODE_ENV);
-    console.log('[TED_RUNNER] tedBinaryPath option:', this.options.tedBinaryPath);
+    debugLog('[TED_RUNNER] getTedBinaryPath called');
+    debugLog('[TED_RUNNER] __dirname:', __dirname);
+    debugLog('[TED_RUNNER] NODE_ENV:', process.env.NODE_ENV);
+    debugLog('[TED_RUNNER] tedBinaryPath option:', this.options.tedBinaryPath);
 
     if (this.options.tedBinaryPath) {
-      console.log('[TED_RUNNER] Using provided tedBinaryPath:', this.options.tedBinaryPath);
+      debugLog('[TED_RUNNER] Using provided tedBinaryPath:', this.options.tedBinaryPath);
       return this.options.tedBinaryPath;
     }
 
@@ -168,31 +193,46 @@ export class TedRunner extends EventEmitter {
     // resourcesPath also contains '.app' (the Electron framework bundle)
     const isDevelopment = process.env.NODE_ENV !== 'production';
 
-    console.log('[TED_RUNNER] isDevelopment:', isDevelopment);
+    debugLog('[TED_RUNNER] isDevelopment:', isDevelopment);
 
     if (isDevelopment) {
       // Try debug build first (faster compilation), fall back to release
       const debugBinary = path.join(__dirname, '../../../target/debug/ted');
       const releaseBinary = path.join(__dirname, '../../../target/release/ted');
 
-      console.log('[TED_RUNNER] Checking debug binary:', debugBinary);
-      console.log('[TED_RUNNER] Debug binary exists:', fs.existsSync(debugBinary));
+      debugLog('[TED_RUNNER] Checking debug binary:', debugBinary);
+      debugLog('[TED_RUNNER] Debug binary exists:', existsSync(debugBinary));
+      debugLog('[TED_RUNNER] Checking release binary:', releaseBinary);
+      debugLog('[TED_RUNNER] Release binary exists:', existsSync(releaseBinary));
 
-      if (fs.existsSync(debugBinary)) {
-        console.log('[TED_RUNNER] Using debug binary');
+      if (existsSync(debugBinary) && existsSync(releaseBinary)) {
+        try {
+          const debugMtime = statSync(debugBinary).mtimeMs;
+          const releaseMtime = statSync(releaseBinary).mtimeMs;
+          const useRelease = releaseMtime > debugMtime;
+          debugLog(
+            '[TED_RUNNER] Both binaries found; using newer one:',
+            useRelease ? 'release' : 'debug'
+          );
+          return useRelease ? releaseBinary : debugBinary;
+        } catch (error) {
+          debugLog('[TED_RUNNER] Failed to compare binary mtimes:', error);
+          debugLog('[TED_RUNNER] Falling back to debug-first selection');
+        }
+      }
+
+      if (existsSync(debugBinary)) {
+        debugLog('[TED_RUNNER] Using debug binary');
         return debugBinary;
       }
 
-      console.log('[TED_RUNNER] Checking release binary:', releaseBinary);
-      console.log('[TED_RUNNER] Release binary exists:', fs.existsSync(releaseBinary));
-
-      if (fs.existsSync(releaseBinary)) {
-        console.log('[TED_RUNNER] Using release binary');
+      if (existsSync(releaseBinary)) {
+        debugLog('[TED_RUNNER] Using release binary');
         return releaseBinary;
       }
 
       // Neither exists, fall through to PATH
-      console.log('[TED_RUNNER] No local binary found, falling back to PATH');
+      debugLog('[TED_RUNNER] No local binary found, falling back to PATH');
     }
 
     // In production: try bundled binary first, fall back to PATH
@@ -200,17 +240,17 @@ export class TedRunner extends EventEmitter {
     const binaryName = process.platform === 'win32' ? 'ted.exe' : 'ted';
     const bundledPath = path.join(resourcePath, 'bin', binaryName);
 
-    console.log('[TED_RUNNER] resourcesPath:', process.resourcesPath);
-    console.log('[TED_RUNNER] bundledPath:', bundledPath);
-    console.log('[TED_RUNNER] bundledPath exists:', fs.existsSync(bundledPath));
+    debugLog('[TED_RUNNER] resourcesPath:', process.resourcesPath);
+    debugLog('[TED_RUNNER] bundledPath:', bundledPath);
+    debugLog('[TED_RUNNER] bundledPath exists:', existsSync(bundledPath));
 
-    if (fs.existsSync(bundledPath)) {
-      console.log('[TED_RUNNER] Using bundled binary');
+    if (existsSync(bundledPath)) {
+      debugLog('[TED_RUNNER] Using bundled binary');
       return bundledPath;
     }
 
     // Fall back to ted in PATH (for development/testing when binary not bundled)
-    console.log('[TED_RUNNER] Using ted from PATH');
+    debugLog('[TED_RUNNER] Using ted from PATH');
     return 'ted';
   }
 
@@ -222,6 +262,10 @@ export class TedRunner extends EventEmitter {
 
     if (this.options.trust) {
       args.push('--trust');
+    }
+
+    if (this.options.noTools) {
+      args.push('--no-tools');
     }
 
     if (this.options.provider) {
@@ -282,25 +326,3 @@ export class TedRunner extends EventEmitter {
     this.parser.flush();
   }
 }
-
-/**
- * Typed event interface for TedRunner
- */
-export interface TedRunnerEvents {
-  on(event: 'event', listener: (event: TedEvent) => void): this;
-  on(event: 'plan', listener: (event: Extract<TedEvent, { type: 'plan' }>) => void): this;
-  on(event: 'file_create', listener: (event: Extract<TedEvent, { type: 'file_create' }>) => void): this;
-  on(event: 'file_edit', listener: (event: Extract<TedEvent, { type: 'file_edit' }>) => void): this;
-  on(event: 'file_delete', listener: (event: Extract<TedEvent, { type: 'file_delete' }>) => void): this;
-  on(event: 'command', listener: (event: Extract<TedEvent, { type: 'command' }>) => void): this;
-  on(event: 'status', listener: (event: Extract<TedEvent, { type: 'status' }>) => void): this;
-  on(event: 'completion', listener: (event: Extract<TedEvent, { type: 'completion' }>) => void): this;
-  on(event: 'message', listener: (event: Extract<TedEvent, { type: 'message' }>) => void): this;
-  on(event: 'conversation_history', listener: (event: Extract<TedEvent, { type: 'conversation_history' }>) => void): this;
-  on(event: 'stderr', listener: (text: string) => void): this;
-  on(event: 'error', listener: (err: Error) => void): this;
-  on(event: 'parse_error', listener: (err: Error) => void): this;
-  on(event: 'exit', listener: (info: { code: number | null; signal: NodeJS.Signals | null }) => void): this;
-}
-
-export interface TedRunner extends TedRunnerEvents {}

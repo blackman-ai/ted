@@ -2,12 +2,13 @@
 // Copyright (C) 2025 Blackman Artificial Intelligence Technologies Inc.
 
 import { useState, useEffect, useCallback } from 'react';
+import { debugLog } from '../utils/logger';
 
 interface TedEvent {
   type: string;
   timestamp: number;
   session_id: string;
-  data: any;
+  data: Record<string, unknown>;
 }
 
 interface LogEntry {
@@ -26,16 +27,18 @@ export function useTed() {
     const unsubEvent = window.teddy.onTedEvent((event) => {
       // Debug: log command_output events
       if (event.type === 'command_output') {
-        console.log('[DEBUG] Received command_output event:', event);
+        debugLog('useTed', 'Received command_output event:', event);
       }
 
       setEvents((prev) => [...prev, event]);
 
       // Log status messages
       if (event.type === 'status') {
-        addLog('info', event.data.message);
+        const message = typeof event.data.message === 'string' ? event.data.message : '';
+        addLog('info', message);
       } else if (event.type === 'error') {
-        addLog('error', event.data.message);
+        const message = typeof event.data.message === 'string' ? event.data.message : '';
+        addLog('error', message);
       }
     });
 

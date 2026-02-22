@@ -385,41 +385,39 @@ useEffect(() => {
 
 ---
 
-## Ollama Integration Issues
+## Local Provider Issues
 
-### ❌ Failed to connect to Ollama
+### ❌ Failed to connect to local llama.cpp server
 
 **Error**:
 ```
-Error: connect ECONNREFUSED 127.0.0.1:11434
+Error: connect ECONNREFUSED 127.0.0.1:8847
 ```
 
 **Solution**:
 ```bash
-# Check if Ollama is running
-ollama list
+# Check local provider is selected
+./target/release/ted settings get provider
 
-# Start Ollama server
-ollama serve
+# Ensure a GGUF model exists
+ls ~/.ted/models/local/model.gguf
 
-# Or start Ollama app (macOS)
-open -a Ollama
+# If missing, place one there or configure model_path in settings
 ```
 
 ### ❌ Model not found
 
 **Error**:
 ```
-Error: model 'qwen2.5-coder:14b' not found
+Error: No GGUF model files found
 ```
 
 **Solution**:
 ```bash
-# Pull the model
-ollama pull qwen2.5-coder:14b
+# Ensure model path exists
+ls ~/.ted/models/local/model.gguf
 
-# Check available models
-ollama list
+# Or set a custom model path in settings (providers.local.model_path)
 ```
 
 ---
@@ -455,7 +453,7 @@ Error: Rate limit exceeded
 **Solution**:
 ```
 Wait a few minutes, then retry.
-Or switch to Ollama for offline usage.
+Or switch to the local provider for offline usage.
 ```
 
 ---
@@ -591,8 +589,8 @@ fswatch -r /path/to/project
 ### Network Issues
 
 ```bash
-# Check if Ollama is reachable
-curl http://localhost:11434/api/tags
+# Check if local server is reachable (during an active local session)
+curl http://127.0.0.1:8847/health
 
 # Check Anthropic API
 curl https://api.anthropic.com/v1/messages \
@@ -651,7 +649,7 @@ cd teddy && npm install && npm run dev
 - [ ] Ted binary built (`target/release/ted` exists)
 - [ ] Dependencies installed (`node_modules` exists)
 - [ ] No port conflicts (5173 is free)
-- [ ] Ollama running (if using local AI)
+- [ ] GGUF model present (if using local AI)
 - [ ] API key set (if using Anthropic)
 - [ ] Project folder has write permissions
 - [ ] Git initialized (if using auto-commit)

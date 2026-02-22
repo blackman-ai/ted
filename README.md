@@ -64,7 +64,7 @@ Download from [GitHub Releases](https://github.com/blackman-ai/ted/releases):
 ### Requirements
 
 - An Anthropic API key (for Anthropic provider)
-- OR [Ollama](https://ollama.ai) installed locally (for local models)
+- OR a GGUF model file available locally (for the `local` llama.cpp provider)
 
 ## Quick Start
 
@@ -112,7 +112,7 @@ ted ask -f src/main.rs "What does this code do?"
 | `/cap add <name>` | Add a cap |
 | `/cap remove <name>` | Remove a cap |
 | `/cap create <name>` | Create a new custom cap |
-| `/model` | Show/switch model |
+| `/model` | Show/switch models (`/model download <name>` downloads local models) |
 | `/sessions` | List recent sessions |
 | `/switch <n>` | Switch to a different session |
 | `/new` | Start a new session |
@@ -295,88 +295,65 @@ Ted supports these Claude models:
 
 Switch models with `/model <name>` or `-m` flag.
 
-## Local Models with Ollama
+## Local Models (llama.cpp)
 
-Ted supports running local models via [Ollama](https://ollama.ai), enabling fully offline AI coding assistance.
+Ted supports fully local/offline inference through the `local` provider, which uses llama.cpp (`llama-server`) under the hood.
 
 ### Setup
 
-1. **Install Ollama:**
-   - macOS/Linux: `curl -fsSL https://ollama.com/install.sh | sh`
-   - Or download from [ollama.ai](https://ollama.ai)
-
-2. **Start Ollama:**
+1. Set local as your provider:
    ```bash
-   ollama serve
+   ted settings set provider local
    ```
-   (Or launch the Ollama desktop app)
-
-3. **Pull a model:**
+2. Configure local defaults:
    ```bash
-   ollama pull qwen2.5-coder:14b
+   ted settings set local.model local
+   ted settings set local.port 8847
    ```
-
-4. **Configure Ted to use Ollama:**
-   ```bash
-   ted settings set provider ollama
-   ```
+3. Ensure you have a GGUF model available (for example under `~/.ted/models/local/model.gguf`) or pass `--model-path` when starting chat.
 
 ### Usage
 
 ```bash
-# Start with Ollama provider
-ted --provider ollama
+# Start with local provider
+ted --provider local
 
-# Use a specific model
-ted --provider ollama -m qwen2.5-coder:14b
+# Use a specific GGUF model path
+ted --provider local --model-path /path/to/model.gguf
 
-# Or set as default
-ted settings set provider ollama
-ted settings set ollama.model llama3.2:latest
+# Set local as default provider
+ted settings set provider local
 ```
-
-### Recommended Models
-
-| Model | Description | Tool Support |
-|-------|-------------|--------------|
-| `qwen2.5-coder:14b` | Excellent coding, recommended (default) | Yes |
-| `qwen2.5-coder:7b` | Smaller, faster version | Yes |
-| `llama3.2:latest` | General purpose | Yes |
-| `codellama:latest` | Code focused | Limited |
-| `deepseek-coder-v2:latest` | Strong coding model | Yes |
-| `mistral:latest` | Fast general purpose | Yes |
 
 ### Configuration
 
-Settings for Ollama can be configured via CLI or settings file:
+Local provider settings can be configured via CLI or in `~/.ted/settings.json`:
 
 ```bash
-ted settings set provider ollama           # Set as default provider
-ted settings set ollama.base_url http://localhost:11434  # Custom Ollama URL
-ted settings set ollama.model qwen2.5-coder:14b         # Default model
+ted settings set provider local
+ted settings set local.port 8847
+ted settings set local.model local
 ```
 
-Or in `~/.ted/settings.json`:
 ```json
 {
   "providers": {
-    "ollama": {
-      "base_url": "http://localhost:11434",
-      "default_model": "qwen2.5-coder:14b"
+    "local": {
+      "port": 8847,
+      "default_model": "local"
     }
   },
   "defaults": {
-    "provider": "ollama"
+    "provider": "local"
   }
 }
 ```
 
 ### Notes
 
-- **Model storage**: Ollama stores models in `~/.ollama/models/`. Remove with `ollama rm <model>`.
-- **Tool calling**: Most modern models support tool calling. If a model doesn't support tools, Ted will still work but won't be able to read/write files.
-- **Context window**: Context limits depend on the model. Check model details with `ollama show <model>`.
-- **Error handling**: If Ollama isn't running, Ted will show a helpful message: "Start the Ollama app or run `ollama serve`"
+- **Runtime**: Ted ensures a compatible `llama-server` binary is available for the local provider.
+- **Model files**: Local inference requires a GGUF model file.
+- **Tool calling**: Most modern coding models support tools; weaker models may have degraded tool behavior.
 
 ## Updating Ted
 

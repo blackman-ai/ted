@@ -20,18 +20,23 @@
 pub mod agent;
 pub mod commands;
 pub mod display;
+pub mod engine;
 pub mod input_parser;
 pub mod provider_config;
 mod session;
 pub mod slash_commands;
 pub mod streaming;
 
-pub use session::{ChatSession, ChatSessionBuilder};
+pub use session::{
+    record_message_and_persist, trim_conversation_if_needed, ChatSession, ChatSessionBuilder,
+    SessionState,
+};
 
 // Re-export commonly used types
 pub use agent::{AgentLoopConfig, AgentLoopState, ToolCallResult, ToolCallTracker};
 pub use commands::{ChatCommand, CommandResult};
 pub use display::{ShellOutputDisplay, ShellStatus, ToolInvocationDisplay, ToolResultDisplay};
+pub use engine::{AgentLoopObserver, NoopAgentLoopObserver};
 pub use input_parser::ProviderChoice;
 pub use provider_config::{ApiKeyValidation, ProviderConfig, ProviderValidation};
 pub use streaming::{StreamAccumulator, StreamEventResult, StreamStats};

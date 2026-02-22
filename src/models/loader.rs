@@ -161,6 +161,11 @@ impl ModelRegistry {
                     .with_vram(3.0)
                     .with_context(32768)
                     .with_description("Lightweight for older hardware"),
+                ModelInfo::new("qwen3:4b", ModelTier::Low)
+                    .with_name("Qwen3 4B")
+                    .with_vram(4.0)
+                    .with_context(40960)
+                    .with_description("Agentic small model for constrained systems"),
                 ModelInfo::new("qwen2.5-coder:1.5b", ModelTier::Low)
                     .with_name("Qwen 2.5 Coder 1.5B")
                     .with_vram(2.0)

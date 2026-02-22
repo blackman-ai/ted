@@ -352,6 +352,7 @@ mod tests {
         let agent_id = uuid::Uuid::new_v4();
         app.agents.track(
             agent_id,
+            agent_id.to_string(),
             "Explorer".to_string(),
             "explore".to_string(),
             "Find files".to_string(),
@@ -496,6 +497,7 @@ mod tests {
         let agent_id = uuid::Uuid::new_v4();
         app.agents.track(
             agent_id,
+            agent_id.to_string(),
             "Explorer".to_string(),
             "explore".to_string(),
             "Find files".to_string(),

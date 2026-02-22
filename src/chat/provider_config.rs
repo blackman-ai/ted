@@ -236,8 +236,8 @@ pub fn get_known_models(provider_name: &str) -> Vec<&'static str> {
         "local" => vec![
             "qwen2.5-coder:14b",
             "qwen2.5-coder:7b",
-            "llama3.2",
-            "deepseek-coder-v2",
+            "qwen2.5-coder:3b",
+            "qwen2.5-coder:1.5b",
         ],
         "openrouter" => vec![
             "anthropic/claude-3.5-sonnet",
@@ -278,7 +278,7 @@ mod tests {
     fn create_test_settings() -> Settings {
         let mut settings = Settings::default();
         settings.providers.anthropic.default_model = "claude-3-5-sonnet".to_string();
-        settings.providers.local.default_model = "llama3.2".to_string();
+        settings.providers.local.default_model = "qwen2.5-coder:7b".to_string();
         settings.providers.openrouter.default_model = "anthropic/claude-3.5-sonnet".to_string();
         settings
     }
@@ -335,7 +335,7 @@ mod tests {
     fn test_resolve_model_name_local() {
         let settings = create_test_settings();
         let result = resolve_model_name(None, None, "local", &settings);
-        assert_eq!(result, "llama3.2");
+        assert_eq!(result, "qwen2.5-coder:7b");
     }
 
     #[test]
@@ -500,7 +500,7 @@ mod tests {
     fn test_get_default_model_local() {
         let settings = create_test_settings();
         let model = get_default_model("local", &settings);
-        assert_eq!(model, "llama3.2");
+        assert_eq!(model, "qwen2.5-coder:7b");
     }
 
     #[test]
@@ -528,7 +528,7 @@ mod tests {
 
     #[test]
     fn test_is_model_supported_local() {
-        assert!(is_model_supported_by_provider("llama3.2", "local"));
+        assert!(is_model_supported_by_provider("qwen2.5-coder:7b", "local"));
         assert!(is_model_supported_by_provider("any-model", "local"));
     }
 
@@ -553,7 +553,7 @@ mod tests {
     fn test_get_known_models_local() {
         let models = get_known_models("local");
         assert!(!models.is_empty());
-        assert!(models.iter().any(|m| m.contains("llama")));
+        assert!(models.iter().any(|m| m.contains("qwen2.5-coder")));
     }
 
     #[test]

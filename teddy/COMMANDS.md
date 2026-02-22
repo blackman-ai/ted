@@ -279,7 +279,7 @@ export DEBUG=teddy:*
 # Set Ted binary path (if not using default)
 export TED_BINARY_PATH=/path/to/ted
 
-# Use Anthropic instead of Ollama
+# Use Anthropic instead of local provider
 export ANTHROPIC_API_KEY="your-key"
 ```
 

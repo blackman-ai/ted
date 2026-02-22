@@ -10,6 +10,9 @@
 .tree-header {
   padding: 12px 16px;
   border-bottom: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .tree-title {
@@ -18,6 +21,21 @@
   text-transform: uppercase;
   color: var(--text-secondary);
   letter-spacing: 0.5px;
+}
+
+.tree-search {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.tree-search:focus {
+  outline: none;
+  border-color: var(--accent-primary);
 }
 
 .tree-content {
@@ -57,4 +75,29 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.tree-search-result {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.tree-path {
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-item.selected .tree-path {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.tree-empty {
+  padding: 12px 16px;
+  color: var(--text-secondary);
+  font-size: 12px;
 }

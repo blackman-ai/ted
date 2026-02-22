@@ -139,11 +139,32 @@ pub struct HistoryMessageData {
 /// JSONL event emitter
 pub struct JsonLEmitter {
     session_id: String,
+    target: EmitTarget,
+}
+
+enum EmitTarget {
+    Stdout,
+    #[cfg(test)]
+    Buffer(std::sync::Arc<std::sync::Mutex<Vec<String>>>),
 }
 
 impl JsonLEmitter {
     pub fn new(session_id: String) -> Self {
-        Self { session_id }
+        Self {
+            session_id,
+            target: EmitTarget::Stdout,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_buffer(
+        session_id: String,
+        buffer: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) -> Self {
+        Self {
+            session_id,
+            target: EmitTarget::Buffer(buffer),
+        }
     }
 
     fn emit<T: Serialize>(&self, event_type: &str, data: T) -> io::Result<()> {
@@ -155,8 +176,19 @@ impl JsonLEmitter {
         };
 
         let json = serde_json::to_string(&event)?;
-        println!("{}", json);
-        io::stdout().flush()?;
+        match &self.target {
+            EmitTarget::Stdout => {
+                println!("{}", json);
+                io::stdout().flush()?;
+            }
+            #[cfg(test)]
+            EmitTarget::Buffer(buffer) => {
+                let mut guard = buffer
+                    .lock()
+                    .map_err(|_| io::Error::other("event buffer lock poisoned"))?;
+                guard.push(json);
+            }
+        }
         Ok(())
     }
 

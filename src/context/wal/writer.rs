@@ -83,6 +83,11 @@ impl WalWriter {
     /// Ensure we have an open writer
     async fn ensure_writer(&mut self) -> Result<()> {
         if self.writer.is_none() {
+            // Ensure WAL directory exists
+            if !self.wal_dir.exists() {
+                tokio::fs::create_dir_all(&self.wal_dir).await?;
+            }
+
             let path = self.wal_dir.join(wal_filename(self.current_file_seq));
 
             let file = OpenOptions::new()
@@ -134,6 +139,11 @@ impl WalWriter {
         // Increment file sequence
         self.current_file_seq += 1;
         self.current_size = 0;
+
+        // Ensure WAL directory exists
+        if !self.wal_dir.exists() {
+            tokio::fs::create_dir_all(&self.wal_dir).await?;
+        }
 
         // Create new file
         let path = self.wal_dir.join(wal_filename(self.current_file_seq));

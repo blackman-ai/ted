@@ -77,7 +77,12 @@ impl TokenRateCoordinator {
         });
 
         // Store self-reference for allocation handles
-        *coordinator.self_ref.write().unwrap() = Arc::downgrade(&coordinator);
+        // This should never fail as we just created the RwLock, but handle gracefully
+        if let Ok(mut self_ref) = coordinator.self_ref.write() {
+            *self_ref = Arc::downgrade(&coordinator);
+        } else {
+            tracing::error!("Failed to acquire write lock on self_ref during coordinator creation");
+        }
 
         coordinator
     }
@@ -92,7 +97,13 @@ impl TokenRateCoordinator {
 
         // Add to allocations
         {
-            let mut allocations = self.allocations.write().unwrap();
+            let mut allocations = match self.allocations.write() {
+                Ok(guard) => guard,
+                Err(poisoned) => {
+                    tracing::warn!("Allocations lock was poisoned, recovering");
+                    poisoned.into_inner()
+                }
+            };
             allocations.insert(
                 id,
                 AllocationEntry {
@@ -120,7 +131,13 @@ impl TokenRateCoordinator {
     /// Release an allocation (called when RateBudgetAllocation is dropped)
     fn release(&self, id: Uuid) {
         {
-            let mut allocations = self.allocations.write().unwrap();
+            let mut allocations = match self.allocations.write() {
+                Ok(guard) => guard,
+                Err(poisoned) => {
+                    tracing::warn!("Allocations lock was poisoned during release, recovering");
+                    poisoned.into_inner()
+                }
+            };
             allocations.remove(&id);
         }
         self.rebalance();

@@ -5,6 +5,7 @@ import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
 import os from 'os';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { debugLog } from '../utils/logger';
 
 /**
  * Share module for teddy.rocks subdomain service
@@ -46,6 +47,13 @@ const activeShares = new Map<number, {
   tunnelUrl: string;
   clientToken: string;
 }>();
+
+function getErrorMessage(err: unknown): string {
+  if (err instanceof Error) {
+    return err.message;
+  }
+  return String(err);
+}
 
 /**
  * Load stored client tokens
@@ -223,7 +231,7 @@ export async function startShare(options: ShareOptions): Promise<ShareResult> {
     }
   }
 
-  console.log('[SHARE] Starting tunnel for port', port, 'with slug', slug);
+  debugLog('[SHARE] Starting tunnel for port', port, 'with slug', slug);
 
   // Start cloudflared tunnel
   return new Promise((resolve) => {
@@ -251,7 +259,7 @@ export async function startShare(options: ShareOptions): Promise<ShareResult> {
     const doRegister = () => {
       if (!tunnelUrl || !tunnelConnected || resolved) return;
 
-      console.log('[SHARE] Tunnel connected, registering with teddy.rocks...');
+      debugLog('[SHARE] Tunnel connected, registering with teddy.rocks...');
 
       // Register with teddy.rocks
       registerSubdomain(slug, tunnelUrl, projectName, existingToken)
@@ -271,7 +279,7 @@ export async function startShare(options: ShareOptions): Promise<ShareResult> {
               success: true,
               slug,
               previewUrl: `https://${slug}.teddy.rocks`,
-              tunnelUrl,
+              tunnelUrl: tunnelUrl ?? undefined,
             });
           } else {
             tunnelProcess.kill();
@@ -281,12 +289,12 @@ export async function startShare(options: ShareOptions): Promise<ShareResult> {
             });
           }
         })
-        .catch((err) => {
+        .catch((err: unknown) => {
           console.error('[SHARE] Registration error:', err);
           tunnelProcess.kill();
           resolveOnce({
             success: false,
-            error: `Registration failed: ${err.message}`,
+            error: `Registration failed: ${getErrorMessage(err)}`,
           });
         });
     };
@@ -294,19 +302,19 @@ export async function startShare(options: ShareOptions): Promise<ShareResult> {
     // Parse tunnel URL and connection status from output
     const handleOutput = (data: Buffer) => {
       const text = data.toString();
-      console.log('[SHARE] cloudflared:', text);
+      debugLog('[SHARE] cloudflared:', text);
 
       // Capture the tunnel URL when it appears
       const urlMatch = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
       if (urlMatch && !tunnelUrl) {
         tunnelUrl = urlMatch[0];
-        console.log('[SHARE] Tunnel URL:', tunnelUrl);
+        debugLog('[SHARE] Tunnel URL:', tunnelUrl);
       }
 
       // Wait for tunnel to be fully registered before calling the API
       if (text.includes('Registered tunnel connection')) {
         tunnelConnected = true;
-        console.log('[SHARE] Tunnel connection registered');
+        debugLog('[SHARE] Tunnel connection registered');
         doRegister();
       }
     };
@@ -323,7 +331,7 @@ export async function startShare(options: ShareOptions): Promise<ShareResult> {
     });
 
     tunnelProcess.on('exit', (code) => {
-      console.log('[SHARE] Tunnel process exited with code', code);
+      debugLog('[SHARE] Tunnel process exited with code', code);
       activeShares.delete(port);
 
       if (!resolved) {
@@ -377,15 +385,15 @@ async function registerSubdomain(
       return { success: false, error: data.error || 'Registration failed' };
     }
 
-    console.log('[SHARE] Registered:', data);
+    debugLog('[SHARE] Registered:', data);
     return {
       success: data.success === true,
       clientToken: data.clientToken,
       error: data.error,
     };
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[SHARE] Registration error:', err);
-    return { success: false, error: err.message };
+    return { success: false, error: getErrorMessage(err) };
   }
 }
 
@@ -420,7 +428,7 @@ export async function stopShare(port: number): Promise<boolean> {
     return false;
   }
 
-  console.log('[SHARE] Stopping share for port', port);
+  debugLog('[SHARE] Stopping share for port', port);
 
   // Unregister from teddy.rocks
   await unregisterSubdomain(share.slug, share.clientToken);

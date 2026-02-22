@@ -34,11 +34,14 @@ export function Memory({ projectPath }: MemoryProps) {
     setIsLoading(true);
     setError(null);
     try {
-      // TODO: Call Ted API to load recent memories
-      // For now, mock data
-      const mockMemories: ConversationMemory[] = [];
-      setMemories(mockMemories);
-      setSearchResults(mockMemories);
+      const recentMemories = await window.teddy.memoryGetRecent(50);
+      setMemories(recentMemories);
+      setSearchResults(recentMemories);
+      if (recentMemories.length > 0) {
+        setSelectedMemory(recentMemories[0]);
+      } else {
+        setSelectedMemory(null);
+      }
     } catch (err) {
       setError('Failed to load memories');
       console.error('Error loading memories:', err);
@@ -56,14 +59,13 @@ export function Memory({ projectPath }: MemoryProps) {
     setIsLoading(true);
     setError(null);
     try {
-      // TODO: Call Ted API for semantic search
-      // For now, simple filter
-      const filtered = memories.filter(m =>
-        m.summary.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        m.tags.some(t => t.toLowerCase().includes(searchQuery.toLowerCase())) ||
-        m.content.toLowerCase().includes(searchQuery.toLowerCase())
-      );
-      setSearchResults(filtered);
+      const results = await window.teddy.memorySearch(searchQuery.trim(), 50);
+      setSearchResults(results);
+      if (results.length > 0) {
+        setSelectedMemory(results[0]);
+      } else {
+        setSelectedMemory(null);
+      }
     } catch (err) {
       setError('Search failed');
       console.error('Error searching memories:', err);

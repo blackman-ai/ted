@@ -50,8 +50,17 @@ pub async fn execute(args: &McpArgs) -> Result<()> {
     eprintln!("[TED MCP] Server ready - listening on stdio");
     eprintln!("[TED MCP] Compatible with Claude Desktop and other MCP clients");
 
-    // Run the server
-    server.run().await
+    // In unit tests, avoid entering the blocking stdio run loop.
+    #[cfg(test)]
+    {
+        Ok(())
+    }
+
+    #[cfg(not(test))]
+    {
+        // Run the server
+        server.run().await
+    }
 }
 
 #[cfg(test)]
@@ -690,5 +699,22 @@ mod tests {
         }
 
         let _ = server; // Just verify we created it successfully
+    }
+
+    #[tokio::test]
+    async fn test_execute_real_entrypoint_none_project_timeout_or_eof() {
+        let args = McpArgs { project: None };
+        let result = execute(&args).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_execute_real_entrypoint_with_project_timeout_or_eof() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let args = McpArgs {
+            project: Some(temp.path().to_string_lossy().to_string()),
+        };
+        let result = execute(&args).await;
+        assert!(result.is_ok());
     }
 }

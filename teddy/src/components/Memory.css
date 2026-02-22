@@ -67,15 +67,17 @@
 
 .memory-content {
   display: flex;
+  flex-direction: column;
   flex: 1;
   overflow: hidden;
 }
 
 .memory-list {
-  width: 350px;
-  min-width: 300px;
+  width: 100%;
+  min-width: 0;
+  max-height: 45%;
   background: var(--bg-secondary, #252526);
-  border-right: 1px solid var(--border-color, #3c3c3c);
+  border-bottom: 1px solid var(--border-color, #3c3c3c);
   overflow-y: auto;
 }
 

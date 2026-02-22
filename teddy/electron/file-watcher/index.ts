@@ -4,6 +4,7 @@
 import chokidar, { FSWatcher } from 'chokidar';
 import path from 'path';
 import { EventEmitter } from 'events';
+import { debugLog } from '../utils/logger';
 
 export interface FileChangeEvent {
   type: 'add' | 'change' | 'unlink' | 'addDir' | 'unlinkDir';
@@ -73,8 +74,8 @@ export class FileWatcher extends EventEmitter {
       return;
     }
 
-    console.log('[FileWatcher] Starting watcher for:', this.projectPath);
-    console.log('[FileWatcher] Ignoring patterns:', this.options.ignored);
+    debugLog('[FileWatcher] Starting watcher for:', this.projectPath);
+    debugLog('[FileWatcher] Ignoring patterns:', this.options.ignored);
 
     this.watcher = chokidar.watch(this.projectPath, {
       ignored: this.options.ignored,
@@ -103,7 +104,7 @@ export class FileWatcher extends EventEmitter {
         this.emit('error', error);
       })
       .on('ready', () => {
-        console.log('[FileWatcher] Initial scan complete, ready for changes');
+        debugLog('[FileWatcher] Initial scan complete, ready for changes');
         this.emit('ready');
       });
 
@@ -125,7 +126,7 @@ export class FileWatcher extends EventEmitter {
       return;
     }
 
-    console.log('[FileWatcher] Stopping watcher');
+    debugLog('[FileWatcher] Stopping watcher');
     await this.watcher.close();
     this.watcher = null;
     this.emit('stopped');
@@ -160,7 +161,7 @@ export class FileWatcher extends EventEmitter {
       relativePath,
     };
 
-    console.log('[FileWatcher] Change detected:', type, relativePath);
+    debugLog('[FileWatcher] Change detected:', type, relativePath);
     this.emit('change', event);
     this.emit(type, event);
   }

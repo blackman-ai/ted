@@ -44,6 +44,31 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
 
+  perf-smoke:
+    name: Perf Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-perf-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-perf-
+
+      - name: Run perf smoke checks
+        run: ./scripts/perf-smoke.sh
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -61,6 +86,34 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+
+  teddy:
+    name: Teddy Checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: teddy
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: teddy/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npm run type-check
+
+      - name: Parser tests
+        run: npm run test:parser
 
   # Test coverage with tarpaulin
   coverage:
@@ -97,8 +150,7 @@ jobs:
             --exclude-files "src/main.rs" \
             --exclude-files "src/tui/*" \
             --ignore-tests
-        # Note: Coverage threshold at 50%. Current coverage ~60%.
-        # Target: 70%+ over time. Hard to go higher due to network code in update.rs.
+        # Coverage threshold is enforced at 80%.
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4

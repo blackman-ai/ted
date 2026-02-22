@@ -1,6 +1,6 @@
 # Bundled Dependencies in Teddy
 
-Teddy includes a smart dependency management system that automatically handles external binaries like `cloudflared` and `ollama`, providing a true batteries-included experience.
+Teddy includes a smart dependency management system that automatically handles external binaries like `cloudflared`, providing a batteries-included experience.
 
 ## Philosophy
 
@@ -21,7 +21,6 @@ Located at: [`electron/bundled/manager.ts`](electron/bundled/manager.ts)
 - `getCloudflaredPath()` - Find cloudflared binary (bundled, local, or system)
 - `downloadCloudflared()` - Auto-download from GitHub releases
 - `isCloudflaredInstalled()` - Check if available
-- `getOllamaPath()` - Find Ollama installation
 - `getInstallInstructions()` - Fallback manual instructions
 
 ### Search Order
@@ -101,25 +100,15 @@ User clicks "Share"
 → Works immediately
 ```
 
-## Ollama Integration
+## Local Runtime Integration
 
-### Future Implementation
+Ted's `local` provider uses llama.cpp (`llama-server`) under the hood.
+That runtime is managed by Ted itself, so Teddy does not need to install or bundle a separate local AI runtime in this dependency manager.
 
-Ollama is larger (~500MB) and has platform-specific installers, so we:
-
-1. Check if Ollama is already installed (very common on dev machines)
-2. If not, offer to:
-   - **macOS**: Open Ollama.com download page
-   - **Linux**: Run official install script
-   - **Windows**: Open Ollama.com download page
-3. Provide clear instructions and links
-
-### Why Not Bundle Ollama?
-
-- Size: Ollama is ~500MB, would bloat app significantly
-- Updates: Ollama updates frequently, bundling would require constant re-packaging
-- Native installers: Ollama provides polished native installers
-- Common: Many developers already have Ollama installed
+Current flow:
+1. Teddy launches Ted with provider `local`
+2. Ted ensures `llama-server` exists for the host platform
+3. Ted starts/stops the local inference server as needed
 
 ## IPC Communication
 
@@ -262,7 +251,7 @@ await window.teddy.tunnelIsInstalled()
 
 - [ ] SHA256 checksum verification for downloads
 - [ ] Version checking and auto-updates
-- [ ] Ollama auto-install for Linux
+- [ ] Improve local model onboarding flow
 - [ ] Bundle common model files (1.5B models for offline use)
 - [ ] Dependency status UI in Settings
 

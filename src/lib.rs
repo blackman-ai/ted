@@ -1,9 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2025 Blackman Artificial Intelligence Technologies Inc.
 
-//! Ted - AI coding assistant for your terminal
+//! Ted - AI coding assistant for local-first development workflows.
 //!
-//! A fast, portable AI coding assistant written in Rust.
+//! This crate exposes the shared runtime used by:
+//! - the `ted` CLI (`src/main.rs`)
+//! - the interactive TUI chat runtime
+//! - embedded JSONL mode consumed by Teddy (Electron)
+//!
+//! Architecture highlights:
+//! - `chat`: shared conversation engine, tool loop orchestration, session flow
+//! - `llm`: provider abstraction and implementations (Anthropic/OpenRouter/Blackman/local)
+//! - `context`: WAL-backed context storage and compaction
+//! - `tools`: built-in tool implementations and execution/permission flow
+//! - `agents`, `plans`, `beads`: multi-agent and planning/task primitives
+//! - `tui`, `embedded`: runtime-specific presentation layers
+//!
+//! See `docs/ARCHITECTURE.md` for a cross-module system overview.
 
 pub mod agents;
 pub mod beads;

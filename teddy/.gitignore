@@ -15,6 +15,7 @@ dist
 dist-electron
 release
 out
+.test-dist
 
 # Editor
 .vscode/*

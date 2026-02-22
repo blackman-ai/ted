@@ -482,4 +482,65 @@ mod tests {
         let embeddings: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
         assert_eq!(embeddings.capacity(), 3);
     }
+
+    #[test]
+    fn test_embedding_generator_backend_and_dimension() {
+        let generator = EmbeddingGenerator::new();
+        assert_eq!(generator.backend_type(), EmbeddingBackend::Bundled);
+        assert!(generator.dimension() > 0);
+    }
+
+    #[tokio::test]
+    async fn test_embed_batch_empty_returns_empty() {
+        let generator = EmbeddingGenerator::new();
+        let embeddings = generator.embed_batch(&[]).await.unwrap();
+        assert!(embeddings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_embed_batch_multiple_texts() {
+        let generator = EmbeddingGenerator::new();
+        let texts = vec!["first text".to_string(), "second text".to_string()];
+        let embeddings = generator.embed_batch(&texts).await.unwrap();
+
+        assert_eq!(embeddings.len(), 2);
+        assert_eq!(embeddings[0].len(), generator.dimension());
+        assert_eq!(embeddings[1].len(), generator.dimension());
+    }
+
+    #[test]
+    fn test_embedding_generator_clone_keeps_dimension() {
+        let generator = EmbeddingGenerator::new();
+        let cloned = generator.clone();
+        assert_eq!(generator.dimension(), cloned.dimension());
+        assert_eq!(generator.backend_type(), cloned.backend_type());
+    }
+
+    #[cfg(feature = "bundled-embeddings")]
+    #[test]
+    fn test_bundled_config_helpers() {
+        let config = EmbeddingConfig::bundled("nomic-embed-text");
+        assert_eq!(config.backend, EmbeddingBackend::Bundled);
+        assert_eq!(config.model, "nomic-embed-text");
+        assert!(config.cache_dir.is_none());
+
+        let cache_dir = std::path::PathBuf::from("/tmp/ted-test-embeddings");
+        let config_with_cache =
+            EmbeddingConfig::bundled_with_cache("all-minilm-l6-v2", cache_dir.clone());
+        assert_eq!(config_with_cache.backend, EmbeddingBackend::Bundled);
+        assert_eq!(config_with_cache.model, "all-minilm-l6-v2");
+        assert_eq!(config_with_cache.cache_dir, Some(cache_dir));
+    }
+
+    #[cfg(feature = "bundled-embeddings")]
+    #[test]
+    fn test_bundled_generator_constructors() {
+        let default_bundled = EmbeddingGenerator::bundled();
+        let specific_bundled = EmbeddingGenerator::bundled_with_model("nomic-embed-text");
+
+        assert_eq!(default_bundled.backend_type(), EmbeddingBackend::Bundled);
+        assert_eq!(specific_bundled.backend_type(), EmbeddingBackend::Bundled);
+        assert!(default_bundled.dimension() > 0);
+        assert!(specific_bundled.dimension() > 0);
+    }
 }

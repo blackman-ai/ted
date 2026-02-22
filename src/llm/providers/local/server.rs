@@ -6,7 +6,7 @@
 //! Manages the lifecycle of a llama-server process for local LLM inference.
 //! The server exposes an OpenAI-compatible API on a local port.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 
@@ -15,6 +15,67 @@ use crate::error::{Result, TedError};
 const DEFAULT_PORT: u16 = 8847;
 const HEALTH_POLL_INTERVAL_MS: u64 = 500;
 const HEALTH_TIMEOUT_SECS: u64 = 120;
+const MAX_ERROR_DETAIL_CHARS: usize = 600;
+
+#[cfg(target_os = "macos")]
+fn ensure_macos_loader_symlinks(binary_path: &Path) -> Result<()> {
+    use std::os::unix::fs::symlink;
+
+    let Some(dir) = binary_path.parent() else {
+        return Ok(());
+    };
+
+    let required = [
+        "libmtmd.0.dylib",
+        "libllama.0.dylib",
+        "libggml.0.dylib",
+        "libggml-cpu.0.dylib",
+        "libggml-blas.0.dylib",
+        "libggml-metal.0.dylib",
+        "libggml-rpc.0.dylib",
+        "libggml-base.0.dylib",
+    ];
+
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| TedError::Config(format!("Failed reading {}: {}", dir.display(), e)))?;
+    let names: Vec<String> = entries
+        .filter_map(std::result::Result::ok)
+        .filter_map(|entry| entry.file_name().to_str().map(|s| s.to_string()))
+        .collect();
+
+    for required_name in required {
+        let required_path = dir.join(required_name);
+        if std::fs::symlink_metadata(&required_path).is_ok() {
+            continue;
+        }
+
+        let prefix = format!("{}.", required_name.trim_end_matches(".dylib"));
+        let candidate = names
+            .iter()
+            .find(|name| name.starts_with(&prefix) && name.ends_with(".dylib"));
+
+        if let Some(candidate) = candidate {
+            symlink(candidate, &required_path).map_err(|e| {
+                TedError::Config(format!(
+                    "Failed creating symlink {} -> {}: {}",
+                    required_name, candidate, e
+                ))
+            })?;
+            tracing::info!(
+                "Created macOS dylib link {} -> {}",
+                required_name,
+                candidate
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn ensure_macos_loader_symlinks(_binary_path: &Path) -> Result<()> {
+    Ok(())
+}
 
 /// Manages a llama-server subprocess
 pub struct LlamaServer {
@@ -51,6 +112,8 @@ impl LlamaServer {
             return Ok(());
         }
 
+        ensure_macos_loader_symlinks(&self.binary_path)?;
+
         let mut cmd = Command::new(&self.binary_path);
 
         cmd.arg("--model")
@@ -68,8 +131,8 @@ impl LlamaServer {
             cmd.arg("--ctx-size").arg(ctx.to_string());
         }
 
-        // Suppress output from the server process
-        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        // Keep stderr piped so we can surface startup failures meaningfully.
+        cmd.stdout(Stdio::null()).stderr(Stdio::piped());
 
         let child = cmd.spawn().map_err(|e| {
             TedError::Config(format!(
@@ -79,7 +142,13 @@ impl LlamaServer {
             ))
         })?;
 
-        *self.process.lock().unwrap() = Some(child);
+        match self.process.lock() {
+            Ok(mut process) => *process = Some(child),
+            Err(poisoned) => {
+                tracing::warn!("Process lock was poisoned, recovering");
+                *poisoned.into_inner() = Some(child);
+            }
+        }
 
         // Wait for server to be ready
         self.wait_for_ready().await?;
@@ -102,9 +171,23 @@ impl LlamaServer {
         for _ in 0..max_attempts {
             // Check if process is still alive
             if !self.is_running() {
-                return Err(TedError::Config(
-                    "llama-server process exited unexpectedly during startup".to_string(),
-                ));
+                let detail = self
+                    .collect_exit_detail()
+                    .unwrap_or_else(|| "no stderr".to_string());
+
+                if is_bind_port_failure(&detail) {
+                    return Err(TedError::Config(format!(
+                        "llama-server could not start because port {} is already in use. \
+                         Stop the process using that port or change the Local Server Port in settings. \
+                         Startup detail: {}",
+                        self.port, detail
+                    )));
+                }
+
+                return Err(TedError::Config(format!(
+                    "llama-server process exited unexpectedly during startup: {}",
+                    detail
+                )));
             }
 
             if let Ok(resp) = client.get(&url).send().await {
@@ -149,12 +232,52 @@ impl LlamaServer {
             }
         }
     }
+
+    /// Collect an explanatory exit detail from a process that has already exited.
+    fn collect_exit_detail(&self) -> Option<String> {
+        let mut guard = self.process.lock().ok()?;
+        let child = guard.take()?;
+
+        match child.wait_with_output() {
+            Ok(output) => {
+                let code = output
+                    .status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "signal".to_string());
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stderr = stderr.trim();
+
+                if stderr.is_empty() {
+                    Some(format!("exit code {}", code))
+                } else {
+                    let detail = truncate_detail(stderr, MAX_ERROR_DETAIL_CHARS);
+                    Some(format!("exit code {} - {}", code, detail))
+                }
+            }
+            Err(err) => Some(format!("failed to read process output: {}", err)),
+        }
+    }
 }
 
 impl Drop for LlamaServer {
     fn drop(&mut self) {
         self.shutdown();
     }
+}
+
+fn truncate_detail(input: &str, max_chars: usize) -> String {
+    if input.chars().count() <= max_chars {
+        return input.to_string();
+    }
+    input.chars().take(max_chars).collect::<String>() + "..."
+}
+
+fn is_bind_port_failure(detail: &str) -> bool {
+    let lower = detail.to_lowercase();
+    lower.contains("couldn't bind http server socket")
+        || lower.contains("address already in use")
+        || lower.contains("eaddrinuse")
 }
 
 #[cfg(test)]
@@ -200,5 +323,56 @@ mod tests {
             None,
         );
         assert!(!server.is_running());
+    }
+
+    #[test]
+    fn test_truncate_detail_short_string_unchanged() {
+        let value = "hello";
+        assert_eq!(truncate_detail(value, 10), "hello");
+    }
+
+    #[test]
+    fn test_truncate_detail_long_string_truncated() {
+        let value = "abcdefghijklmnopqrstuvwxyz";
+        assert_eq!(truncate_detail(value, 5), "abcde...");
+    }
+
+    #[test]
+    fn test_is_bind_port_failure_detects_known_messages() {
+        assert!(is_bind_port_failure(
+            "start: couldn't bind HTTP server socket, hostname: 127.0.0.1, port: 8847"
+        ));
+        assert!(is_bind_port_failure("Address already in use"));
+        assert!(is_bind_port_failure("bind failed: EADDRINUSE"));
+    }
+
+    #[test]
+    fn test_is_bind_port_failure_false_for_other_errors() {
+        assert!(!is_bind_port_failure("failed to load model"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_ensure_macos_loader_symlinks_creates_missing_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("llama-server");
+        std::fs::write(&binary, b"bin").unwrap();
+        std::fs::write(dir.path().join("libmtmd.0.0.7951.dylib"), b"x").unwrap();
+        std::fs::write(dir.path().join("libllama.0.0.7951.dylib"), b"x").unwrap();
+
+        ensure_macos_loader_symlinks(&binary).unwrap();
+
+        assert!(
+            std::fs::symlink_metadata(dir.path().join("libmtmd.0.dylib"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
+            std::fs::symlink_metadata(dir.path().join("libllama.0.dylib"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
     }
 }

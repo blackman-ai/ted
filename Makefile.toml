@@ -61,6 +61,11 @@ description = "Run a specific test (use: cargo make test-specific TEST_NAME)"
 command = "cargo"
 args = ["test", "${@}"]
 
+[tasks.perf-smoke]
+description = "Run latency/compaction smoke checks"
+script_runner = "@shell"
+script = ["./scripts/perf-smoke.sh"]
+
 # ==================== Coverage ====================
 
 [tasks.cov]

@@ -7,14 +7,37 @@ import './ChatPanel.css';
 interface TedEvent {
   type: string;
   timestamp: number;
-  data: any;
+  data: EventData;
 }
 
 interface ChatPanelProps {
-  onSendMessage: (message: string, options?: any) => void;
+  onSendMessage: (message: string, options?: Record<string, unknown>) => void;
   onStop: () => void;
   events: TedEvent[];
   isRunning: boolean;
+  focusRequestToken?: number;
+}
+
+interface EventData {
+  role?: string;
+  content?: string;
+  delta?: boolean;
+  message?: string;
+  path?: string;
+  command?: string;
+  output?: string;
+  isRunning?: boolean;
+  exitCode?: number | null;
+  text?: string;
+  done?: boolean;
+  exit_code?: number | null;
+  summary?: string;
+  success?: boolean;
+  files_changed?: string[];
+  suggested_fix?: string;
+  state?: string;
+  steps?: Array<{ description?: string }>;
+  [key: string]: unknown;
 }
 
 interface ProcessedMessage {
@@ -22,7 +45,7 @@ interface ProcessedMessage {
   type: 'message' | 'plan' | 'status' | 'completion' | 'error' | 'file_create' | 'file_edit' | 'command' | 'command_output';
   role?: string;
   content: string;
-  data?: any;
+  data?: EventData;
 }
 
 /**
@@ -50,9 +73,16 @@ function stripToolCallMarkup(content: string): string {
   return cleaned;
 }
 
-export function ChatPanel({ onSendMessage, onStop, events, isRunning }: ChatPanelProps) {
+export function ChatPanel({
+  onSendMessage,
+  onStop,
+  events,
+  isRunning,
+  focusRequestToken,
+}: ChatPanelProps) {
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Process events to combine streaming deltas into complete messages
   const messages = useMemo(() => {
@@ -67,13 +97,13 @@ export function ChatPanel({ onSendMessage, onStop, events, isRunning }: ChatPane
             if (event.data.delta) {
               // Streaming delta - accumulate into current message
               if (currentAssistantMessage) {
-                currentAssistantMessage.content += event.data.content;
+                currentAssistantMessage.content += event.data.content || '';
               } else {
                 currentAssistantMessage = {
                   id: `msg-${messageIndex++}`,
                   type: 'message',
                   role: 'assistant',
-                  content: event.data.content,
+                  content: event.data.content || '',
                 };
               }
             } else {
@@ -86,7 +116,7 @@ export function ChatPanel({ onSendMessage, onStop, events, isRunning }: ChatPane
                 id: `msg-${messageIndex++}`,
                 type: 'message',
                 role: 'assistant',
-                content: event.data.content,
+                content: event.data.content || '',
               });
             }
           } else {
@@ -99,7 +129,7 @@ export function ChatPanel({ onSendMessage, onStop, events, isRunning }: ChatPane
               id: `msg-${messageIndex++}`,
               type: 'message',
               role: event.data.role,
-              content: event.data.content,
+              content: event.data.content || '',
             });
           }
           break;
@@ -110,7 +140,7 @@ export function ChatPanel({ onSendMessage, onStop, events, isRunning }: ChatPane
           processed.push({
             id: `status-${messageIndex++}`,
             type: 'status',
-            content: event.data.message,
+            content: event.data.message || '',
             data: event.data,
           });
           break;
@@ -136,7 +166,7 @@ export function ChatPanel({ onSendMessage, onStop, events, isRunning }: ChatPane
           processed.push({
             id: `file-${messageIndex++}`,
             type: 'file_create',
-            content: `Created: ${event.data.path}`,
+            content: `Created: ${event.data.path || ''}`,
             data: event.data,
           });
           break;
@@ -149,7 +179,7 @@ export function ChatPanel({ onSendMessage, onStop, events, isRunning }: ChatPane
           processed.push({
             id: `edit-${messageIndex++}`,
             type: 'file_edit',
-            content: `Edited: ${event.data.path}`,
+            content: `Edited: ${event.data.path || ''}`,
             data: event.data,
           });
           break;
@@ -162,8 +192,8 @@ export function ChatPanel({ onSendMessage, onStop, events, isRunning }: ChatPane
           processed.push({
             id: `cmd-${messageIndex++}`,
             type: 'command',
-            content: event.data.command,
-            data: { ...event.data, output: '', exitCode: null, isRunning: true },
+            content: event.data.command || '',
+            data: { ...event.data, output: '', exitCode: null, isRunning: true } as EventData,
           });
           break;
 
@@ -173,15 +203,15 @@ export function ChatPanel({ onSendMessage, onStop, events, isRunning }: ChatPane
           for (let i = processed.length - 1; i >= 0; i--) {
             if (processed[i].type === 'command') {
               processed[i] = {
-                ...processed[i],
-                data: {
-                  ...processed[i].data,
-                  output: (processed[i].data.output || '') + event.data.text,
-                  isRunning: event.data.done ? false : processed[i].data.isRunning,
-                  exitCode: event.data.done ? event.data.exit_code : processed[i].data.exitCode,
-                },
-              };
-              break;
+                  ...processed[i],
+                  data: {
+                    ...processed[i].data,
+                    output: (processed[i].data?.output || '') + (event.data.text || ''),
+                    isRunning: event.data.done ? false : processed[i].data?.isRunning,
+                    exitCode: event.data.done ? event.data.exit_code : processed[i].data?.exitCode,
+                  },
+                };
+                break;
             }
           }
           break;
@@ -194,7 +224,7 @@ export function ChatPanel({ onSendMessage, onStop, events, isRunning }: ChatPane
           processed.push({
             id: `complete-${messageIndex++}`,
             type: 'completion',
-            content: event.data.summary,
+            content: event.data.summary || '',
             data: event.data,
           });
           break;
@@ -207,7 +237,7 @@ export function ChatPanel({ onSendMessage, onStop, events, isRunning }: ChatPane
           processed.push({
             id: `error-${messageIndex++}`,
             type: 'error',
-            content: event.data.message,
+            content: event.data.message || '',
             data: event.data,
           });
           break;
@@ -226,6 +256,19 @@ export function ChatPanel({ onSendMessage, onStop, events, isRunning }: ChatPane
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  useEffect(() => {
+    if (focusRequestToken === undefined || isRunning) {
+      return;
+    }
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+    textarea.focus();
+    const end = textarea.value.length;
+    textarea.setSelectionRange(end, end);
+  }, [focusRequestToken, isRunning]);
+
   const handleSend = () => {
     if (input.trim() && !isRunning) {
       onSendMessage(input.trim());
@@ -233,7 +276,7 @@ export function ChatPanel({ onSendMessage, onStop, events, isRunning }: ChatPane
     }
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -242,7 +285,7 @@ export function ChatPanel({ onSendMessage, onStop, events, isRunning }: ChatPane
 
   const renderMessage = (msg: ProcessedMessage) => {
     switch (msg.type) {
-      case 'message':
+      case 'message': {
         // For assistant messages, strip out tool call markup before displaying
         const displayContent = msg.role === 'assistant'
           ? stripToolCallMarkup(msg.content)
@@ -260,26 +303,29 @@ export function ChatPanel({ onSendMessage, onStop, events, isRunning }: ChatPane
             </div>
           </div>
         );
+      }
 
-      case 'plan':
+      case 'plan': {
+        const steps = msg.data?.steps || [];
         return (
           <div key={msg.id} className="message assistant">
             <div className="message-header">Plan</div>
             <div className="message-content">
               <ul className="plan-list">
-                {msg.data.steps.map((step: any, i: number) => (
-                  <li key={i}>{step.description}</li>
+                {steps.map((step, i) => (
+                  <li key={i}>{step.description || ''}</li>
                 ))}
               </ul>
             </div>
           </div>
         );
+      }
 
       case 'status':
         return (
           <div key={msg.id} className="message status">
             <div className="message-content">
-              <span className="status-indicator">{getStatusIcon(msg.data.state)}</span>
+              <span className="status-indicator">{getStatusIcon(msg.data?.state || '')}</span>
               {msg.content}
             </div>
           </div>
@@ -310,15 +356,15 @@ export function ChatPanel({ onSendMessage, onStop, events, isRunning }: ChatPane
               <div className="command-header">
                 <span className="command-icon">$</span>
                 <code>{msg.content}</code>
-                {msg.data.isRunning && <span className="command-running">Running...</span>}
-                {!msg.data.isRunning && msg.data.exitCode !== null && (
-                  <span className={`command-exit ${msg.data.exitCode === 0 ? 'success' : 'error'}`}>
-                    Exit: {msg.data.exitCode}
+                {msg.data?.isRunning && <span className="command-running">Running...</span>}
+                {!msg.data?.isRunning && msg.data?.exitCode !== null && (
+                  <span className={`command-exit ${msg.data?.exitCode === 0 ? 'success' : 'error'}`}>
+                    Exit: {msg.data?.exitCode}
                   </span>
                 )}
               </div>
-              {msg.data.output && (
-                <pre className="command-output">{msg.data.output}</pre>
+              {msg.data?.output && (
+                <pre className="command-output">{msg.data?.output}</pre>
               )}
             </div>
           </div>
@@ -326,12 +372,12 @@ export function ChatPanel({ onSendMessage, onStop, events, isRunning }: ChatPane
 
       case 'completion':
         return (
-          <div key={msg.id} className={`message completion ${msg.data.success ? 'success' : 'error'}`}>
+          <div key={msg.id} className={`message completion ${msg.data?.success ? 'success' : 'error'}`}>
             <div className="message-content">
-              {msg.data.success ? '✓' : '✗'} {msg.content}
-              {msg.data.files_changed?.length > 0 && (
+              {msg.data?.success ? '✓' : '✗'} {msg.content}
+              {(msg.data?.files_changed?.length || 0) > 0 && (
                 <div className="files-changed">
-                  Files changed: {msg.data.files_changed.join(', ')}
+                  Files changed: {msg.data?.files_changed?.join(', ')}
                 </div>
               )}
             </div>
@@ -344,9 +390,9 @@ export function ChatPanel({ onSendMessage, onStop, events, isRunning }: ChatPane
             <div className="message-header">Error</div>
             <div className="message-content">
               {msg.content}
-              {msg.data.suggested_fix && (
+              {msg.data?.suggested_fix && (
                 <div className="suggested-fix">
-                  Suggestion: {msg.data.suggested_fix}
+                  Suggestion: {msg.data?.suggested_fix}
                 </div>
               )}
             </div>
@@ -385,10 +431,11 @@ export function ChatPanel({ onSendMessage, onStop, events, isRunning }: ChatPane
 
       <div className="input-area">
         <textarea
+          ref={textareaRef}
           className="chat-input"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyPress={handleKeyPress}
+          onKeyDown={handleKeyDown}
           placeholder={isRunning ? "Teddy is working..." : "Ask Teddy to code something..."}
           disabled={isRunning}
           rows={3}

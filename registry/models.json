@@ -77,6 +77,40 @@
       ]
     },
     {
+      "id": "qwen2.5-coder-3b",
+      "name": "Qwen2.5 Coder 3B",
+      "category": "code",
+      "parameters": "3B",
+      "context_size": 32768,
+      "base_model": "Qwen2.5-Coder",
+      "creator": "Qwen",
+      "license": "Apache-2.0",
+      "tags": ["code", "instruct", "balanced", "recommended"],
+      "variants": [
+        {
+          "quantization": "q4_k_m",
+          "url": "https://huggingface.co/Qwen/Qwen2.5-Coder-3B-Instruct-GGUF/resolve/main/qwen2.5-coder-3b-instruct-q4_k_m.gguf",
+          "size_bytes": 2203251328,
+          "sha256": "placeholder_sha256_qwen3b_q4km",
+          "min_vram_gb": 3.0
+        },
+        {
+          "quantization": "q5_k_m",
+          "url": "https://huggingface.co/Qwen/Qwen2.5-Coder-3B-Instruct-GGUF/resolve/main/qwen2.5-coder-3b-instruct-q5_k_m.gguf",
+          "size_bytes": 2544438496,
+          "sha256": "placeholder_sha256_qwen3b_q5km",
+          "min_vram_gb": 4.0
+        },
+        {
+          "quantization": "q8_0",
+          "url": "https://huggingface.co/Qwen/Qwen2.5-Coder-3B-Instruct-GGUF/resolve/main/qwen2.5-coder-3b-instruct-q8_0.gguf",
+          "size_bytes": 3795082496,
+          "sha256": "placeholder_sha256_qwen3b_q8",
+          "min_vram_gb": 5.0
+        }
+      ]
+    },
+    {
       "id": "qwen2.5-coder-1.5b",
       "name": "Qwen2.5 Coder 1.5B",
       "category": "code",
@@ -100,6 +134,40 @@
           "size_bytes": 1894150144,
           "sha256": "placeholder_sha256_qwen15b_q8",
           "min_vram_gb": 3.0
+        }
+      ]
+    },
+    {
+      "id": "qwen3-4b",
+      "name": "Qwen3 4B",
+      "category": "code",
+      "parameters": "4B",
+      "context_size": 40960,
+      "base_model": "Qwen3",
+      "creator": "Qwen",
+      "license": "Apache-2.0",
+      "tags": ["code", "instruct", "agentic"],
+      "variants": [
+        {
+          "quantization": "q4_k_m",
+          "url": "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+          "size_bytes": 2544438496,
+          "sha256": "placeholder_sha256_qwen3_4b_q4km",
+          "min_vram_gb": 4.0
+        },
+        {
+          "quantization": "q5_k_m",
+          "url": "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q5_K_M.gguf",
+          "size_bytes": 2950177888,
+          "sha256": "placeholder_sha256_qwen3_4b_q5km",
+          "min_vram_gb": 5.0
+        },
+        {
+          "quantization": "q8_0",
+          "url": "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q8_0.gguf",
+          "size_bytes": 4330565376,
+          "sha256": "placeholder_sha256_qwen3_4b_q8",
+          "min_vram_gb": 6.0
         }
       ]
     },

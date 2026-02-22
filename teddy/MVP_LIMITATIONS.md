@@ -1,50 +1,39 @@
 # MVP Limitations & Workarounds
 
-This document tracks known limitations in the Teddy MVP and provides practical workarounds.
+This document tracks current, user-visible limitations in Teddy.
 
 ---
 
-## ✅ Embedded Mode Status
+## ✅ Recently Resolved
 
-Ted's `--embedded` mode is implemented and emits JSONL events. Teddy can consume these events for streaming chat, file ops, and status updates.
+- Embedded mode JSONL integration is stable.
+- Memory panel now uses backend APIs (`memoryGetRecent`, `memorySearch`).
+- External file changes trigger editor reload prompts and file-tree refresh.
+- Toolbar actions for Docker/PostgreSQL/Deployment are active.
+- `ted lsp` now supports import/file path completion flows.
+- File tree search now uses backend global file search (not just loaded nodes).
+- Automated parser tests now run via `npm run test:parser`.
 
 ---
 
-## ⚠️ Known Limitations
+## ⚠️ Current Limitations
 
-### Ollama tool-call parsing
-**Issue**: Ollama returns tool calls as raw JSON text rather than structured `tool_use` events.  
-**Impact**: Tool calls can appear as plain assistant text in Teddy.  
+### Local-model tool-call parsing variability
+**Issue**: Some local models still emit tool intent as plain text/JSON-like content rather than structured tool events. Teddy now attempts fallback parsing for common tool-call JSON shapes, but free-form outputs can still fail.  
+**Impact**: Teddy may still show intent in chat without executing file/tool operations when model output is ambiguous.  
 **Workaround**:
-1. Use Anthropic/OpenRouter for fully structured tool events
-2. Add UI-side parsing for Ollama tool-call JSON in Teddy
+1. Prefer providers/models with reliable structured tool-call output.
+2. Use review mode and verify planned edits before apply.
 
-### Conversation Memory panel is stubbed
-**Issue**: The Memory UI uses placeholder data and does not call Ted APIs.  
-**Impact**: No recent memory list or semantic search in Teddy.  
-**Workaround**: Use Ted CLI session history for now.
-
-### External file change UX
-**Issue**: Teddy detects external changes but does not auto-reload the currently open file.  
-**Impact**: Users may need to reselect the file to see updates.  
-**Workaround**: Reopen the file or use the Preview refresh.
-
-### LSP file path completions
-**Issue**: `ted lsp` lacks file path completions.  
-**Impact**: Autocomplete is missing path suggestions in the CLI.  
-**Workaround**: Use manual paths or shell completion.
-
-### Toolbar buttons are disabled
-**Issue**: The top-level Docker/PostgreSQL/Deploy buttons are disabled.  
-**Impact**: Features are accessible in Settings/Preview but not from the toolbar.  
-**Workaround**: Use Settings → Database and Preview → Deploy.
+### Limited automated coverage for Teddy renderer/electron layers
+**Issue**: Teddy now has parser-level automated tests, but broader renderer/component/integration coverage is still missing.  
+**Impact**: UI regressions outside parser behavior can still slip in.  
+**Workaround**: Run manual smoke checks for session flow, file edits, preview, and deploy settings.
 
 ---
 
-## Suggested Fix Order
+## Suggested Next Fix Order
 
-1. Ollama tool-call parsing (unblocks local/offline default)
-2. Memory panel API wiring
-3. Auto-reload or notify on external file edits
-4. Enable toolbar buttons or remove them
-5. LSP file path completions
+1. Robust local-model tool-call fallback parsing/execution strategy
+2. Expand automated Teddy tests beyond parser coverage (runner/hooks/components)
+3. Add renderer integration smoke tests

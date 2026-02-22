@@ -15,7 +15,8 @@
     "build:linux:x64": "npm run build:rust x64 && electron-vite build && electron-builder --linux --x64",
     "preview": "electron-vite preview",
     "lint": "eslint src --ext ts,tsx",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "test:parser": "tsc -p tsconfig.test.json --pretty false && node --test .test-dist/tests/parser.test.js"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",

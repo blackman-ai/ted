@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
-use super::messages::truncate_string;
+use super::messages::{truncate_string, DisplayMessage};
+use super::scroll::ScrollState;
 
 /// Status of a tracked agent
 #[derive(Debug, Clone, PartialEq)]
@@ -113,6 +114,8 @@ impl AgentProgress {
 #[derive(Debug, Clone)]
 pub struct TrackedAgent {
     pub id: Uuid,
+    /// Tool call ID used as key in ProgressTracker
+    pub tool_call_id: String,
     pub name: String,
     pub agent_type: String,
     pub task: String,
@@ -125,13 +128,26 @@ pub struct TrackedAgent {
     pub files_changed: Vec<String>,
     pub error: Option<String>,
     pub summary: Option<String>,
+    /// Agent conversation messages for split-pane display
+    pub messages: Vec<DisplayMessage>,
+    /// Independent scroll state for agent conversation pane
+    pub conversation_scroll: ScrollState,
+    /// Number of conversation entries already synced from ProgressTracker
+    pub conversation_sync_index: usize,
 }
 
 impl TrackedAgent {
     /// Create a new tracked agent
-    pub fn new(id: Uuid, name: String, agent_type: String, task: String) -> Self {
+    pub fn new(
+        id: Uuid,
+        tool_call_id: String,
+        name: String,
+        agent_type: String,
+        task: String,
+    ) -> Self {
         Self {
             id,
+            tool_call_id,
             name,
             agent_type,
             task,
@@ -144,6 +160,9 @@ impl TrackedAgent {
             files_changed: Vec::new(),
             error: None,
             summary: None,
+            messages: Vec::new(),
+            conversation_scroll: ScrollState::new(),
+            conversation_sync_index: 0,
         }
     }
 
@@ -221,8 +240,15 @@ impl AgentTracker {
     }
 
     /// Track a newly spawned agent
-    pub fn track(&mut self, id: Uuid, name: String, agent_type: String, task: String) {
-        let agent = TrackedAgent::new(id, name, agent_type, task);
+    pub fn track(
+        &mut self,
+        id: Uuid,
+        tool_call_id: String,
+        name: String,
+        agent_type: String,
+        task: String,
+    ) {
+        let agent = TrackedAgent::new(id, tool_call_id, name, agent_type, task);
         self.agents.insert(id, agent);
         self.spawn_order.push(id);
     }
@@ -235,6 +261,20 @@ impl AgentTracker {
     /// Get a mutable reference to an agent by ID
     pub fn get_mut(&mut self, id: &Uuid) -> Option<&mut TrackedAgent> {
         self.agents.get_mut(id)
+    }
+
+    /// Find an agent by tool call ID
+    pub fn get_by_tool_call_id(&self, tool_call_id: &str) -> Option<&TrackedAgent> {
+        self.agents
+            .values()
+            .find(|a| a.tool_call_id == tool_call_id)
+    }
+
+    /// Find an agent (mutable) by tool call ID
+    pub fn get_mut_by_tool_call_id(&mut self, tool_call_id: &str) -> Option<&mut TrackedAgent> {
+        self.agents
+            .values_mut()
+            .find(|a| a.tool_call_id == tool_call_id)
     }
 
     /// Update agent status to running
@@ -377,6 +417,11 @@ impl AgentTracker {
         }
     }
 
+    /// Get mutable iterator over all agent values
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut TrackedAgent> {
+        self.agents.values_mut()
+    }
+
     /// Clear all tracked agents
     pub fn clear(&mut self) {
         self.agents.clear();
@@ -436,6 +481,7 @@ mod tests {
         // Track new agent
         tracker.track(
             id,
+            "tc-1".to_string(),
             "test-agent".to_string(),
             "implement".to_string(),
             "Test task".to_string(),
@@ -467,6 +513,7 @@ mod tests {
         for i in 0..5 {
             tracker.track(
                 Uuid::new_v4(),
+                format!("tc-{}", i),
                 format!("agent-{}", i),
                 "explore".to_string(),
                 format!("Task {}", i),
@@ -492,12 +539,14 @@ mod tests {
 
         tracker.track(
             id1,
+            "tc-1".to_string(),
             "agent-1".to_string(),
             "explore".to_string(),
             "Task 1".to_string(),
         );
         tracker.track(
             id2,
+            "tc-2".to_string(),
             "agent-2".to_string(),
             "explore".to_string(),
             "Task 2".to_string(),

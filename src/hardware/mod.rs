@@ -7,9 +7,11 @@
 //! system capabilities and adapting Ted's behavior accordingly.
 
 pub mod detector;
+pub mod thermal;
 pub mod tier;
 pub mod upgrade;
 
 pub use detector::*;
+pub use thermal::*;
 pub use tier::*;
 pub use upgrade::*;

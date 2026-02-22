@@ -111,12 +111,12 @@ impl HardwareTier {
     /// Get recommended models for this tier
     pub fn recommended_models(&self) -> Vec<&'static str> {
         match self {
-            HardwareTier::UltraTiny => vec!["qwen2.5-coder:1.5b"],
-            HardwareTier::Ancient => vec!["qwen2.5-coder:1.5b", "phi-3-mini"],
-            HardwareTier::Tiny => vec!["qwen2.5-coder:1.5b", "phi-3-mini"],
-            HardwareTier::Small => vec!["qwen2.5-coder:3b", "codellama:7b"],
-            HardwareTier::Medium => vec!["qwen2.5-coder:7b", "deepseek-coder:6.7b"],
-            HardwareTier::Large => vec!["qwen2.5-coder:14b", "codellama:34b"],
+            HardwareTier::UltraTiny => vec!["qwen2.5-coder:3b", "qwen2.5-coder:1.5b"],
+            HardwareTier::Ancient => vec!["qwen2.5-coder:1.5b", "qwen2.5-coder:3b"],
+            HardwareTier::Tiny => vec!["qwen2.5-coder:3b", "qwen2.5-coder:1.5b"],
+            HardwareTier::Small => vec!["qwen2.5-coder:3b", "qwen2.5-coder:7b"],
+            HardwareTier::Medium => vec!["qwen2.5-coder:7b", "qwen2.5-coder:14b"],
+            HardwareTier::Large => vec!["qwen2.5-coder:14b", "qwen2.5-coder:32b"],
             HardwareTier::Cloud => vec![
                 "claude-sonnet-4",
                 "gpt-4o",
@@ -353,6 +353,7 @@ mod tests {
     #[test]
     fn test_recommended_models() {
         let models = HardwareTier::UltraTiny.recommended_models();
+        assert!(models.contains(&"qwen2.5-coder:3b"));
         assert!(models.contains(&"qwen2.5-coder:1.5b"));
 
         let models = HardwareTier::Small.recommended_models();
@@ -493,7 +494,7 @@ mod tests {
         let models = HardwareTier::Ancient.recommended_models();
         assert!(!models.is_empty());
         assert!(models.contains(&"qwen2.5-coder:1.5b"));
-        assert!(models.contains(&"phi-3-mini"));
+        assert!(models.contains(&"qwen2.5-coder:3b"));
     }
 
     #[test]
@@ -508,7 +509,7 @@ mod tests {
         let models = HardwareTier::Medium.recommended_models();
         assert!(!models.is_empty());
         assert!(models.contains(&"qwen2.5-coder:7b"));
-        assert!(models.contains(&"deepseek-coder:6.7b"));
+        assert!(models.contains(&"qwen2.5-coder:14b"));
     }
 
     #[test]
@@ -516,7 +517,7 @@ mod tests {
         let models = HardwareTier::Large.recommended_models();
         assert!(!models.is_empty());
         assert!(models.contains(&"qwen2.5-coder:14b"));
-        assert!(models.contains(&"codellama:34b"));
+        assert!(models.contains(&"qwen2.5-coder:32b"));
     }
 
     #[test]

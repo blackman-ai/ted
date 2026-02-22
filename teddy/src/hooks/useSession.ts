@@ -9,14 +9,11 @@ export function useSession(projectPath: string) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
-  // Load sessions for the current project
-  useEffect(() => {
-    if (projectPath) {
-      loadProjectSessions();
+  const loadProjectSessions = useCallback(async () => {
+    if (!projectPath) {
+      return;
     }
-  }, [projectPath]);
 
-  const loadProjectSessions = async () => {
     setIsLoading(true);
     try {
       // Get all sessions for this project from backend
@@ -52,20 +49,38 @@ export function useSession(projectPath: string) {
         setSessions(updated);
       } else if (sessionInfos.length === 0) {
         // No sessions exist, create one
-        await createNewSession();
+        const result = await window.teddy.createSession();
+        const newSession: Session = {
+          id: result.id,
+          name: `Session ${sessionInfos.length + 1}`,
+          lastActive: new Date().toISOString(),
+          messageCount: 0,
+          isActive: true,
+        };
+        setCurrentSession(newSession);
+        setSessions([newSession]);
       } else {
         // Sessions exist but none active, switch to most recent
-        setSessions(sessionInfos);
-        if (sessionInfos.length > 0) {
-          await switchSession(sessionInfos[0].id);
-        }
+        const newestSessionId = sessionInfos[0].id;
+        await window.teddy.switchSession(newestSessionId);
+        const updatedSessions = sessionInfos.map(s => ({
+          ...s,
+          isActive: s.id === newestSessionId,
+        }));
+        setCurrentSession(updatedSessions[0]);
+        setSessions(updatedSessions);
       }
     } catch (err) {
       console.error('Failed to load sessions:', err);
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [projectPath]);
+
+  // Load sessions for the current project
+  useEffect(() => {
+    void loadProjectSessions();
+  }, [loadProjectSessions]);
 
   const createNewSession = useCallback(async () => {
     try {
@@ -151,7 +166,7 @@ export function useSession(projectPath: string) {
 
   const refresh = useCallback(async () => {
     await loadProjectSessions();
-  }, [projectPath]);
+  }, [loadProjectSessions]);
 
   return {
     currentSession,

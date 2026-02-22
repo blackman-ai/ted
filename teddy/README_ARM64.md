@@ -75,14 +75,15 @@ On Raspberry Pi 5 (8GB):
 | UI responsiveness | Smooth |
 | Code editing | Instant |
 | AI responses (1.5B model) | 15-45 seconds |
-| AI responses (3B+ model) | Not recommended |
+| AI responses (3B model) | 25-60 seconds |
+| AI responses (7B model) | 45-120 seconds |
 | Project builds (Vite) | 5-15 seconds |
 | Project builds (Next.js) | 15-30 seconds |
 
 **Recommended AI Models for Pi 5**:
-- qwen2.5-coder:1.5b (best balance)
-- deepseek-coder:1.3b (faster)
-- tinyllama:1.1b (fastest)
+- qwen2.5-coder-3b q4_k_m (best baseline quality/speed)
+- qwen2.5-coder-1.5b q4_k_m (fast fallback)
+- qwen2.5-coder-7b q4_k_m (higher quality, slower)
 
 ## Build System
 
@@ -201,7 +202,7 @@ sudo apt-get install -y fuse libfuse2
 
 **Slow AI responses**
 - Use smaller models (1.5B or less)
-- Ensure Ollama is using CPU: `OLLAMA_NUM_THREAD=4 ollama serve`
+- Ensure no other heavy CPU tasks are running
 - Close background apps to free RAM
 
 ## See Also
@@ -209,8 +210,9 @@ sudo apt-get install -y fuse libfuse2
 - [BUILD_ARM64.md](./BUILD_ARM64.md) - Detailed build instructions
 - [Main README](../README.md) - Ted project overview
 - [ROADMAP](../ROADMAP.md) - Development roadmap
+- [Raspberry Pi prototype runbook](../docs/RASPBERRY_PI_PROTOTYPE.md)
 - [Raspberry Pi OS](https://www.raspberrypi.com/software/) - Official OS
-- [Ollama](https://ollama.com/) - Local AI runtime
+- [llama.cpp](https://github.com/ggml-org/llama.cpp) - Local inference runtime
 
 ## Support
 

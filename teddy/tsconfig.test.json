@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "outDir": ".test-dist",
+    "rootDir": ".",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "noEmitOnError": true
+  },
+  "include": [
+    "electron/ted/parser.ts",
+    "electron/types/protocol.ts",
+    "electron/utils/logger.ts",
+    "tests/**/*.ts"
+  ]
+}

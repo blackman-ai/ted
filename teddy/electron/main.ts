@@ -12,7 +12,14 @@ import { FileApplier } from './operations/file-applier';
 import { AutoCommit } from './git/auto-commit';
 import { TedEvent, ConversationHistoryEvent } from './types/protocol';
 import { storage, ProjectContext } from './storage/config';
-import { loadTedSettings, saveTedSettings, detectHardware } from './settings/ted-settings';
+import {
+  type TedSettings,
+  loadTedSettings,
+  saveTedSettings,
+  detectHardware,
+  ensureLocalModelInstalled,
+  setupRecommendedLocalModel,
+} from './settings/ted-settings';
 import { deployProject, verifyToken, getDeploymentStatus } from './deploy/vercel';
 import { deployNetlifyProject, verifyNetlifyToken, getNetlifyDeploymentStatus } from './deploy/netlify';
 import { detectScaffold, generateScaffoldPrompt } from './scaffolds';
@@ -60,11 +67,35 @@ type FileChangeEventType = import('./file-watcher').FileChangeEvent;
 
 // Debug logging to file for Claude Code integration
 const LOG_FILE = '/tmp/teddy-debug.log';
+const REDACTED = '[REDACTED]';
+
 function log(...args: any[]) {
   const timestamp = new Date().toISOString();
   const message = `[${timestamp}] ${args.map(a => typeof a === 'object' ? JSON.stringify(a, null, 2) : a).join(' ')}\n`;
   appendFileSync(LOG_FILE, message);
   console.log(...args);
+}
+
+function redactSecret(value: unknown): unknown {
+  if (typeof value !== 'string' || value.length === 0) {
+    return value;
+  }
+  return REDACTED;
+}
+
+function sanitizeSettingsForLog(settings: any): any {
+  if (!settings || typeof settings !== 'object') {
+    return settings;
+  }
+
+  return {
+    ...settings,
+    anthropicApiKey: redactSecret(settings.anthropicApiKey),
+    openrouterApiKey: redactSecret(settings.openrouterApiKey),
+    blackmanApiKey: redactSecret(settings.blackmanApiKey),
+    vercelToken: redactSecret(settings.vercelToken),
+    netlifyToken: redactSecret(settings.netlifyToken),
+  };
 }
 
 // Clear log file on startup
@@ -78,11 +109,19 @@ let fileWatcher: FileWatcherType | null = null;
 let currentProjectRoot: string | null = null;
 
 // Review mode - when enabled, file operations are sent to renderer for review instead of auto-applying
-let reviewModeEnabled: boolean = true; // Default to review mode ON
+let reviewModeEnabled: boolean = false; // Default to auto-apply for non-technical users
 
 // Conversation history for multi-turn chats
 interface HistoryMessage {
   role: 'user' | 'assistant';
+  content: string;
+}
+interface ConversationMemoryRecord {
+  id: string;
+  timestamp: string;
+  summary: string;
+  files_changed: string[];
+  tags: string[];
   content: string;
 }
 let conversationHistory: HistoryMessage[] = [];
@@ -94,6 +133,244 @@ let systemPromptFilePath: string | null = null; // Teddy's opinionated system pr
 let filesCreatedThisSession: string[] = [];
 let filesEditedThisSession: string[] = [];
 let conversationTurns: number = 0;
+const MAX_MEMORY_RESULTS = 200;
+const MAX_FILE_SEARCH_RESULTS = 500;
+const FILE_TREE_EXCLUDED_NAMES = new Set(['node_modules', 'target', 'dist', 'build']);
+
+function hasBuildIntent(prompt: string): boolean {
+  const normalized = prompt.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  const conversationalPhrases = new Set([
+    'hi',
+    'hello',
+    'hey',
+    'yo',
+    'sup',
+    'thanks',
+    'thank you',
+    'ok',
+    'okay',
+    'are you there',
+    'you there',
+    'test',
+    'ping',
+    'um what',
+    'what?',
+  ]);
+  if (conversationalPhrases.has(normalized)) {
+    return false;
+  }
+
+  const buildKeywords = [
+    'build',
+    'make',
+    'create',
+    'generate',
+    'scaffold',
+    'start',
+    'setup',
+    'set up',
+    'app',
+    'application',
+    'website',
+    'site',
+    'blog',
+    'landing page',
+    'portfolio',
+    'dashboard',
+    'game',
+    'api',
+    'script',
+    'tool',
+    'project',
+    'page',
+    'fix',
+    'edit',
+    'update',
+    'change',
+    'run',
+    'install',
+  ];
+
+  return buildKeywords.some((keyword) => normalized.includes(keyword));
+}
+
+function summarizeHistory(messages: HistoryMessage[]): string {
+  const assistantReply = messages
+    .filter((m) => m.role === 'assistant')
+    .map((m) => m.content.trim())
+    .find(Boolean);
+  const userPrompt = messages
+    .filter((m) => m.role === 'user')
+    .map((m) => m.content.trim())
+    .find(Boolean);
+
+  const seed = assistantReply || userPrompt || 'Conversation';
+  const singleLine = seed.replace(/\s+/g, ' ').trim();
+  return singleLine.length <= 120 ? singleLine : `${singleLine.slice(0, 117)}...`;
+}
+
+function formatMemoryContent(messages: HistoryMessage[]): string {
+  return messages
+    .slice(-12)
+    .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.trim()}`)
+    .join('\n\n');
+}
+
+function extractFilesFromHistory(messages: HistoryMessage[]): string[] {
+  const fileSet = new Set<string>();
+  const filePattern = /\b(?:\.{0,2}\/)?[A-Za-z0-9._/-]+\.[A-Za-z0-9]{1,8}\b/g;
+
+  for (const message of messages) {
+    for (const match of message.content.matchAll(filePattern)) {
+      const candidate = match[0];
+      if (!candidate.includes('://') && candidate.length < 180) {
+        fileSet.add(candidate);
+      }
+    }
+  }
+
+  return Array.from(fileSet).slice(0, 20);
+}
+
+function extractTags(messages: HistoryMessage[], filesChanged: string[]): string[] {
+  const combined = messages.map((m) => m.content.toLowerCase()).join('\n');
+  const tags = new Set<string>();
+  const tagKeywords: Array<[string, string[]]> = [
+    ['bugfix', ['fix', 'bug', 'error', 'exception']],
+    ['refactor', ['refactor', 'cleanup', 'restructure']],
+    ['tests', ['test', 'coverage', 'assert']],
+    ['docs', ['docs', 'readme', 'documentation']],
+    ['ui', ['ui', 'component', 'css', 'style', 'layout']],
+    ['backend', ['api', 'server', 'database', 'sql']],
+    ['performance', ['perf', 'optimize', 'latency', 'memory']],
+  ];
+
+  for (const [tag, keywords] of tagKeywords) {
+    if (keywords.some((keyword) => combined.includes(keyword))) {
+      tags.add(tag);
+    }
+  }
+
+  if (filesChanged.some((f) => f.endsWith('.rs'))) {
+    tags.add('rust');
+  }
+  if (filesChanged.some((f) => f.endsWith('.ts') || f.endsWith('.tsx'))) {
+    tags.add('typescript');
+  }
+  if (filesChanged.some((f) => f.endsWith('.js') || f.endsWith('.jsx'))) {
+    tags.add('javascript');
+  }
+
+  return Array.from(tags).slice(0, 8);
+}
+
+function scoreMemory(memory: ConversationMemoryRecord, query: string): number {
+  const normalizedQuery = query.toLowerCase().trim();
+  if (!normalizedQuery) {
+    return 0;
+  }
+
+  const queryTerms = normalizedQuery.split(/\s+/).filter(Boolean);
+  const summary = memory.summary.toLowerCase();
+  const content = memory.content.toLowerCase();
+  const tags = memory.tags.map((tag) => tag.toLowerCase());
+  const files = memory.files_changed.map((file) => file.toLowerCase());
+
+  let score = 0;
+  if (summary.includes(normalizedQuery)) score += 25;
+  if (content.includes(normalizedQuery)) score += 12;
+  if (tags.some((tag) => tag.includes(normalizedQuery))) score += 10;
+  if (files.some((file) => file.includes(normalizedQuery))) score += 8;
+
+  for (const term of queryTerms) {
+    if (summary.includes(term)) score += 8;
+    if (content.includes(term)) score += 3;
+    if (tags.some((tag) => tag.includes(term))) score += 4;
+    if (files.some((file) => file.includes(term))) score += 3;
+  }
+
+  return score;
+}
+
+function normalizeRelativePath(value: string): string {
+  return value.replace(/\\/g, '/');
+}
+
+function resolveProjectPath(projectRoot: string, requestedPath: string): string {
+  const normalizedInput = requestedPath.trim().length > 0 ? requestedPath : '.';
+  const resolvedProjectRoot = path.resolve(projectRoot);
+  const resolvedPath = path.resolve(resolvedProjectRoot, normalizedInput);
+
+  if (
+    resolvedPath !== resolvedProjectRoot &&
+    !resolvedPath.startsWith(`${resolvedProjectRoot}${path.sep}`)
+  ) {
+    throw new Error('Path escapes project root');
+  }
+
+  return resolvedPath;
+}
+
+function toProjectRelativePath(projectRoot: string, targetPath: string): string {
+  const resolvedProjectRoot = path.resolve(projectRoot);
+  const relativePath = path.relative(resolvedProjectRoot, targetPath);
+  if (!relativePath || relativePath === '.') {
+    return '.';
+  }
+  return normalizeRelativePath(relativePath);
+}
+
+function shouldSkipTreeEntry(name: string): boolean {
+  return name.startsWith('.') || FILE_TREE_EXCLUDED_NAMES.has(name);
+}
+
+async function loadProjectMemories(limit: number): Promise<ConversationMemoryRecord[]> {
+  if (!currentProjectRoot) {
+    return [];
+  }
+
+  const boundedLimit = Math.max(1, Math.min(limit, MAX_MEMORY_RESULTS));
+  const sessions = await storage.getProjectSessions(currentProjectRoot);
+  const memories: ConversationMemoryRecord[] = [];
+
+  for (const session of sessions) {
+    const history = await storage.loadSessionHistory(session.id);
+    if (!history || history.length === 0) {
+      continue;
+    }
+
+    const filesChanged = extractFilesFromHistory(history);
+    const summary = session.summary?.trim() || summarizeHistory(history);
+    const content = formatMemoryContent(history);
+    memories.push({
+      id: session.id,
+      timestamp: new Date(session.lastActive || session.created || Date.now()).toISOString(),
+      summary,
+      files_changed: filesChanged,
+      tags: extractTags(history, filesChanged),
+      content,
+    });
+  }
+
+  if (memories.length === 0 && conversationHistory.length > 0) {
+    const filesChanged = extractFilesFromHistory(conversationHistory);
+    memories.push({
+      id: currentSessionId || `live-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      summary: summarizeHistory(conversationHistory),
+      files_changed: filesChanged,
+      tags: extractTags(conversationHistory, filesChanged),
+      content: formatMemoryContent(conversationHistory),
+    });
+  }
+
+  memories.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+  return memories.slice(0, boundedLimit);
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -128,6 +405,26 @@ app.whenReady().then(async () => {
   // Initialize storage before creating window
   await storage.init();
   log('[STORAGE] Initialized ~/.teddy storage');
+
+  // Review mode migration:
+  // - Existing installs had review mode default ON.
+  // - For non-technical users, default to auto-apply unless they've explicitly set a preference.
+  try {
+    const config = await storage.getConfig();
+    if (config.reviewModeUserConfigured) {
+      reviewModeEnabled = config.reviewModeEnabled;
+    } else {
+      reviewModeEnabled = false;
+      await storage.updateConfig({
+        reviewModeEnabled: false,
+        reviewModeUserConfigured: false,
+      });
+    }
+    log('[REVIEW_MODE] Initialized:', reviewModeEnabled, 'userConfigured:', config.reviewModeUserConfigured);
+  } catch (err) {
+    log('[REVIEW_MODE] Failed to load from config, using default:', reviewModeEnabled, err);
+  }
+
   createWindow();
 });
 
@@ -420,6 +717,43 @@ ipcMain.handle('session:delete', async (_, sessionId: string) => {
 });
 
 /**
+ * Get recent conversation memories for current project
+ */
+ipcMain.handle('memory:getRecent', async (_, limit?: number) => {
+  try {
+    return await loadProjectMemories(limit ?? 50);
+  } catch (err) {
+    log('[MEMORY:GET_RECENT] Failed:', err);
+    return [];
+  }
+});
+
+/**
+ * Search conversation memories using lexical scoring
+ */
+ipcMain.handle('memory:search', async (_, query: string, limit?: number) => {
+  try {
+    const q = String(query || '').trim();
+    const maxResults = Math.max(1, Math.min(limit ?? 20, MAX_MEMORY_RESULTS));
+    const memories = await loadProjectMemories(MAX_MEMORY_RESULTS);
+
+    if (!q) {
+      return memories.slice(0, maxResults);
+    }
+
+    return memories
+      .map((memory) => ({ memory, score: scoreMemory(memory, q) }))
+      .filter((entry) => entry.score > 0)
+      .sort((a, b) => b.score - a.score || Date.parse(b.memory.timestamp) - Date.parse(a.memory.timestamp))
+      .slice(0, maxResults)
+      .map((entry) => entry.memory);
+  } catch (err) {
+    log('[MEMORY:SEARCH] Failed:', err);
+    return [];
+  }
+});
+
+/**
  * Run Ted with a prompt
  */
 ipcMain.handle('ted:run', async (_, prompt: string, options?: {
@@ -458,29 +792,51 @@ ipcMain.handle('ted:run', async (_, prompt: string, options?: {
   let finalPrompt = prompt;
   let projectHasFiles = false;
   let filesInContext: string[] = [];
+  const buildIntent = hasBuildIntent(prompt);
+  log('[TED:RUN] Build intent detected:', buildIntent);
+  log('[TED:RUN] Tools enabled for turn:', buildIntent);
   const context = await storage.loadProjectContext(currentProjectRoot);
   if (context && context.fileTree.length > 0) {
     projectHasFiles = true;
-    if (conversationHistory.length === 0) {
+    if (conversationHistory.length === 0 && buildIntent) {
       const { prefix, filesIncluded } = buildContextPrefix(context, currentProjectRoot);
       finalPrompt = prefix + prompt;
       filesInContext = filesIncluded;
       log('[TED:RUN] Injected project context into prompt, files included:', filesIncluded.length);
+    } else if (conversationHistory.length === 0) {
+      log('[TED:RUN] Conversation mode in existing project - skipping heavy project context injection');
     }
-  } else if (conversationHistory.length === 0) {
-    // EMPTY PROJECT: Inject comprehensive app-building guidance for Teddy
-    // This is what makes Teddy work like Lovable/Replit - it builds complete apps
-
-    // Try to detect the best scaffold for the user's request
-    const scaffold = detectScaffold(prompt);
-    let scaffoldSection = '';
-
-    if (scaffold) {
-      scaffoldSection = generateScaffoldPrompt(scaffold, prompt);
-      log('[TED:RUN] Detected scaffold:', scaffold.name, 'for request');
+  } else {
+    // If nothing has been built yet, stale assistant chatter tends to derail small local models.
+    // Reset history so empty-project builder guidance is applied consistently.
+    if (
+      conversationHistory.length > 0 &&
+      filesCreatedThisSession.length === 0 &&
+      filesEditedThisSession.length === 0
+    ) {
+      log(
+        '[TED:RUN] Resetting stale history for empty project with no created files:',
+        conversationHistory.length,
+        'messages'
+      );
+      conversationHistory = [];
+      await storage.saveProjectHistory(currentProjectRoot, conversationHistory);
     }
 
-    const emptyProjectPrefix = `[NEW PROJECT - EMPTY DIRECTORY]
+    if (conversationHistory.length === 0 && buildIntent) {
+      // EMPTY PROJECT: Inject comprehensive app-building guidance for Teddy
+      // This is what makes Teddy work like Lovable/Replit - it builds complete apps
+
+      // Try to detect the best scaffold for the user's request
+      const scaffold = detectScaffold(prompt);
+      let scaffoldSection = '';
+
+      if (scaffold) {
+        scaffoldSection = generateScaffoldPrompt(scaffold, prompt);
+        log('[TED:RUN] Detected scaffold:', scaffold.name, 'for request');
+      }
+
+      const emptyProjectPrefix = `[NEW PROJECT - EMPTY DIRECTORY]
 This is a brand new, empty project directory. There are NO existing files.
 
 You are Teddy, an AI app builder. You BUILD complete, working applications - not just give advice.
@@ -516,8 +872,11 @@ Call file_write for each file. Example:
 ${scaffoldSection}
 
 User request: `;
-    finalPrompt = emptyProjectPrefix + prompt;
-    log('[TED:RUN] Injected empty project guidance into prompt');
+      finalPrompt = emptyProjectPrefix + prompt;
+      log('[TED:RUN] Injected empty project guidance into prompt');
+    } else if (conversationHistory.length === 0) {
+      log('[TED:RUN] Conversation mode for non-build request in empty project');
+    }
   }
   log('[TED:RUN] Project has files:', projectHasFiles);
 
@@ -541,17 +900,35 @@ User request: `;
   const userExperienceLevel = tedSettings.experienceLevel || 'beginner';
   const hardwareTier = (tedSettings.hardware?.tier?.toLowerCase() || 'medium') as TeddyPromptOptions['hardwareTier'];
 
+  // Resolve provider/model actually in use for this run.
+  // ChatPanel typically doesn't pass explicit options, so we derive from saved settings.
+  const effectiveProvider = options?.provider || tedSettings.provider || 'anthropic';
+  const effectiveModel = options?.model || (() => {
+    switch (effectiveProvider) {
+      case 'local':
+        return tedSettings.localModel || tedSettings.model;
+      case 'openrouter':
+        return tedSettings.openrouterModel || tedSettings.model;
+      case 'blackman':
+        return tedSettings.blackmanModel || tedSettings.model;
+      case 'anthropic':
+      default:
+        return tedSettings.anthropicModel || tedSettings.model;
+    }
+  })();
+
   // Determine model capability based on model name
   // Small models (1.5b-3b) need more explicit guidance
   // Medium models (7b-14b) can handle standard guidance
   // Large models (32b+, cloud APIs) can handle complex guidance
-  const modelName = (options?.model || '').toLowerCase();
+  const modelName = (effectiveModel || '').toLowerCase();
   let modelCapability: 'small' | 'medium' | 'large' = 'medium';
   if (modelName.includes('1.5b') || modelName.includes('3b') || modelName.includes('phi')) {
     modelCapability = 'small';
   } else if (modelName.includes('70b') || modelName.includes('claude') || modelName.includes('gpt-4')) {
     modelCapability = 'large';
   }
+  log('[TED:RUN] Effective provider/model:', effectiveProvider, effectiveModel || 'default');
   log('[TED:RUN] Model capability detected:', modelCapability, 'for model:', modelName || 'default');
   log('[TED:RUN] Experience level:', userExperienceLevel, 'Hardware tier:', hardwareTier);
 
@@ -560,6 +937,7 @@ User request: `;
     projectHasFiles,
     modelCapability,
     experienceLevel: userExperienceLevel,
+    buildIntent,
   };
 
   // Build session state to pass explicit facts to Ted
@@ -597,8 +975,9 @@ User request: `;
   tedRunner = new TedRunner({
     workingDirectory: currentProjectRoot,
     trust: options?.trust ?? false,
-    provider: options?.provider,
-    model: options?.model,
+    noTools: !buildIntent,
+    provider: effectiveProvider,
+    model: effectiveModel,
     caps: options?.caps,
     historyFile: historyFilePath ?? undefined,
     reviewMode: reviewModeEnabled,  // Pass review mode to Ted - it will emit events but skip file execution
@@ -773,9 +1152,7 @@ ipcMain.handle('file:read', async (_, filePath: string) => {
     throw new Error('No project selected');
   }
 
-  const fs = require('fs/promises');
-  // Handle both absolute and relative paths
-  const fullPath = path.isAbsolute(filePath) ? filePath : path.join(currentProjectRoot, filePath);
+  const fullPath = resolveProjectPath(currentProjectRoot, filePath);
   const content = await fs.readFile(fullPath, 'utf-8');
 
   return { content };
@@ -789,9 +1166,7 @@ ipcMain.handle('file:write', async (_, filePath: string, content: string) => {
     throw new Error('No project selected');
   }
 
-  const fs = require('fs/promises');
-  // Handle both absolute and relative paths
-  const fullPath = path.isAbsolute(filePath) ? filePath : path.join(currentProjectRoot, filePath);
+  const fullPath = resolveProjectPath(currentProjectRoot, filePath);
 
   // Ensure directory exists
   await fs.mkdir(path.dirname(fullPath), { recursive: true });
@@ -810,13 +1185,7 @@ ipcMain.handle('file:delete', async (_, filePath: string) => {
     throw new Error('No project selected');
   }
 
-  // Handle both absolute and relative paths
-  const fullPath = path.isAbsolute(filePath) ? filePath : path.join(currentProjectRoot, filePath);
-
-  // Security check: ensure path is within project root
-  if (!fullPath.startsWith(currentProjectRoot)) {
-    throw new Error('Path escapes project root');
-  }
+  const fullPath = resolveProjectPath(currentProjectRoot, filePath);
 
   await fs.unlink(fullPath);
 
@@ -831,14 +1200,87 @@ ipcMain.handle('file:list', async (_, dirPath: string = '.') => {
     throw new Error('No project selected');
   }
 
-  const fullPath = path.join(currentProjectRoot, dirPath);
+  const fullPath = resolveProjectPath(currentProjectRoot, dirPath);
+  const baseRelativePath = toProjectRelativePath(currentProjectRoot, fullPath);
   const entries = await fs.readdir(fullPath, { withFileTypes: true });
 
-  return entries.map((entry: any) => ({
-    name: entry.name,
-    isDirectory: entry.isDirectory(),
-    path: path.join(dirPath, entry.name),
-  }));
+  return entries.map((entry) => {
+    const relativePath =
+      baseRelativePath === '.'
+        ? entry.name
+        : normalizeRelativePath(path.join(baseRelativePath, entry.name));
+    return {
+      name: entry.name,
+      isDirectory: entry.isDirectory(),
+      path: relativePath,
+    };
+  });
+});
+
+/**
+ * Search project files globally (not limited to loaded tree nodes)
+ */
+ipcMain.handle('file:search', async (_, query: string, limit: number = 200) => {
+  if (!currentProjectRoot) {
+    throw new Error('No project selected');
+  }
+
+  const normalizedQuery = query.trim().toLowerCase();
+  if (normalizedQuery.length === 0) {
+    return [];
+  }
+
+  const boundedLimit = Math.max(1, Math.min(limit, MAX_FILE_SEARCH_RESULTS));
+  const results: Array<{ name: string; isDirectory: boolean; path: string }> = [];
+  const queue: string[] = ['.'];
+
+  while (queue.length > 0 && results.length < boundedLimit) {
+    const relativeDir = queue.shift() ?? '.';
+    const fullDir = resolveProjectPath(currentProjectRoot, relativeDir);
+
+    const entries = await fs.readdir(fullDir, { withFileTypes: true }).catch(() => null);
+    if (!entries) {
+      continue;
+    }
+
+    entries.sort((a, b) => {
+      if (a.isDirectory() && !b.isDirectory()) return -1;
+      if (!a.isDirectory() && b.isDirectory()) return 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    for (const entry of entries) {
+      if (shouldSkipTreeEntry(entry.name)) {
+        continue;
+      }
+
+      const relativePath =
+        relativeDir === '.'
+          ? entry.name
+          : normalizeRelativePath(path.join(relativeDir, entry.name));
+      const normalizedPath = relativePath.toLowerCase();
+
+      if (
+        entry.name.toLowerCase().includes(normalizedQuery) ||
+        normalizedPath.includes(normalizedQuery)
+      ) {
+        results.push({
+          name: entry.name,
+          isDirectory: entry.isDirectory(),
+          path: relativePath,
+        });
+        if (results.length >= boundedLimit) {
+          break;
+        }
+      }
+
+      if (entry.isDirectory()) {
+        queue.push(relativePath);
+      }
+    }
+  }
+
+  return results;
 });
 
 /**
@@ -869,6 +1311,14 @@ function cleanupTed() {
  */
 ipcMain.handle('review:set', async (_, enabled: boolean) => {
   reviewModeEnabled = enabled;
+  try {
+    await storage.updateConfig({
+      reviewModeEnabled: enabled,
+      reviewModeUserConfigured: true,
+    });
+  } catch (err) {
+    log('[REVIEW_MODE] Failed to persist setting:', err);
+  }
   log('[REVIEW_MODE] Set to:', enabled);
   return { success: true };
 });
@@ -1011,9 +1461,48 @@ ipcMain.handle('settings:get', async () => {
  * Save Ted settings
  */
 ipcMain.handle('settings:save', async (_, settings) => {
-  log('[SETTINGS:SAVE]', settings);
+  log('[SETTINGS:SAVE]', sanitizeSettingsForLog(settings));
   try {
-    await saveTedSettings(settings);
+    const requestedSettings = settings as TedSettings;
+    const normalizedProvider =
+      requestedSettings.provider === 'ollama' ? 'local' : requestedSettings.provider;
+    const hasCustomLocalBaseUrl = Boolean(requestedSettings.localBaseUrl?.trim());
+    const shouldEnsureManagedLocalModel =
+      normalizedProvider === 'local' && !hasCustomLocalBaseUrl;
+
+    if (shouldEnsureManagedLocalModel) {
+      const installResult = await ensureLocalModelInstalled(
+        requestedSettings.localModel,
+        requestedSettings.hardware || null
+      );
+
+      if (!installResult.success || !installResult.model || !installResult.modelPath) {
+        return {
+          success: false,
+          error: installResult.error || 'Failed to install selected local model',
+        };
+      }
+
+      const updatedSettings: TedSettings = {
+        ...requestedSettings,
+        model: installResult.model,
+        localModel: installResult.model,
+        localBaseUrl: '',
+        localModelPath: installResult.modelPath,
+      };
+      await saveTedSettings(updatedSettings);
+      return {
+        success: true,
+        downloaded: installResult.downloaded,
+        model: installResult.model,
+        modelPath: installResult.modelPath,
+        message: installResult.downloaded
+          ? `Downloaded ${installResult.model}.`
+          : `${installResult.model} already installed.`,
+      };
+    }
+
+    await saveTedSettings(requestedSettings);
     return { success: true };
   } catch (err) {
     log('[SETTINGS:SAVE] Failed:', err);
@@ -1032,6 +1521,23 @@ ipcMain.handle('settings:detectHardware', async () => {
   } catch (err) {
     log('[SETTINGS:DETECT_HARDWARE] Failed:', err);
     throw err;
+  }
+});
+
+/**
+ * One-click local model setup (download + configure)
+ */
+ipcMain.handle('settings:setupRecommendedLocalModel', async () => {
+  log('[SETTINGS:SETUP_LOCAL_MODEL]');
+  try {
+    const result = await setupRecommendedLocalModel();
+    if (!result.success) {
+      log('[SETTINGS:SETUP_LOCAL_MODEL] Failed:', result.error);
+    }
+    return result;
+  } catch (err) {
+    log('[SETTINGS:SETUP_LOCAL_MODEL] Failed:', err);
+    return { success: false, error: String(err) };
   }
 });
 

@@ -9,8 +9,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::error::Result;
-use crate::hardware::{HardwareTier, SystemProfile};
+use crate::hardware::HardwareTier;
+
+mod io;
+mod migration;
+pub mod schema;
+mod validation;
 
 /// Main settings structure, stored in ~/.ted/settings.json
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -107,6 +111,11 @@ pub struct LocalLlmConfig {
     #[serde(default = "default_local_port")]
     pub port: u16,
 
+    /// Optional base URL for an existing OpenAI-compatible local server.
+    /// When set, Ted will use this endpoint instead of launching llama-server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+
     /// GPU layers to offload (None = auto-detect)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_layers: Option<i32>,
@@ -179,6 +188,7 @@ impl Default for LocalLlmConfig {
     fn default() -> Self {
         Self {
             port: default_local_port(),
+            base_url: None,
             gpu_layers: None,
             ctx_size: None,
             default_model: default_local_model(),
@@ -665,279 +675,6 @@ impl Default for AppearanceConfig {
     }
 }
 
-impl Settings {
-    /// Get the default settings file path
-    pub fn default_path() -> PathBuf {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".ted")
-            .join("settings.json")
-    }
-
-    /// Load settings from the default path
-    pub fn load() -> Result<Self> {
-        Self::load_from(&Self::default_path())
-    }
-
-    /// Load settings from a specific path
-    pub fn load_from(path: &PathBuf) -> Result<Self> {
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-
-        let content = std::fs::read_to_string(path)?;
-        let settings: Settings = serde_json::from_str(&content)?;
-        Ok(settings)
-    }
-
-    /// Save settings to the default path
-    pub fn save(&self) -> Result<()> {
-        self.save_to(&Self::default_path())
-    }
-
-    /// Save settings to a specific path, merging with existing file content
-    /// to preserve unknown keys from other code versions or hand edits.
-    pub fn save_to(&self, path: &PathBuf) -> Result<()> {
-        // Ensure parent directory exists
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        // Serialize current struct to Value
-        let new_value = serde_json::to_value(self)?;
-
-        // If an existing file exists, load it and deep-merge
-        let merged = if path.exists() {
-            let existing_content = std::fs::read_to_string(path)?;
-            match serde_json::from_str::<serde_json::Value>(&existing_content) {
-                Ok(existing_value) => Self::deep_merge(existing_value, new_value),
-                Err(_) => new_value, // Corrupt file, overwrite entirely
-            }
-        } else {
-            new_value
-        };
-
-        let content = serde_json::to_string_pretty(&merged)?;
-        std::fs::write(path, content)?;
-        Ok(())
-    }
-
-    /// Save settings to the default path, fully overwriting (no merge).
-    /// Used for explicit resets.
-    pub fn save_clean(&self) -> Result<()> {
-        self.save_to_clean(&Self::default_path())
-    }
-
-    /// Save settings to a specific path, fully overwriting (no merge).
-    pub fn save_to_clean(&self, path: &PathBuf) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, content)?;
-        Ok(())
-    }
-
-    /// Deep-merge two JSON Values. `base` is the existing file content,
-    /// `overlay` is the new serialized struct. Overlay values take priority.
-    /// For objects, keys are merged recursively. For all other types,
-    /// overlay replaces base entirely.
-    fn deep_merge(base: serde_json::Value, overlay: serde_json::Value) -> serde_json::Value {
-        use serde_json::Value;
-        match (base, overlay) {
-            (Value::Object(mut base_map), Value::Object(overlay_map)) => {
-                for (key, overlay_val) in overlay_map {
-                    let merged = if let Some(base_val) = base_map.remove(&key) {
-                        Self::deep_merge(base_val, overlay_val)
-                    } else {
-                        overlay_val
-                    };
-                    base_map.insert(key, merged);
-                }
-                Value::Object(base_map)
-            }
-            (_base, overlay) => overlay,
-        }
-    }
-
-    /// Get the API key for Anthropic, checking env var first
-    pub fn get_anthropic_api_key(&self) -> Option<String> {
-        // Priority: env var > config file
-        std::env::var(&self.providers.anthropic.api_key_env)
-            .ok()
-            .or_else(|| self.providers.anthropic.api_key.clone())
-    }
-
-    /// Get the API key for OpenRouter, checking env var first
-    pub fn get_openrouter_api_key(&self) -> Option<String> {
-        // Priority: env var > config file
-        std::env::var(&self.providers.openrouter.api_key_env)
-            .ok()
-            .or_else(|| self.providers.openrouter.api_key.clone())
-    }
-
-    /// Get the API key for Blackman AI, checking env var first
-    pub fn get_blackman_api_key(&self) -> Option<String> {
-        // Priority: env var > config file
-        std::env::var(&self.providers.blackman.api_key_env)
-            .ok()
-            .or_else(|| self.providers.blackman.api_key.clone())
-    }
-
-    /// Check if the given provider has a usable configuration.
-    /// Local provider is always considered configured.
-    /// API-based providers need an API key.
-    pub fn is_provider_configured(&self, provider: &str) -> bool {
-        match provider {
-            "local" => true,
-            "anthropic" => self.get_anthropic_api_key().is_some(),
-            "openrouter" => self.get_openrouter_api_key().is_some(),
-            "blackman" => self.get_blackman_api_key().is_some(),
-            _ => false,
-        }
-    }
-
-    /// Get the Blackman base URL, checking env var first
-    pub fn get_blackman_base_url(&self) -> String {
-        // Priority: env var > config file
-        std::env::var("BLACKMAN_BASE_URL")
-            .ok()
-            .unwrap_or_else(|| self.providers.blackman.base_url.clone())
-    }
-
-    /// Get the ted home directory (~/.ted)
-    pub fn ted_home() -> PathBuf {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".ted")
-    }
-
-    /// Get the caps directory
-    pub fn caps_dir() -> PathBuf {
-        Self::ted_home().join("caps")
-    }
-
-    /// Get the commands directory
-    pub fn commands_dir() -> PathBuf {
-        Self::ted_home().join("commands")
-    }
-
-    /// Get the history directory
-    pub fn history_dir() -> PathBuf {
-        Self::ted_home().join("history")
-    }
-
-    /// Get the context storage directory
-    pub fn context_path() -> PathBuf {
-        Self::ted_home().join("context")
-    }
-
-    /// Get the plans directory
-    pub fn plans_dir() -> PathBuf {
-        Self::ted_home().join("plans")
-    }
-
-    /// Ensure all required directories exist
-    pub fn ensure_directories() -> Result<()> {
-        let dirs = [
-            Self::ted_home(),
-            Self::caps_dir(),
-            Self::commands_dir(),
-            Self::context_path(),
-            Self::plans_dir(),
-            Self::default_path().parent().unwrap().to_path_buf(),
-        ];
-
-        for dir in dirs {
-            if !dir.exists() {
-                std::fs::create_dir_all(&dir)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Detect hardware and update configuration
-    pub fn detect_hardware(&mut self) -> Result<()> {
-        let profile = SystemProfile::detect()?;
-        let now = chrono::Utc::now().to_rfc3339();
-
-        self.hardware = Some(HardwareConfig {
-            tier: profile.tier,
-            tier_override: None,
-            adaptive_mode: true,
-            last_detection: Some(now),
-        });
-
-        Ok(())
-    }
-
-    /// Get the effective hardware tier (considering overrides)
-    pub fn effective_tier(&self) -> HardwareTier {
-        if let Some(ref hw) = self.hardware {
-            hw.tier_override.unwrap_or(hw.tier)
-        } else {
-            // Default to Medium if not detected
-            HardwareTier::Medium
-        }
-    }
-
-    /// Apply hardware-adaptive configuration to context settings
-    pub fn apply_hardware_adaptive_config(&mut self) {
-        let tier = self.effective_tier();
-
-        // Only apply if adaptive mode is enabled
-        if let Some(ref hw) = self.hardware {
-            if !hw.adaptive_mode {
-                return;
-            }
-        }
-
-        // Update context config based on tier
-        self.context.max_warm_chunks = tier.max_warm_chunks();
-
-        // Update defaults based on tier
-        self.defaults.max_tokens = tier.max_context_tokens() as u32;
-
-        // For ancient/tiny tiers, prefer local models
-        if matches!(
-            tier,
-            HardwareTier::UltraTiny | HardwareTier::Ancient | HardwareTier::Tiny
-        ) {
-            self.defaults.provider = "local".to_string();
-            let models = tier.recommended_models();
-            if !models.is_empty() {
-                self.providers.local.default_model = models[0].to_string();
-            }
-        }
-    }
-
-    /// Get hardware-specific warnings or recommendations
-    pub fn get_hardware_warnings(&self) -> Vec<String> {
-        let mut warnings = Vec::new();
-
-        if let Some(ref hw) = self.hardware {
-            let tier = hw.tier_override.unwrap_or(hw.tier);
-
-            match tier {
-                HardwareTier::UltraTiny => {
-                    warnings.push(
-                        "🎓 Raspberry Pi detected (Education Mode). Expected AI response: 20-40 seconds.".to_string()
-                    );
-                }
-                HardwareTier::Ancient => {
-                    warnings.push(
-                        "🐢 Ancient hardware detected. Expected response time: 30-60 seconds. Consider upgrading RAM or SSD for better performance.".to_string()
-                    );
-                }
-                _ => {}
-            }
-        }
-
-        warnings
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1282,6 +1019,7 @@ mod tests {
         let config = LocalLlmConfig::default();
         assert_eq!(config.port, 8847);
         assert_eq!(config.default_model, "local");
+        assert!(config.base_url.is_none());
         assert!(config.gpu_layers.is_none());
         assert!(config.ctx_size.is_none());
     }
@@ -1290,6 +1028,7 @@ mod tests {
     fn test_local_llm_config_serialization() {
         let config = LocalLlmConfig {
             port: 9999,
+            base_url: Some("http://127.0.0.1:1234".to_string()),
             gpu_layers: Some(32),
             ctx_size: Some(8192),
             default_model: "qwen2.5-coder".to_string(),
@@ -1300,6 +1039,7 @@ mod tests {
         let parsed: LocalLlmConfig = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed.port, 9999);
+        assert_eq!(parsed.base_url.as_deref(), Some("http://127.0.0.1:1234"));
         assert_eq!(parsed.gpu_layers, Some(32));
         assert_eq!(parsed.ctx_size, Some(8192));
     }
@@ -1595,7 +1335,7 @@ mod tests {
         settings.apply_hardware_adaptive_config();
 
         // Should not change when hardware is None (effective_tier returns Medium)
-        // Medium tier doesn't force ollama
+        // Medium tier doesn't force local provider selection
         assert_eq!(settings.defaults.provider, original_provider);
     }
 
@@ -1664,7 +1404,7 @@ mod tests {
         // Large tier should update context and tokens
         assert!(settings.context.max_warm_chunks > 0);
         assert!(settings.defaults.max_tokens > 0);
-        // Large tier doesn't force ollama
+        // Large tier doesn't force local provider selection
         assert_eq!(settings.defaults.provider, "anthropic");
     }
 
@@ -1785,7 +1525,7 @@ mod tests {
             "f": true
         });
 
-        let merged = Settings::deep_merge(base, overlay);
+        let merged = migration::deep_merge(base, overlay);
 
         assert_eq!(merged["a"], 1); // from base only
         assert_eq!(merged["b"]["c"], 99); // overlay wins
@@ -1897,9 +1637,23 @@ mod tests {
     // ===== is_provider_configured tests =====
 
     #[test]
-    fn test_is_provider_configured_local() {
-        let settings = Settings::default();
+    fn test_is_provider_configured_local_with_model() {
+        let mut settings = Settings::default();
+        // Point to a file that exists — use Cargo.toml as a stand-in
+        settings.providers.local.model_path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
         assert!(settings.is_provider_configured("local"));
+    }
+
+    #[test]
+    fn test_is_provider_configured_local_no_model() {
+        let mut settings = Settings::default();
+        // Point to a file that doesn't exist and no system models
+        settings.providers.local.model_path =
+            std::path::PathBuf::from("/nonexistent/path/model.gguf");
+        // Result depends on whether the test machine has GGUF files installed;
+        // we just verify it doesn't panic
+        let _ = settings.is_provider_configured("local");
     }
 
     #[test]

@@ -257,12 +257,14 @@ mod tests {
         let mut tracker = AgentTracker::new();
         tracker.track(
             Uuid::new_v4(),
+            "tc-test".to_string(),
             "agent-1".to_string(),
             "explore".to_string(),
             "Task 1".to_string(),
         );
         tracker.track(
             Uuid::new_v4(),
+            "tc-test".to_string(),
             "agent-2".to_string(),
             "implement".to_string(),
             "Task 2".to_string(),
@@ -307,6 +309,7 @@ mod tests {
         let mut tracker = AgentTracker::new();
         tracker.track(
             Uuid::new_v4(),
+            "tc-test".to_string(),
             "agent-1".to_string(),
             "explore".to_string(),
             "Task".to_string(),
@@ -323,6 +326,7 @@ mod tests {
         for i in 0..20 {
             tracker.track(
                 Uuid::new_v4(),
+                "tc-test".to_string(),
                 format!("agent-{}", i),
                 "explore".to_string(),
                 format!("Task {}", i),
@@ -356,6 +360,7 @@ mod tests {
         let id = Uuid::new_v4();
         tracker.track(
             id,
+            id.to_string(),
             "research-agent".to_string(),
             "explore".to_string(),
             "Find API endpoints".to_string(),
@@ -379,6 +384,7 @@ mod tests {
         let id1 = Uuid::new_v4();
         tracker.track(
             id1,
+            id1.to_string(),
             "agent-1".to_string(),
             "explore".to_string(),
             "Task 1".to_string(),
@@ -389,6 +395,7 @@ mod tests {
         let id2 = Uuid::new_v4();
         tracker.track(
             id2,
+            id2.to_string(),
             "agent-2".to_string(),
             "implement".to_string(),
             "Task 2".to_string(),
@@ -410,6 +417,7 @@ mod tests {
         let mut tracker = AgentTracker::new();
         tracker.track(
             Uuid::new_v4(),
+            "tc-test".to_string(),
             "agent".to_string(),
             "explore".to_string(),
             "Task".to_string(),
@@ -432,6 +440,7 @@ mod tests {
         for i in 0..3 {
             tracker.track(
                 Uuid::new_v4(),
+                "tc-test".to_string(),
                 format!("agent-{}", i),
                 "explore".to_string(),
                 format!("Task {}", i),
@@ -456,6 +465,7 @@ mod tests {
         let id1 = Uuid::new_v4();
         tracker.track(
             id1,
+            id1.to_string(),
             "pending-agent".to_string(),
             "explore".to_string(),
             "Task 1".to_string(),
@@ -465,6 +475,7 @@ mod tests {
         let id2 = Uuid::new_v4();
         tracker.track(
             id2,
+            id2.to_string(),
             "running-agent".to_string(),
             "explore".to_string(),
             "Task 2".to_string(),
@@ -475,6 +486,7 @@ mod tests {
         let id3 = Uuid::new_v4();
         tracker.track(
             id3,
+            id3.to_string(),
             "rate-limited".to_string(),
             "explore".to_string(),
             "Task 3".to_string(),
@@ -485,6 +497,7 @@ mod tests {
         let id4 = Uuid::new_v4();
         tracker.track(
             id4,
+            id4.to_string(),
             "completed-agent".to_string(),
             "explore".to_string(),
             "Task 4".to_string(),
@@ -495,6 +508,7 @@ mod tests {
         let id5 = Uuid::new_v4();
         tracker.track(
             id5,
+            id5.to_string(),
             "failed-agent".to_string(),
             "explore".to_string(),
             "Task 5".to_string(),
@@ -505,6 +519,7 @@ mod tests {
         let id6 = Uuid::new_v4();
         tracker.track(
             id6,
+            id6.to_string(),
             "cancelled-agent".to_string(),
             "explore".to_string(),
             "Task 6".to_string(),
@@ -528,6 +543,7 @@ mod tests {
         for i in 0..5 {
             tracker.track(
                 Uuid::new_v4(),
+                "tc-test".to_string(),
                 format!("very-long-agent-name-{}", i),
                 "explore".to_string(),
                 format!("Task {}", i),
@@ -550,6 +566,7 @@ mod tests {
         let mut tracker = AgentTracker::new();
         tracker.track(
             Uuid::new_v4(),
+            "tc-test".to_string(),
             "agent".to_string(),
             "explore".to_string(),
             "Task".to_string(),
@@ -573,6 +590,7 @@ mod tests {
         let id = Uuid::new_v4();
         tracker.track(
             id,
+            id.to_string(),
             "agent".to_string(),
             "explore".to_string(),
             "Task".to_string(),

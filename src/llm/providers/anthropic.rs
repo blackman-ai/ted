@@ -11,6 +11,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 
+use super::common;
 use crate::error::{ApiError, Result, TedError};
 use crate::llm::message::{ContentBlock, Message, MessageContent, Role, ToolResultContent};
 use crate::llm::provider::{
@@ -158,34 +159,6 @@ impl AnthropicProvider {
         }
     }
 
-    /// Extract Retry-After header value from HTTP response headers
-    ///
-    /// The Retry-After header can be either:
-    /// - A number of seconds (e.g., "30")
-    /// - An HTTP date (e.g., "Wed, 21 Oct 2015 07:28:00 GMT")
-    ///
-    /// We only parse the numeric form for simplicity.
-    fn extract_retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
-        headers
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<u64>().ok())
-    }
-
-    /// Parse token counts from an error message like "prompt is too long: 215300 tokens > 200000 maximum"
-    fn parse_token_counts(message: &str) -> (u32, u32) {
-        let numbers: Vec<u32> = message
-            .split(|c: char| !c.is_ascii_digit())
-            .filter_map(|s| s.parse().ok())
-            .collect();
-
-        match numbers.as_slice() {
-            [current, limit, ..] => (*current, *limit),
-            [single] => (*single, 0),
-            _ => (0, 0),
-        }
-    }
-
     /// Parse an error response
     ///
     /// # Arguments
@@ -210,23 +183,22 @@ impl AnthropicProvider {
                     {
                         // Try to parse numbers from the message
                         // Format: "prompt is too long: 215300 tokens > 200000 maximum"
-                        let (current, limit) = Self::parse_token_counts(msg);
+                        let (current, limit) = common::parse_numeric_token_counts(msg);
                         TedError::Api(ApiError::ContextTooLong { current, limit })
                     } else {
                         TedError::Api(ApiError::InvalidResponse(error_response.error.message))
                     }
                 }
-                _ => TedError::Api(ApiError::ServerError {
-                    status,
-                    message: error_response.error.message,
-                }),
+                _ => common::server_error(status, error_response.error.message),
             }
         } else {
-            TedError::Api(ApiError::ServerError {
-                status,
-                message: body.to_string(),
-            })
+            common::server_error(status, body.to_string())
         }
+    }
+
+    #[cfg(test)]
+    fn extract_retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+        common::parse_retry_after_seconds(headers)
     }
 }
 
@@ -292,7 +264,7 @@ impl LlmProvider for AnthropicProvider {
 
         if !response.status().is_success() {
             // Extract Retry-After header before consuming response body
-            let retry_after = Self::extract_retry_after(response.headers());
+            let retry_after = common::parse_retry_after_seconds(response.headers());
             let body = response.text().await.unwrap_or_default();
             return Err(self.parse_error(status, &body, retry_after));
         }
@@ -362,7 +334,7 @@ impl LlmProvider for AnthropicProvider {
 
         if !response.status().is_success() {
             // Extract Retry-After header before consuming response body
-            let retry_after = Self::extract_retry_after(response.headers());
+            let retry_after = common::parse_retry_after_seconds(response.headers());
             let body = response.text().await.unwrap_or_default();
             return Err(self.parse_error(status, &body, retry_after));
         }

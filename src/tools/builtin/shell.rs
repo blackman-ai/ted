@@ -6,8 +6,10 @@
 //! Executes shell commands with timeout and safety checks.
 
 use async_trait::async_trait;
+use regex::Regex;
 use serde_json::Value;
 use std::collections::HashSet;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
@@ -40,6 +42,13 @@ impl ShellTool {
         blocked_patterns.insert(":(){:|:&};:".to_string()); // Fork bomb
         blocked_patterns.insert("> /dev/sda".to_string());
         blocked_patterns.insert("dd if=/dev/zero of=/dev".to_string());
+        blocked_patterns.insert("sudo ".to_string());
+        blocked_patterns.insert("shutdown".to_string());
+        blocked_patterns.insert("reboot".to_string());
+        blocked_patterns.insert("poweroff".to_string());
+        blocked_patterns.insert("halt".to_string());
+        blocked_patterns.insert("init 0".to_string());
+        blocked_patterns.insert("init 6".to_string());
 
         Self {
             blocked_patterns,
@@ -51,6 +60,189 @@ impl ShellTool {
     fn is_blocked(&self, command: &str) -> bool {
         let lower = command.to_lowercase();
         self.blocked_patterns.iter().any(|p| lower.contains(p))
+            || Self::is_dangerous_rm_root(&lower)
+    }
+
+    fn is_dangerous_rm_root(command: &str) -> bool {
+        let tokens: Vec<&str> = command.split_whitespace().collect();
+        let mut i = 0;
+
+        while i < tokens.len() {
+            let current = tokens[i];
+            if current != "rm" {
+                i += 1;
+                continue;
+            }
+
+            let mut recursive = false;
+            let mut root_target = false;
+            let mut j = i + 1;
+
+            while j < tokens.len() {
+                let token = tokens[j].trim_matches(|ch: char| {
+                    ch == '"' || ch == '\'' || ch == '`' || ch == ';' || ch == '|' || ch == '&'
+                });
+
+                if token.is_empty() {
+                    j += 1;
+                    continue;
+                }
+
+                if let Some(stripped) = token.strip_prefix('-') {
+                    let is_short_option = !token.starts_with("--");
+                    if token == "--recursive"
+                        || token == "-r"
+                        || token == "-R"
+                        || (is_short_option && stripped.contains('r'))
+                    {
+                        recursive = true;
+                    }
+                    j += 1;
+                    continue;
+                }
+
+                if token == "/" || token == "/*" {
+                    root_target = true;
+                }
+
+                j += 1;
+            }
+
+            if recursive && root_target {
+                return true;
+            }
+
+            i = j;
+        }
+
+        false
+    }
+
+    /// Check if a command likely mutates files or system state.
+    fn is_mutating_command(command: &str) -> bool {
+        let lower = command.to_lowercase();
+        if lower.contains("find ") && lower.contains("-delete") {
+            return true;
+        }
+        if lower.contains("find ") && lower.contains("-exec") && lower.contains("rm") {
+            return true;
+        }
+        if lower.contains("xargs") && lower.contains("rm ") {
+            return true;
+        }
+
+        let mutating_indicators = [
+            "rm ",
+            "mv ",
+            "cp ",
+            "mkdir ",
+            "rmdir ",
+            "touch ",
+            "truncate ",
+            "chmod ",
+            "chown ",
+            "dd ",
+            "install ",
+            "git clean",
+            "git reset --hard",
+            "sed -i",
+            "perl -i",
+            "tee ",
+            ">>",
+            " >",
+            "1>",
+            "2>",
+        ];
+
+        mutating_indicators
+            .iter()
+            .any(|indicator| lower.contains(indicator))
+    }
+
+    /// Expand a shell path token to an absolute path when possible.
+    fn expand_path_token(token: &str) -> Option<PathBuf> {
+        if token == "~" || token.starts_with("~/") {
+            let home = std::env::var_os("HOME")?;
+            let mut path = PathBuf::from(home);
+            if token.len() > 2 {
+                path.push(token.trim_start_matches("~/"));
+            }
+            return Some(path);
+        }
+
+        if token.starts_with('/') {
+            return Some(PathBuf::from(token));
+        }
+
+        None
+    }
+
+    fn is_allowed_external_path(path: &Path) -> bool {
+        path == Path::new("/dev/null") || path.starts_with("/tmp") || path.starts_with("/var/tmp")
+    }
+
+    fn has_relative_parent_escape(command: &str) -> bool {
+        command
+            .split(|ch: char| ch.is_whitespace() || [';', '|', '&', '(', ')'].contains(&ch))
+            .map(|token| token.trim_matches('"').trim_matches('\'').trim_matches('`'))
+            .any(|token| {
+                token == ".."
+                    || token.starts_with("../")
+                    || token.contains("/../")
+                    || token.ends_with("/..")
+            })
+    }
+
+    /// Check whether the command attempts to mutate paths outside the project root.
+    fn violates_workspace_boundary(&self, command: &str, context: &ToolContext) -> bool {
+        if context.trust_mode || !Self::is_mutating_command(command) {
+            return false;
+        }
+
+        if Self::has_relative_parent_escape(command) {
+            return true;
+        }
+
+        let allowed_root = context
+            .project_root
+            .as_ref()
+            .unwrap_or(&context.working_directory);
+        let token_re =
+            Regex::new(r#"(?P<path>(?:~|/)[^\s'"`;|&()]*)"#).expect("path regex must be valid");
+
+        for capture in token_re.captures_iter(command) {
+            let token = &capture["path"];
+            let Some(path) = Self::expand_path_token(token) else {
+                continue;
+            };
+
+            if path.starts_with(allowed_root) || Self::is_allowed_external_path(&path) {
+                continue;
+            }
+
+            return true;
+        }
+
+        // Also catch patterns like: cd /some/path && rm file
+        let cd_re =
+            Regex::new(r#"(?:(?:^|&&|\|\||;)\s*)cd\s+([^\s;|&]+)"#).expect("cd regex must work");
+        for capture in cd_re.captures_iter(command) {
+            let Some(target) = capture.get(1) else {
+                continue;
+            };
+            let token = target.as_str().trim_matches('"').trim_matches('\'');
+            let Some(path) = Self::expand_path_token(token) else {
+                continue;
+            };
+
+            if path.starts_with(allowed_root) || Self::is_allowed_external_path(&path) {
+                continue;
+            }
+
+            return true;
+        }
+
+        false
     }
 }
 
@@ -103,6 +295,22 @@ impl Tool for ShellTool {
             return Ok(ToolResult::error(
                 tool_use_id,
                 "This command has been blocked for safety reasons.",
+            ));
+        }
+
+        if self.violates_workspace_boundary(command, context) {
+            let workspace = context
+                .project_root
+                .as_ref()
+                .unwrap_or(&context.working_directory)
+                .display()
+                .to_string();
+            return Ok(ToolResult::error(
+                tool_use_id,
+                format!(
+                    "Refusing to run a mutating shell command outside workspace '{}'. Use trust mode if you need system-wide changes.",
+                    workspace
+                ),
             ));
         }
 
@@ -286,7 +494,8 @@ impl Tool for ShellTool {
         let command = input["command"].as_str().unwrap_or("unknown");
 
         // Determine if this is a destructive command
-        let is_destructive = command.contains("rm ")
+        let is_destructive = Self::is_mutating_command(command)
+            || command.contains("rm ")
             || command.contains("mv ")
             || command.contains("git push")
             || command.contains("git reset")
@@ -321,6 +530,15 @@ mod tests {
         )
     }
 
+    fn create_untrusted_context(temp_dir: &TempDir) -> ToolContext {
+        ToolContext::new(
+            temp_dir.path().to_path_buf(),
+            Some(temp_dir.path().to_path_buf()),
+            Uuid::new_v4(),
+            false,
+        )
+    }
+
     #[test]
     fn test_tool_name() {
         let tool = ShellTool::new();
@@ -352,10 +570,83 @@ mod tests {
         let tool = ShellTool::new();
         assert!(tool.is_blocked("rm -rf /"));
         assert!(tool.is_blocked("rm -rf /*"));
+        assert!(tool.is_blocked("rm -r -f /"));
+        assert!(tool.is_blocked("rm --recursive /"));
+        assert!(tool.is_blocked("rm -rf --no-preserve-root /"));
         assert!(tool.is_blocked("mkfs.ext4 /dev/sda"));
         assert!(tool.is_blocked(":(){:|:&};:"));
+        assert!(tool.is_blocked("sudo apt install ripgrep"));
+        assert!(!tool.is_blocked("rm -rf tmp/ted-test"));
         assert!(!tool.is_blocked("ls -la"));
         assert!(!tool.is_blocked("echo hello"));
+    }
+
+    #[test]
+    fn test_workspace_boundary_detects_mutating_absolute_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = ShellTool::new();
+        let context = create_untrusted_context(&temp_dir);
+        assert!(tool.violates_workspace_boundary("rm -rf /opt", &context));
+    }
+
+    #[test]
+    fn test_workspace_boundary_allows_non_mutating_absolute_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = ShellTool::new();
+        let context = create_untrusted_context(&temp_dir);
+        assert!(!tool.violates_workspace_boundary("cat /etc/hosts", &context));
+    }
+
+    #[test]
+    fn test_workspace_boundary_allows_workspace_paths() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = ShellTool::new();
+        let context = create_untrusted_context(&temp_dir);
+        let command = format!("touch {}/file.txt", temp_dir.path().display());
+        assert!(!tool.violates_workspace_boundary(&command, &context));
+    }
+
+    #[test]
+    fn test_is_mutating_command_find_delete() {
+        assert!(ShellTool::is_mutating_command(
+            "find . -name '*.tmp' -delete"
+        ));
+        assert!(!ShellTool::is_mutating_command("find . -name '*.rs'"));
+    }
+
+    #[test]
+    fn test_is_mutating_command_find_exec_rm_and_xargs_rm() {
+        assert!(ShellTool::is_mutating_command(
+            "find . -name '*.tmp' -exec rm {} \\;"
+        ));
+        assert!(ShellTool::is_mutating_command(
+            "find . -name '*.tmp' | xargs rm -f"
+        ));
+    }
+
+    #[test]
+    fn test_workspace_boundary_detects_find_delete_root() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = ShellTool::new();
+        let context = create_untrusted_context(&temp_dir);
+        assert!(tool.violates_workspace_boundary("find / -name '*.tmp' -delete", &context));
+    }
+
+    #[test]
+    fn test_workspace_boundary_detects_relative_parent_escape() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = ShellTool::new();
+        let context = create_untrusted_context(&temp_dir);
+        assert!(tool.violates_workspace_boundary("rm -rf ../outside", &context));
+        assert!(tool.violates_workspace_boundary("mv ./file ../target", &context));
+    }
+
+    #[test]
+    fn test_workspace_boundary_allows_relative_parent_for_non_mutating_command() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = ShellTool::new();
+        let context = create_untrusted_context(&temp_dir);
+        assert!(!tool.violates_workspace_boundary("cat ../README.md", &context));
     }
 
     #[test]
@@ -376,6 +667,10 @@ mod tests {
         assert!(request.is_destructive);
 
         let input = serde_json::json!({"command": "git push origin main"});
+        let request = tool.permission_request(&input).unwrap();
+        assert!(request.is_destructive);
+
+        let input = serde_json::json!({"command": "find . -name '*.tmp' -exec rm {} \\;"});
         let request = tool.permission_request(&input).unwrap();
         assert!(request.is_destructive);
     }
@@ -458,6 +753,25 @@ mod tests {
 
         assert!(result.is_error());
         assert!(result.output_text().contains("blocked"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_blocks_mutating_outside_workspace_when_untrusted() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = ShellTool::new();
+        let context = create_untrusted_context(&temp_dir);
+
+        let result = tool
+            .execute(
+                "test-id".to_string(),
+                serde_json::json!({"command": "touch /opt/ted-should-not-exist.txt"}),
+                &context,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error());
+        assert!(result.output_text().contains("outside workspace"));
     }
 
     // Note: test_blocks_echo_for_communication was removed because the blocking behavior

@@ -6,7 +6,8 @@ import { promisify } from 'util';
 import path from 'path';
 import os from 'os';
 import fs from 'fs/promises';
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { createWriteStream, existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
+import https from 'https';
 
 const execAsync = promisify(exec);
 
@@ -31,8 +32,10 @@ export interface TedSettings {
   model: string;
   anthropicApiKey: string;
   anthropicModel: string;
-  ollamaBaseUrl: string;
-  ollamaModel: string;
+  localPort: number;
+  localModel: string;
+  localBaseUrl?: string;
+  localModelPath?: string;
   openrouterApiKey: string;
   openrouterModel: string;
   // Blackman AI - optimized routing with cost savings
@@ -46,12 +49,63 @@ export interface TedSettings {
   experienceLevel: 'beginner' | 'intermediate' | 'advanced';
 }
 
+interface TedSettingsFile {
+  defaults?: {
+    provider?: string;
+    model?: string;
+  };
+  providers?: {
+    anthropic?: {
+      api_key?: string;
+      default_model?: string;
+    };
+    local?: {
+      port?: number;
+      base_url?: string;
+      default_model?: string;
+      model_path?: string;
+    };
+    // Legacy provider settings for backward compatibility with older Teddy versions.
+    ollama?: {
+      base_url?: string;
+      default_model?: string;
+    };
+    openrouter?: {
+      api_key?: string;
+      default_model?: string;
+    };
+    blackman?: {
+      api_key?: string;
+      base_url?: string;
+      default_model?: string;
+    };
+  };
+  deploy?: {
+    vercel_token?: string;
+    netlify_token?: string;
+  };
+  hardware?: HardwareInfo | null;
+  teddy?: {
+    experience_level?: TedSettings['experienceLevel'];
+  };
+}
+
 /** Default Blackman API URLs for different environments */
 export const BLACKMAN_URLS = {
   production: 'https://app.useblackman.ai',
   staging: 'https://staging.useblackman.ai',
   development: 'http://localhost:8080',
 } as const;
+
+const VALID_PROVIDERS = new Set(['anthropic', 'local', 'openrouter', 'blackman']);
+
+function normalizeProviderName(provider: string): string {
+  // Legacy alias kept for older Teddy configs.
+  if (provider === 'ollama') {
+    return 'local';
+  }
+  return VALID_PROVIDERS.has(provider) ? provider : 'anthropic';
+}
 
 /**
  * Get Ted's settings directory
@@ -71,8 +125,9 @@ export async function loadTedSettings(): Promise<TedSettings> {
     model: 'claude-sonnet-4-20250514',
     anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
     anthropicModel: 'claude-sonnet-4-20250514',
-    ollamaBaseUrl: 'http://localhost:11434',
-    ollamaModel: 'qwen2.5-coder:7b',
+    localPort: 8847,
+    localModel: 'qwen2.5-coder:3b',
+    localBaseUrl: '',
     openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
     openrouterModel: 'anthropic/claude-3.5-sonnet',
     blackmanApiKey: process.env.BLACKMAN_API_KEY || '',
@@ -90,16 +145,29 @@ export async function loadTedSettings(): Promise<TedSettings> {
 
   try {
     const content = readFileSync(settingsPath, 'utf-8');
-    const rawSettings = JSON.parse(content);
+    const rawSettings = JSON.parse(content) as TedSettingsFile;
+    const normalizedProvider = normalizeProviderName(
+      rawSettings.defaults?.provider || defaultSettings.provider
+    );
 
     // Extract relevant settings from Ted's format
+    const hardware = rawSettings.hardware || null;
+    const normalizedLocalModel = normalizeToKnownInstructLocalModel(
+      rawSettings.providers?.local?.default_model ||
+      rawSettings.providers?.ollama?.default_model ||
+      defaultSettings.localModel,
+      hardware
+    );
+
     return {
-      provider: rawSettings.defaults?.provider || defaultSettings.provider,
+      provider: normalizedProvider,
       model: rawSettings.defaults?.model || defaultSettings.model,
       anthropicApiKey: rawSettings.providers?.anthropic?.api_key || defaultSettings.anthropicApiKey,
       anthropicModel: rawSettings.providers?.anthropic?.default_model || defaultSettings.anthropicModel,
-      ollamaBaseUrl: rawSettings.providers?.ollama?.base_url || defaultSettings.ollamaBaseUrl,
-      ollamaModel: rawSettings.providers?.ollama?.default_model || defaultSettings.ollamaModel,
+      localPort: rawSettings.providers?.local?.port || defaultSettings.localPort,
+      localModel: normalizedLocalModel,
+      localBaseUrl: normalizeBaseUrl(rawSettings.providers?.local?.base_url || ''),
+      localModelPath: rawSettings.providers?.local?.model_path,
       openrouterApiKey: rawSettings.providers?.openrouter?.api_key || defaultSettings.openrouterApiKey,
       openrouterModel: rawSettings.providers?.openrouter?.default_model || defaultSettings.openrouterModel,
       blackmanApiKey: rawSettings.providers?.blackman?.api_key || defaultSettings.blackmanApiKey,
@@ -107,7 +175,7 @@ export async function loadTedSettings(): Promise<TedSettings> {
       blackmanModel: rawSettings.providers?.blackman?.default_model || defaultSettings.blackmanModel,
       vercelToken: rawSettings.deploy?.vercel_token || defaultSettings.vercelToken,
       netlifyToken: rawSettings.deploy?.netlify_token || defaultSettings.netlifyToken,
-      hardware: rawSettings.hardware || null,
+      hardware,
       experienceLevel: rawSettings.teddy?.experience_level || defaultSettings.experienceLevel,
     };
   } catch (err) {
@@ -129,25 +197,44 @@ export async function saveTedSettings(settings: TedSettings): Promise<void> {
   }
 
   // Load existing settings or create new
-  let rawSettings: any = {};
+  let rawSettings: TedSettingsFile = {};
   if (existsSync(settingsPath)) {
     try {
       const content = readFileSync(settingsPath, 'utf-8');
-      rawSettings = JSON.parse(content);
+      rawSettings = JSON.parse(content) as TedSettingsFile;
     } catch (err) {
       console.error('[TED-SETTINGS] Failed to parse existing settings:', err);
     }
   }
 
+  const normalizedLocalModel = normalizeToKnownInstructLocalModel(
+    settings.localModel,
+    settings.hardware
+  );
+  const normalizedLocalBaseUrl = normalizeBaseUrl(settings.localBaseUrl || '');
+  const normalizedLocalModelPath = (() => {
+    if (normalizedLocalBaseUrl) {
+      return settings.localModelPath || '';
+    }
+
+    const preset = selectPresetForModel(normalizedLocalModel, settings.hardware);
+    if (!preset) {
+      return settings.localModelPath || '';
+    }
+
+    return path.join(os.homedir(), '.ted', 'models', 'local', preset.fileName);
+  })();
+
   // Update settings in Ted's format
   rawSettings.defaults = rawSettings.defaults || {};
-  rawSettings.defaults.provider = settings.provider;
+  const normalizedProvider = normalizeProviderName(settings.provider);
+  rawSettings.defaults.provider = normalizedProvider;
 
   // Sync model with the correct provider-specific model
   const modelForProvider = (() => {
-    switch (settings.provider) {
-      case 'ollama':
-        return settings.ollamaModel;
+    switch (normalizedProvider) {
+      case 'local':
+        return normalizedLocalModel;
       case 'openrouter':
         return settings.openrouterModel;
       case 'blackman':
@@ -167,9 +254,19 @@ export async function saveTedSettings(settings: TedSettings): Promise<void> {
   }
   rawSettings.providers.anthropic.default_model = settings.anthropicModel;
 
-  rawSettings.providers.ollama = rawSettings.providers.ollama || {};
-  rawSettings.providers.ollama.base_url = settings.ollamaBaseUrl;
-  rawSettings.providers.ollama.default_model = settings.ollamaModel;
+  rawSettings.providers.local = rawSettings.providers.local || {};
+  rawSettings.providers.local.port = settings.localPort;
+  rawSettings.providers.local.default_model = normalizedLocalModel;
+  if (normalizedLocalBaseUrl) {
+    rawSettings.providers.local.base_url = normalizedLocalBaseUrl;
+  } else {
+    delete rawSettings.providers.local.base_url;
+  }
+  if (normalizedLocalModelPath) {
+    rawSettings.providers.local.model_path = normalizedLocalModelPath;
+  } else {
+    delete rawSettings.providers.local.model_path;
+  }
 
   rawSettings.providers.openrouter = rawSettings.providers.openrouter || {};
   if (settings.openrouterApiKey) {
@@ -234,10 +331,226 @@ export async function detectHardware(): Promise<HardwareInfo> {
       architecture: 'X86_64',
       isSbc: false,
       cpuYear: null,
-      recommendedModels: ['qwen2.5-coder:7b', 'deepseek-coder:6.7b'],
-      expectedResponseTime: [5, 10],
+      recommendedModels: ['qwen2.5-coder:3b', 'qwen2.5-coder:1.5b'],
+      expectedResponseTime: [10, 30],
       capabilities: ['Full-stack apps', 'REST APIs', 'Database-backed apps'],
       limitations: ['Massive codebases'],
+    };
+  }
+}
+
+interface LocalModelPreset {
+  aliases: string[];
+  modelName: string;
+  fileName: string;
+  url: string;
+}
+
+const LOCAL_MODEL_PRESETS: LocalModelPreset[] = [
+  {
+    aliases: ['qwen2.5-coder:1.5b', 'qwen2.5-coder-1.5b', 'qwen2.5-coder-1.5b-instruct'],
+    modelName: 'qwen2.5-coder:1.5b',
+    fileName: 'qwen2.5-coder-1.5b-instruct-q4_k_m.gguf',
+    url: 'https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf',
+  },
+  {
+    aliases: ['qwen2.5-coder:3b', 'qwen2.5-coder-3b', 'qwen2.5-coder-3b-instruct'],
+    modelName: 'qwen2.5-coder:3b',
+    fileName: 'qwen2.5-coder-3b-instruct-q4_k_m.gguf',
+    url: 'https://huggingface.co/Qwen/Qwen2.5-Coder-3B-Instruct-GGUF/resolve/main/qwen2.5-coder-3b-instruct-q4_k_m.gguf',
+  },
+  {
+    aliases: ['qwen2.5-coder:7b', 'qwen2.5-coder-7b', 'qwen2.5-coder-7b-instruct'],
+    modelName: 'qwen2.5-coder:7b',
+    fileName: 'qwen2.5-coder-7b-instruct-q4_k_m.gguf',
+    url: 'https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/qwen2.5-coder-7b-instruct-q4_k_m.gguf',
+  },
+];
+
+export const KNOWN_LOCAL_INSTRUCT_MODELS: string[] = LOCAL_MODEL_PRESETS.map(
+  (preset) => preset.modelName
+);
+
+function normalizeModelName(value: string): string {
+  return value.trim().toLowerCase().replace(':', '-');
+}
+
+function normalizeBaseUrl(value: string): string {
+  return value.trim().replace(/\/+$/, '');
+}
+
+function normalizeToKnownInstructLocalModel(
+  model: string,
+  hardware: HardwareInfo | null
+): string {
+  const normalized = normalizeModelName(model || '');
+  const matched = LOCAL_MODEL_PRESETS.find((preset) =>
+    preset.aliases.map(normalizeModelName).includes(normalized)
+  );
+
+  if (matched) {
+    return matched.modelName;
+  }
+
+  if (hardware) {
+    return selectPresetForHardware(hardware).modelName;
+  }
+
+  return LOCAL_MODEL_PRESETS[1].modelName; // qwen2.5-coder:3b fallback
+}
+
+function selectPresetForHardware(hardware: HardwareInfo): LocalModelPreset {
+  const normalized = (hardware.recommendedModels || []).map(normalizeModelName);
+
+  for (const model of normalized) {
+    const match = LOCAL_MODEL_PRESETS.find((preset) =>
+      preset.aliases.map(normalizeModelName).includes(model)
+    );
+    if (match) {
+      return match;
+    }
+  }
+
+  // Conservative default for unknown systems.
+  return hardware.isSbc
+    ? LOCAL_MODEL_PRESETS[1] // qwen2.5-coder:3b
+    : LOCAL_MODEL_PRESETS[2]; // qwen2.5-coder:7b
+}
+
+function selectPresetForModel(model: string, hardware: HardwareInfo | null): LocalModelPreset {
+  const normalizedModel = normalizeToKnownInstructLocalModel(model, hardware);
+  return (
+    LOCAL_MODEL_PRESETS.find((preset) => preset.modelName === normalizedModel) ||
+    LOCAL_MODEL_PRESETS[1]
+  );
+}
+
+function downloadFile(url: string, outputPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const stream = createWriteStream(outputPath);
+    https
+      .get(url, (response) => {
+        if (response.statusCode === 301 || response.statusCode === 302) {
+          const redirectUrl = response.headers.location;
+          stream.close();
+          if (redirectUrl) {
+            if (existsSync(outputPath)) {
+              unlinkSync(outputPath);
+            }
+            downloadFile(redirectUrl, outputPath).then(resolve).catch(reject);
+            return;
+          }
+        }
+
+        if (response.statusCode !== 200) {
+          stream.close();
+          if (existsSync(outputPath)) {
+            unlinkSync(outputPath);
+          }
+          reject(new Error(`Model download failed: HTTP ${response.statusCode}`));
+          return;
+        }
+
+        response.pipe(stream);
+        stream.on('finish', () => {
+          stream.close();
+          resolve();
+        });
+      })
+      .on('error', (err) => {
+        stream.close();
+        if (existsSync(outputPath)) {
+          unlinkSync(outputPath);
+        }
+        reject(err);
+      });
+  });
+}
+
+export interface LocalSetupResult {
+  success: boolean;
+  model?: string;
+  modelPath?: string;
+  downloaded?: boolean;
+  message?: string;
+  error?: string;
+}
+
+export async function ensureLocalModelInstalled(
+  model: string,
+  hardware: HardwareInfo | null
+): Promise<LocalSetupResult> {
+  try {
+    const preset = selectPresetForModel(model, hardware);
+    const modelDir = path.join(os.homedir(), '.ted', 'models', 'local');
+    await fs.mkdir(modelDir, { recursive: true });
+
+    const modelPath = path.join(modelDir, preset.fileName);
+    let downloaded = false;
+
+    if (!existsSync(modelPath)) {
+      await downloadFile(preset.url, modelPath);
+      downloaded = true;
+    }
+
+    return {
+      success: true,
+      model: preset.modelName,
+      modelPath,
+      downloaded,
+      message: downloaded
+        ? `${preset.modelName} downloaded and configured.`
+        : `${preset.modelName} already installed.`,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+/**
+ * Configure local AI automatically for end users.
+ * Detects hardware, picks a good model, downloads if needed, and updates settings.
+ */
+export async function setupRecommendedLocalModel(): Promise<LocalSetupResult> {
+  try {
+    const hardware = await detectHardware();
+    const preset = selectPresetForHardware(hardware);
+    const installResult = await ensureLocalModelInstalled(preset.modelName, hardware);
+    if (!installResult.success || !installResult.model || !installResult.modelPath) {
+      return {
+        success: false,
+        error: installResult.error || 'Failed to install local model',
+      };
+    }
+
+    const settings = await loadTedSettings();
+    const updated: TedSettings = {
+      ...settings,
+      provider: 'local',
+      model: installResult.model,
+      localModel: installResult.model,
+      localBaseUrl: '',
+      localModelPath: installResult.modelPath,
+      hardware,
+    };
+    await saveTedSettings(updated);
+
+    return {
+      success: true,
+      model: installResult.model,
+      modelPath: installResult.modelPath,
+      downloaded: installResult.downloaded,
+      message: installResult.downloaded
+        ? 'Local AI is ready. Model downloaded and configured.'
+        : 'Local AI is ready. Existing model configured.',
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
     };
   }
 }
@@ -270,7 +583,7 @@ async function findTedBinary(): Promise<string | null> {
 /**
  * Parse text output from ted system command
  */
-function parseSystemOutput(output: string): HardwareInfo {
+export function parseSystemOutput(output: string): HardwareInfo {
   const lines = output.split('\n');
 
   let tier = 'Medium';
@@ -313,8 +626,8 @@ function parseSystemOutput(output: string): HardwareInfo {
     architecture: 'X86_64',
     isSbc: false,
     cpuYear: null,
-    recommendedModels: ['qwen2.5-coder:7b', 'deepseek-coder:6.7b'],
-    expectedResponseTime: [5, 10],
+    recommendedModels: ['qwen2.5-coder:3b', 'qwen2.5-coder:1.5b'],
+    expectedResponseTime: [10, 30],
     capabilities: ['Full-stack apps', 'REST APIs', 'Database-backed apps'],
     limitations: ['Massive codebases'],
   };

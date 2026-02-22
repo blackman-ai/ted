@@ -9,7 +9,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use crate::llm::message::{ContentBlock, Message, MessageContent};
+use crate::llm::message::{ContentBlock, Message, ToolResultContent};
 use crate::llm::provider::{CompletionRequest, ContentBlockResponse, StopReason, ToolDefinition};
 
 /// Configuration for the agent loop
@@ -142,6 +142,36 @@ pub fn extract_tool_uses(
         .collect()
 }
 
+/// Normalize tool input to an object-like JSON value.
+///
+/// Some providers may emit tool input as a JSON string (streaming assembly)
+/// or null when empty; normalize these to parsed JSON / empty object.
+pub fn normalize_tool_use_input(input: &serde_json::Value) -> serde_json::Value {
+    match input {
+        serde_json::Value::String(s) => {
+            serde_json::from_str(s).unwrap_or_else(|_| serde_json::json!({}))
+        }
+        serde_json::Value::Null => serde_json::json!({}),
+        _ => input.clone(),
+    }
+}
+
+/// Extract tool use requests with normalized input payloads.
+pub fn extract_tool_uses_normalized(
+    response_content: &[ContentBlockResponse],
+) -> Vec<(String, String, serde_json::Value)> {
+    response_content
+        .iter()
+        .filter_map(|block| {
+            if let ContentBlockResponse::ToolUse { id, name, input } = block {
+                Some((id.clone(), name.clone(), normalize_tool_use_input(input)))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// Extract text content from response
 pub fn extract_text_content(response_content: &[ContentBlockResponse]) -> String {
     response_content
@@ -210,6 +240,19 @@ pub fn format_loop_error(tool_name: &str, count: usize) -> String {
     )
 }
 
+/// Build a tool_result content block.
+pub fn tool_result_block(
+    tool_use_id: impl Into<String>,
+    output: impl Into<String>,
+    is_error: bool,
+) -> ContentBlock {
+    ContentBlock::ToolResult {
+        tool_use_id: tool_use_id.into(),
+        content: ToolResultContent::Text(output.into()),
+        is_error: if is_error { Some(true) } else { None },
+    }
+}
+
 /// Calculate target token count for context trimming (70% of window)
 pub fn calculate_trim_target(context_window: u32) -> u32 {
     (context_window as f64 * 0.7) as u32
@@ -264,36 +307,18 @@ impl ToolCallResult {
 pub fn results_to_content_blocks(results: Vec<ToolCallResult>) -> Vec<ContentBlock> {
     results
         .into_iter()
-        .map(|r| ContentBlock::ToolResult {
-            tool_use_id: r.tool_use_id,
-            content: crate::llm::message::ToolResultContent::Text(r.output),
-            is_error: if r.is_error { Some(true) } else { None },
-        })
+        .map(|r| tool_result_block(r.tool_use_id, r.output, r.is_error))
         .collect()
 }
 
 /// Create an assistant message from response content
 pub fn create_assistant_message(content_blocks: Vec<ContentBlock>) -> Message {
-    Message {
-        id: uuid::Uuid::new_v4(),
-        role: crate::llm::message::Role::Assistant,
-        content: MessageContent::Blocks(content_blocks),
-        timestamp: chrono::Utc::now(),
-        tool_use_id: None,
-        token_count: None,
-    }
+    Message::assistant_blocks(content_blocks)
 }
 
 /// Create a user message containing tool results
 pub fn create_tool_result_message(result_blocks: Vec<ContentBlock>) -> Message {
-    Message {
-        id: uuid::Uuid::new_v4(),
-        role: crate::llm::message::Role::User,
-        content: MessageContent::Blocks(result_blocks),
-        timestamp: chrono::Utc::now(),
-        tool_use_id: None,
-        token_count: None,
-    }
+    Message::user_blocks(result_blocks)
 }
 
 #[cfg(test)]
@@ -587,6 +612,64 @@ mod tests {
         assert!(error.contains("file_read"));
         assert!(error.contains("3 times"));
         assert!(error.contains("DIFFERENT approach"));
+    }
+
+    #[test]
+    fn test_tool_result_block() {
+        let block = tool_result_block("tool_1", "ok", false);
+        match block {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_use_id, "tool_1");
+                assert!(matches!(content, ToolResultContent::Text(ref t) if t == "ok"));
+                assert_eq!(is_error, None);
+            }
+            _ => panic!("expected tool result block"),
+        }
+    }
+
+    #[test]
+    fn test_tool_result_block_error() {
+        let block = tool_result_block("tool_2", "failed", true);
+        match block {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_use_id, "tool_2");
+                assert!(matches!(content, ToolResultContent::Text(ref t) if t == "failed"));
+                assert_eq!(is_error, Some(true));
+            }
+            _ => panic!("expected tool result block"),
+        }
+    }
+
+    #[test]
+    fn test_normalize_tool_use_input() {
+        let parsed = normalize_tool_use_input(&serde_json::Value::String(
+            "{\"path\":\"/tmp/a\"}".to_string(),
+        ));
+        assert_eq!(parsed["path"], "/tmp/a");
+
+        let null_normalized = normalize_tool_use_input(&serde_json::Value::Null);
+        assert_eq!(null_normalized, serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_extract_tool_uses_normalized() {
+        let response_content = vec![ContentBlockResponse::ToolUse {
+            id: "tool_1".to_string(),
+            name: "file_read".to_string(),
+            input: serde_json::Value::String("{\"path\":\"/tmp/a\"}".to_string()),
+        }];
+
+        let tool_uses = extract_tool_uses_normalized(&response_content);
+        assert_eq!(tool_uses.len(), 1);
+        assert_eq!(tool_uses[0].2["path"], "/tmp/a");
     }
 
     // ==================== calculate_trim_target tests ====================

@@ -420,6 +420,28 @@ type privateStruct struct {}
     }
 
     #[test]
+    fn test_classify_import_additional_kinds() {
+        assert_eq!(
+            GenericParser::classify_import("/absolute/path", ImportPatternKind::EsModule),
+            ImportKind::Absolute
+        );
+        assert_eq!(
+            GenericParser::classify_import(".local.module", ImportPatternKind::Python),
+            ImportKind::Relative
+        );
+        assert_eq!(
+            GenericParser::classify_import("internal/pkg", ImportPatternKind::Go),
+            ImportKind::Relative
+        );
+    }
+
+    #[test]
+    fn test_default_parser_constructor() {
+        let parser = GenericParser::default();
+        assert!(!parser.extensions().is_empty());
+    }
+
+    #[test]
     fn test_resolve_relative_import() {
         let parser = GenericParser::new();
         let temp = tempfile::TempDir::new().unwrap();
@@ -463,5 +485,44 @@ const utils2 = require("./utils");
         // Should only have one "./utils" entry
         let utils_count = imports.iter().filter(|i| i.raw_path == "./utils").count();
         assert_eq!(utils_count, 1);
+    }
+
+    #[test]
+    fn test_parse_brace_exports() {
+        let parser = GenericParser::new();
+        let content = "export { foo, bar , baz }";
+        let exports = parser.parse_exports(content);
+
+        assert!(exports.iter().any(|e| e.name == "foo"));
+        assert!(exports.iter().any(|e| e.name == "bar"));
+        assert!(exports.iter().any(|e| e.name == "baz"));
+    }
+
+    #[test]
+    fn test_resolve_relative_import_to_directory_path() {
+        let parser = GenericParser::new();
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_root = temp.path();
+
+        std::fs::create_dir_all(project_root.join("src/utils")).unwrap();
+        std::fs::write(project_root.join("src/utils/index.ts"), "").unwrap();
+
+        let import = ImportRef::new("./utils", ImportKind::Relative, 1);
+        let from_file = Path::new("src/main.ts");
+
+        let resolved = parser.resolve_import(&import, from_file, project_root);
+        assert_eq!(resolved, Some(PathBuf::from("src/./utils")));
+    }
+
+    #[test]
+    fn test_resolve_relative_import_missing_returns_none() {
+        let parser = GenericParser::new();
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let import = ImportRef::new("./does-not-exist", ImportKind::Relative, 1);
+        let from_file = Path::new("src/main.ts");
+
+        let resolved = parser.resolve_import(&import, from_file, temp.path());
+        assert!(resolved.is_none());
     }
 }

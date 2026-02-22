@@ -26,6 +26,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 
+use super::common;
 use crate::error::{ApiError, Result, TedError};
 use crate::llm::message::{ContentBlock, Message, MessageContent, Role, ToolResultContent};
 use crate::llm::provider::{
@@ -430,10 +431,10 @@ impl LlmProvider for BlackmanProvider {
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let body = response.text().await.unwrap_or_default();
-            return Err(TedError::Api(ApiError::ServerError {
+            return Err(common::server_error(
                 status,
-                message: format!("Blackman AI API error: {}", body),
-            }));
+                format!("Blackman AI API error: {}", body),
+            ));
         }
 
         let blackman_response: BlackmanResponse = response
@@ -542,10 +543,10 @@ impl LlmProvider for BlackmanProvider {
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let body = response.text().await.unwrap_or_default();
-            return Err(TedError::Api(ApiError::ServerError {
+            return Err(common::server_error(
                 status,
-                message: format!("Blackman AI API error: {}", body),
-            }));
+                format!("Blackman AI API error: {}", body),
+            ));
         }
 
         let model = request.model.clone();

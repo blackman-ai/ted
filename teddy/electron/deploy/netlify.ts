@@ -11,6 +11,7 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { debugLog } from '../utils/logger';
 
 const NETLIFY_API_BASE = 'https://api.netlify.com/api/v1';
 
@@ -44,6 +45,13 @@ interface NetlifyFile {
   path: string;
   sha1: string;
   size: number;
+}
+
+interface NetlifySiteSummary {
+  id: string;
+  name: string;
+  url: string;
+  ssl_url?: string;
 }
 
 /**
@@ -158,8 +166,8 @@ async function getOrCreateSite(
     });
 
     if (listResponse.ok) {
-      const sites = await listResponse.json();
-      const existingSite = sites.find((s: any) => s.name === siteName);
+      const sites = await listResponse.json() as NetlifySiteSummary[];
+      const existingSite = sites.find((s) => s.name === siteName);
       if (existingSite) {
         return {
           id: existingSite.id,
@@ -287,20 +295,20 @@ export async function deployNetlifyProject(options: NetlifyDeploymentOptions): P
     let siteId = existingSiteId;
 
     if (!siteId) {
-      console.log('[Netlify] Getting or creating site...');
+      debugLog('[Netlify] Getting or creating site...');
       const site = await getOrCreateSite(netlifyToken, siteName);
       siteId = site.id;
-      console.log(`[Netlify] Using site: ${site.name} (${siteId}) - ${site.url}`);
+      debugLog(`[Netlify] Using site: ${site.name} (${siteId}) - ${site.url}`);
     }
 
     // Detect publish directory
     const publishDir = await detectPublishDirectory(projectPath);
-    console.log(`[Netlify] Publish directory: ${publishDir}`);
+    debugLog(`[Netlify] Publish directory: ${publishDir}`);
 
     // Get all project files from publish directory
-    console.log('[Netlify] Scanning project files...');
+    debugLog('[Netlify] Scanning project files...');
     const files = await getProjectFiles(publishDir);
-    console.log(`[Netlify] Found ${files.length} files`);
+    debugLog(`[Netlify] Found ${files.length} files`);
 
     if (files.length === 0) {
       return {
@@ -316,7 +324,7 @@ export async function deployNetlifyProject(options: NetlifyDeploymentOptions): P
     }
 
     // Create deploy
-    console.log('[Netlify] Creating deployment...');
+    debugLog('[Netlify] Creating deployment...');
     const deployResponse = await fetch(`${NETLIFY_API_BASE}/sites/${siteId}/deploys`, {
       method: 'POST',
       headers: {
@@ -337,12 +345,12 @@ export async function deployNetlifyProject(options: NetlifyDeploymentOptions): P
     const deployId = deploy.id;
     const requiredFiles = deploy.required || [];
 
-    console.log(`[Netlify] Deploy created: ${deployId}`);
-    console.log(`[Netlify] Files to upload: ${requiredFiles.length} of ${files.length}`);
+    debugLog(`[Netlify] Deploy created: ${deployId}`);
+    debugLog(`[Netlify] Files to upload: ${requiredFiles.length} of ${files.length}`);
 
     // Upload required files
     if (requiredFiles.length > 0) {
-      console.log('[Netlify] Uploading files...');
+      debugLog('[Netlify] Uploading files...');
 
       for (const sha1 of requiredFiles) {
         // Find the file with this sha1
@@ -369,11 +377,11 @@ export async function deployNetlifyProject(options: NetlifyDeploymentOptions): P
         }
       }
 
-      console.log('[Netlify] Files uploaded');
+      debugLog('[Netlify] Files uploaded');
     }
 
     // Wait for deploy to be ready (poll status)
-    console.log('[Netlify] Waiting for deployment to process...');
+    debugLog('[Netlify] Waiting for deployment to process...');
     let status: NetlifyDeploymentStatus;
     let attempts = 0;
     const maxAttempts = 60; // 2 minutes max
@@ -397,7 +405,7 @@ export async function deployNetlifyProject(options: NetlifyDeploymentOptions): P
       };
     }
 
-    console.log(`[Netlify] Deployment ready: ${status.sslUrl || status.url}`);
+    debugLog(`[Netlify] Deployment ready: ${status.sslUrl || status.url}`);
 
     return {
       success: true,

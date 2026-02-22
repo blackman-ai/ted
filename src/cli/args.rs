@@ -150,6 +150,10 @@ pub struct ChatArgs {
     #[arg(long, hide = true)]
     pub embedded: bool,
 
+    /// Disable tool definitions and tool execution (chat-only turn)
+    #[arg(long, hide = true)]
+    pub no_tools: bool,
+
     /// Path to a GGUF model file for local provider
     #[arg(long, value_name = "PATH")]
     pub model_path: Option<PathBuf>,

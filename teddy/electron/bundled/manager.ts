@@ -4,30 +4,23 @@
 /**
  * Bundled Dependencies Manager
  *
- * Manages bundled binaries (cloudflared, ollama) that ship with Teddy
+ * Manages bundled binaries (currently cloudflared) that ship with Teddy
  * or are auto-downloaded on first use.
  */
 
-import { existsSync, chmodSync, mkdirSync } from 'fs';
-import { chmod, mkdir, writeFile, unlink } from 'fs/promises';
+import { existsSync } from 'fs';
+import { chmod, mkdir, unlink } from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import https from 'https';
 import fs from 'fs';
-import { createGunzip } from 'zlib';
 import * as tar from 'tar';
+import type { App } from 'electron';
+import { app as electronApp } from 'electron';
+import { debugLog } from '../utils/logger';
 
-const execAsync = promisify(exec);
-
-// Lazy load electron app to avoid issues during bundling
-let _app: typeof import('electron').app | undefined;
-function getApp(): typeof import('electron').app {
-  if (!_app) {
-    _app = require('electron').app;
-  }
-  return _app;
+function getApp(): App {
+  return electronApp;
 }
 
 export interface BundledBinary {
@@ -163,14 +156,14 @@ export async function downloadCloudflared(): Promise<string> {
   const outputPath = path.join(getLocalBinDir(), binaryName);
   const isTarball = downloadUrl.endsWith('.tgz') || downloadUrl.endsWith('.tar.gz');
 
-  console.log(`[BUNDLED] Downloading cloudflared from ${downloadUrl}...`);
+  debugLog(`[BUNDLED] Downloading cloudflared from ${downloadUrl}...`);
 
   if (isTarball) {
     // Download to temp file, extract, then delete
     const tempPath = path.join(getLocalBinDir(), 'cloudflared.tgz');
     await downloadFile(downloadUrl, tempPath);
 
-    console.log(`[BUNDLED] Extracting cloudflared...`);
+    debugLog(`[BUNDLED] Extracting cloudflared...`);
 
     // Extract the tarball using tar.extract
     await tar.extract({
@@ -190,35 +183,9 @@ export async function downloadCloudflared(): Promise<string> {
     await chmod(outputPath, 0o755);
   }
 
-  console.log(`[BUNDLED] cloudflared installed to ${outputPath}`);
+  debugLog(`[BUNDLED] cloudflared installed to ${outputPath}`);
 
   return outputPath;
-}
-
-/**
- * Download Ollama installer/binary
- */
-export async function downloadOllama(): Promise<string> {
-  const platform = os.platform();
-
-  if (platform === 'darwin') {
-    // On macOS, download the .app bundle
-    throw new Error('Ollama auto-download for macOS requires manual installation. Please install from https://ollama.com/download');
-  } else if (platform === 'linux') {
-    // On Linux, use the install script
-    console.log('[BUNDLED] Installing Ollama via install script...');
-    try {
-      await execAsync('curl -fsSL https://ollama.com/install.sh | sh');
-      return '/usr/local/bin/ollama';
-    } catch (err) {
-      throw new Error(`Failed to install Ollama: ${err}`);
-    }
-  } else if (platform === 'win32') {
-    // On Windows, download the installer
-    throw new Error('Ollama auto-download for Windows requires manual installation. Please install from https://ollama.com/download');
-  }
-
-  throw new Error(`Unsupported platform: ${platform}`);
 }
 
 /**
@@ -229,52 +196,9 @@ export function isCloudflaredInstalled(): boolean {
 }
 
 /**
- * Check if Ollama is installed
- */
-export async function isOllamaInstalled(): Promise<boolean> {
-  try {
-    await execAsync('which ollama');
-    return true;
-  } catch {
-    // Check common installation paths
-    const paths = [
-      '/usr/local/bin/ollama',
-      '/usr/bin/ollama',
-      path.join(os.homedir(), '.ollama', 'bin', 'ollama'),
-    ];
-
-    return paths.some(p => existsSync(p));
-  }
-}
-
-/**
- * Get Ollama binary path
- */
-export async function getOllamaPath(): Promise<string | null> {
-  try {
-    const { stdout } = await execAsync('which ollama');
-    return stdout.trim();
-  } catch {
-    const paths = [
-      '/usr/local/bin/ollama',
-      '/usr/bin/ollama',
-      path.join(os.homedir(), '.ollama', 'bin', 'ollama'),
-    ];
-
-    for (const p of paths) {
-      if (existsSync(p)) {
-        return p;
-      }
-    }
-
-    return null;
-  }
-}
-
-/**
  * Get installation instructions for manual installation
  */
-export function getInstallInstructions(binary: 'cloudflared' | 'ollama'): string {
+export function getInstallInstructions(binary: 'cloudflared'): string {
   const platform = os.platform();
 
   if (binary === 'cloudflared') {
@@ -285,8 +209,6 @@ export function getInstallInstructions(binary: 'cloudflared' | 'ollama'): string
     } else if (platform === 'win32') {
       return 'Install cloudflared:\n\nDownload from:\nhttps://github.com/cloudflare/cloudflared/releases\n\nOr use winget:\nwinget install --id Cloudflare.cloudflared';
     }
-  } else if (binary === 'ollama') {
-    return `Install Ollama from:\n\nhttps://ollama.com/download\n\nOllama provides native installers for macOS, Linux, and Windows.`;
   }
 
   return 'Unknown binary';
@@ -335,7 +257,6 @@ function downloadFile(url: string, outputPath: string): Promise<void> {
  */
 export async function getBundledBinariesStatus(): Promise<BundledBinary[]> {
   const cloudflaredPath = getCloudflaredPath();
-  const ollamaPath = await getOllamaPath();
 
   return [
     {
@@ -343,12 +264,6 @@ export async function getBundledBinariesStatus(): Promise<BundledBinary[]> {
       version: 'latest',
       path: cloudflaredPath || 'not installed',
       installed: cloudflaredPath !== null,
-    },
-    {
-      name: 'ollama',
-      version: 'latest',
-      path: ollamaPath || 'not installed',
-      installed: ollamaPath !== null,
     },
   ];
 }

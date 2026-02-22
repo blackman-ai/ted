@@ -85,6 +85,32 @@
   background: #1e1e1e;
 }
 
+.settings-status {
+  margin: 12px 20px 0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  border: 1px solid transparent;
+}
+
+.settings-status.info {
+  background: #1d2d3d;
+  border-color: #3b6ea8;
+  color: #b8d9ff;
+}
+
+.settings-status.success {
+  background: #1c3428;
+  border-color: #2f8a55;
+  color: #b7f0ce;
+}
+
+.settings-status.error {
+  background: #3a2222;
+  border-color: #b35b5b;
+  color: #ffc5c5;
+}
+
 .settings-content {
   flex: 1;
   overflow-y: auto;
@@ -145,6 +171,33 @@
   margin-top: 6px;
   color: #888;
   font-size: 0.85rem;
+}
+
+.advanced-settings {
+  margin-top: 6px;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  background: #252525;
+}
+
+.advanced-settings > summary {
+  padding: 10px 12px;
+  cursor: pointer;
+  color: #bfc8d4;
+  font-size: 0.9rem;
+  user-select: none;
+}
+
+.advanced-settings[open] > summary {
+  border-bottom: 1px solid #333;
+}
+
+.advanced-settings-body {
+  padding: 12px;
+}
+
+.advanced-settings-body .form-group:last-child {
+  margin-bottom: 0;
 }
 
 .settings-footer {

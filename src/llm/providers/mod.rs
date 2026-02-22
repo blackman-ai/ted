@@ -5,6 +5,7 @@
 
 pub mod anthropic;
 pub mod blackman;
+pub(crate) mod common;
 pub mod local;
 pub mod openrouter;
 

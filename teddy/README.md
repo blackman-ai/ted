@@ -6,7 +6,7 @@ Teddy is a cross-platform desktop application that brings AI-assisted coding to 
 
 ## Features
 
-- 🧸 **Local-first AI** - Works offline with Ollama (no API keys required)
+- 🧸 **Local-first AI** - Works offline with Ted's `local` llama.cpp provider (no API keys required)
 - 📁 **File Management** - Browse, edit, and manage your project files
 - ✍️ **Monaco Editor** - Professional code editor with syntax highlighting
 - 💬 **AI Chat** - Natural language interface to generate and modify code
@@ -24,15 +24,14 @@ Teddy is a cross-platform desktop application that brings AI-assisted coding to 
 
 ### Recommended
 
-- **Ollama** - For local AI models (offline mode)
-  - macOS/Linux: `curl -fsSL https://ollama.com/install.sh | sh`
-  - Or download from [ollama.ai](https://ollama.ai)
-  - Pull a model: `ollama pull qwen2.5-coder:14b`
+- **GGUF model file** - For local AI models (offline mode)
+  - Place a model at `~/.ted/models/local/model.gguf`, or point Ted to one with `--model-path`
+  - Ted manages the `llama-server` runtime automatically for the `local` provider
 
 ### Optional
 
 - **Docker Desktop** - For PostgreSQL and container features
-- **Anthropic API key** - For Claude models (if not using Ollama)
+- **Anthropic API key** - For Claude models (if not using the local provider)
 
 ## Development Setup
 
@@ -70,12 +69,12 @@ This will:
 
 ### 4. Configure AI Provider
 
-**Option A: Ollama (Offline, Recommended)**
+**Option A: Local llama.cpp (Offline, Recommended)**
 
-1. Install Ollama: `curl -fsSL https://ollama.com/install.sh | sh`
-2. Pull a model: `ollama pull qwen2.5-coder:14b`
-3. Start Ollama: `ollama serve` (or launch the desktop app)
-4. Teddy will auto-detect Ollama
+1. Open Teddy Settings → Hardware
+2. Click **Setup Local AI**
+3. Teddy picks the best model for your hardware, downloads it, and configures everything automatically
+4. Start chatting - Ted launches the local runtime when needed
 
 **Option B: Anthropic (Cloud)**
 
@@ -193,16 +192,15 @@ cd ..
 cargo build --release
 ```
 
-### Ollama connection failed
+### Local provider connection failed
 
-**Error**: `Failed to connect to Ollama`
+**Error**: `Failed to connect to local provider`
 
-**Solution**: Ensure Ollama is running:
+**Solution**: Ensure local provider is selected and a GGUF model is available:
 ```bash
-ollama serve
+./target/release/ted settings get provider
+ls ~/.ted/models/local/model.gguf
 ```
-
-Or launch the Ollama desktop app.
 
 ### Port already in use
 

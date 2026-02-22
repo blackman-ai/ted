@@ -29,9 +29,11 @@ export interface TedSettings {
   anthropicApiKey: string;
   anthropicModel: string;
 
-  // Ollama
-  ollamaBaseUrl: string;
-  ollamaModel: string;
+  // Local llama.cpp provider
+  localPort: number;
+  localModel: string;
+  localBaseUrl?: string;
+  localModelPath?: string;
 
   // OpenRouter
   openrouterApiKey: string;
@@ -58,8 +60,24 @@ const BLACKMAN_URLS = {
   production: 'https://app.useblackman.ai',
 } as const;
 
+const KNOWN_LOCAL_MODELS = [
+  {
+    value: 'qwen2.5-coder:1.5b',
+    label: 'Qwen2.5 Coder 1.5B (fastest)',
+  },
+  {
+    value: 'qwen2.5-coder:3b',
+    label: 'Qwen2.5 Coder 3B (balanced)',
+  },
+  {
+    value: 'qwen2.5-coder:7b',
+    label: 'Qwen2.5 Coder 7B (best quality)',
+  },
+] as const;
+
 interface SettingsProps {
   onClose: () => void;
+  initialTab?: SettingsTab;
 }
 
 interface DockerStatus {
@@ -79,15 +97,25 @@ interface PostgresStatus {
   dataDir: string;
 }
 
-export function Settings({ onClose }: SettingsProps) {
+type SettingsTab = 'providers' | 'deployment' | 'database' | 'hardware';
+type SettingsStatusLevel = 'info' | 'success' | 'error';
+
+interface SettingsStatus {
+  level: SettingsStatusLevel;
+  message: string;
+}
+
+export function Settings({ onClose, initialTab = 'providers' }: SettingsProps) {
   const [settings, setSettings] = useState<TedSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [activeTab, setActiveTab] = useState<'providers' | 'deployment' | 'database' | 'hardware'>('providers');
+  const [savingLocalModel, setSavingLocalModel] = useState(false);
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
   const [verifyingVercelToken, setVerifyingVercelToken] = useState(false);
   const [vercelTokenValid, setVercelTokenValid] = useState<boolean | null>(null);
   const [verifyingNetlifyToken, setVerifyingNetlifyToken] = useState(false);
   const [netlifyTokenValid, setNetlifyTokenValid] = useState<boolean | null>(null);
+  const [settingUpLocalModel, setSettingUpLocalModel] = useState(false);
 
   // Docker & PostgreSQL state
   const [dockerStatus, setDockerStatus] = useState<DockerStatus | null>(null);
@@ -97,6 +125,7 @@ export function Settings({ onClose }: SettingsProps) {
   const [postgresLogs, setPostgresLogs] = useState<string | null>(null);
   const [showLogs, setShowLogs] = useState(false);
   const [dockerInstructions, setDockerInstructions] = useState<string | null>(null);
+  const [status, setStatus] = useState<SettingsStatus | null>(null);
 
   useEffect(() => {
     loadSettings();
@@ -109,6 +138,18 @@ export function Settings({ onClose }: SettingsProps) {
     }
   }, [activeTab]);
 
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
+
+  useEffect(() => {
+    if (!status) {
+      return;
+    }
+    const timer = window.setTimeout(() => setStatus(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [status]);
+
   const loadSettings = async () => {
     try {
       const result = await window.teddy.getSettings() as Partial<TedSettings>;
@@ -118,8 +159,10 @@ export function Settings({ onClose }: SettingsProps) {
         model: result.model || 'claude-sonnet-4-20250514',
         anthropicApiKey: result.anthropicApiKey || '',
         anthropicModel: result.anthropicModel || 'claude-sonnet-4-20250514',
-        ollamaBaseUrl: result.ollamaBaseUrl || 'http://localhost:11434',
-        ollamaModel: result.ollamaModel || 'qwen2.5-coder:7b',
+        localPort: result.localPort || 8847,
+        localModel: result.localModel || 'qwen2.5-coder:3b',
+        localBaseUrl: result.localBaseUrl || '',
+        localModelPath: result.localModelPath || '',
         openrouterApiKey: result.openrouterApiKey || '',
         openrouterModel: result.openrouterModel || 'anthropic/claude-3.5-sonnet',
         blackmanApiKey: result.blackmanApiKey || '',
@@ -174,12 +217,16 @@ export function Settings({ onClose }: SettingsProps) {
       const result = await window.teddy.postgresStart();
       if (result.success) {
         await loadPostgresStatus();
+        setStatus({ level: 'success', message: 'PostgreSQL started successfully.' });
       } else {
-        alert(`Failed to start PostgreSQL: ${result.error}`);
+        setStatus({
+          level: 'error',
+          message: `Failed to start PostgreSQL: ${result.error || 'Unknown error'}`,
+        });
       }
     } catch (err) {
       console.error('Failed to start PostgreSQL:', err);
-      alert('Failed to start PostgreSQL');
+      setStatus({ level: 'error', message: 'Failed to start PostgreSQL.' });
     } finally {
       setPostgresLoading(false);
     }
@@ -191,12 +238,16 @@ export function Settings({ onClose }: SettingsProps) {
       const result = await window.teddy.postgresStop();
       if (result.success) {
         await loadPostgresStatus();
+        setStatus({ level: 'success', message: 'PostgreSQL stopped.' });
       } else {
-        alert(`Failed to stop PostgreSQL: ${result.error}`);
+        setStatus({
+          level: 'error',
+          message: `Failed to stop PostgreSQL: ${result.error || 'Unknown error'}`,
+        });
       }
     } catch (err) {
       console.error('Failed to stop PostgreSQL:', err);
-      alert('Failed to stop PostgreSQL');
+      setStatus({ level: 'error', message: 'Failed to stop PostgreSQL.' });
     } finally {
       setPostgresLoading(false);
     }
@@ -216,35 +267,63 @@ export function Settings({ onClose }: SettingsProps) {
     try {
       const result = await window.teddy.postgresTestConnection();
       if (result.success) {
-        alert('Connection successful! PostgreSQL is ready.');
+        setStatus({ level: 'success', message: 'Connection successful. PostgreSQL is ready.' });
       } else {
-        alert(`Connection failed: ${result.error}`);
+        setStatus({
+          level: 'error',
+          message: `Connection failed: ${result.error || 'Unknown error'}`,
+        });
       }
     } catch (err) {
       console.error('Failed to test connection:', err);
-      alert('Failed to test connection');
+      setStatus({ level: 'error', message: 'Failed to test PostgreSQL connection.' });
     }
   };
 
   const copyDatabaseUrl = async () => {
     if (postgresStatus?.databaseUrl) {
-      await navigator.clipboard.writeText(postgresStatus.databaseUrl);
-      alert('DATABASE_URL copied to clipboard!');
+      try {
+        await navigator.clipboard.writeText(postgresStatus.databaseUrl);
+        setStatus({ level: 'success', message: 'DATABASE_URL copied to clipboard.' });
+      } catch (err) {
+        console.error('Failed to copy DATABASE_URL:', err);
+        setStatus({ level: 'error', message: 'Failed to copy DATABASE_URL.' });
+      }
     }
   };
 
   const saveSettings = async () => {
     if (!settings) return;
 
+    const usesManagedLocalModel =
+      settings.provider === 'local' && !settings.localBaseUrl?.trim();
+
     setSaving(true);
+    setSavingLocalModel(usesManagedLocalModel);
     try {
-      await window.teddy.saveSettings(settings);
+      if (usesManagedLocalModel) {
+        setStatus({
+          level: 'info',
+          message: `Preparing ${settings.localModel}. Teddy may download this model, which can take a few minutes...`,
+        });
+      }
+
+      const result = await window.teddy.saveSettings(settings);
+      if (!result.success) {
+        setStatus({
+          level: 'error',
+          message: result.error || 'Failed to save settings.',
+        });
+        return;
+      }
+
       onClose();
     } catch (err) {
       console.error('Failed to save settings:', err);
-      alert('Failed to save settings');
+      setStatus({ level: 'error', message: 'Failed to save settings.' });
     } finally {
       setSaving(false);
+      setSavingLocalModel(false);
     }
   };
 
@@ -252,15 +331,43 @@ export function Settings({ onClose }: SettingsProps) {
     try {
       const hardware = await window.teddy.detectHardware();
       setSettings(prev => prev ? { ...prev, hardware } : null);
+      setStatus({ level: 'success', message: 'Hardware profile updated.' });
     } catch (err) {
       console.error('Failed to detect hardware:', err);
-      alert('Failed to detect hardware');
+      setStatus({ level: 'error', message: 'Failed to detect hardware.' });
+    }
+  };
+
+  const setupLocalAi = async () => {
+    setSettingUpLocalModel(true);
+    setStatus({ level: 'info', message: 'Setting up local AI. This may take a few minutes...' });
+
+    try {
+      const result = await window.teddy.setupRecommendedLocalModel();
+      if (!result.success) {
+        setStatus({
+          level: 'error',
+          message: `Local setup failed: ${result.error || 'Unknown error'}`,
+        });
+        return;
+      }
+
+      await loadSettings();
+      setStatus({
+        level: 'success',
+        message: result.message || 'Local AI is ready.',
+      });
+    } catch (err) {
+      console.error('Failed to set up local AI:', err);
+      setStatus({ level: 'error', message: 'Failed to set up local AI.' });
+    } finally {
+      setSettingUpLocalModel(false);
     }
   };
 
   const verifyVercelToken = async () => {
     if (!settings?.vercelToken) {
-      alert('Please enter a Vercel token first');
+      setStatus({ level: 'info', message: 'Enter a Vercel token before verifying.' });
       return;
     }
 
@@ -270,12 +377,17 @@ export function Settings({ onClose }: SettingsProps) {
       const result = await window.teddy.verifyVercelToken(settings.vercelToken);
       setVercelTokenValid(result.valid);
       if (!result.valid) {
-        alert(`Token verification failed: ${result.error}`);
+        setStatus({
+          level: 'error',
+          message: `Vercel token verification failed: ${result.error || 'Unknown error'}`,
+        });
+      } else {
+        setStatus({ level: 'success', message: 'Vercel token verified successfully.' });
       }
     } catch (err) {
       console.error('Failed to verify token:', err);
       setVercelTokenValid(false);
-      alert('Failed to verify token');
+      setStatus({ level: 'error', message: 'Failed to verify Vercel token.' });
     } finally {
       setVerifyingVercelToken(false);
     }
@@ -283,7 +395,7 @@ export function Settings({ onClose }: SettingsProps) {
 
   const verifyNetlifyToken = async () => {
     if (!settings?.netlifyToken) {
-      alert('Please enter a Netlify token first');
+      setStatus({ level: 'info', message: 'Enter a Netlify token before verifying.' });
       return;
     }
 
@@ -293,12 +405,17 @@ export function Settings({ onClose }: SettingsProps) {
       const result = await window.teddy.verifyNetlifyToken(settings.netlifyToken);
       setNetlifyTokenValid(result.valid);
       if (!result.valid) {
-        alert(`Token verification failed: ${result.error}`);
+        setStatus({
+          level: 'error',
+          message: `Netlify token verification failed: ${result.error || 'Unknown error'}`,
+        });
+      } else {
+        setStatus({ level: 'success', message: 'Netlify token verified successfully.' });
       }
     } catch (err) {
       console.error('Failed to verify token:', err);
       setNetlifyTokenValid(false);
-      alert('Failed to verify token');
+      setStatus({ level: 'error', message: 'Failed to verify Netlify token.' });
     } finally {
       setVerifyingNetlifyToken(false);
     }
@@ -360,6 +477,12 @@ export function Settings({ onClose }: SettingsProps) {
           </button>
         </div>
 
+        {status && (
+          <div className={`settings-status ${status.level}`} role="status">
+            {status.message}
+          </div>
+        )}
+
         <div className="settings-content">
           {activeTab === 'providers' && (
             <div className="settings-section">
@@ -374,8 +497,8 @@ export function Settings({ onClose }: SettingsProps) {
                     const newProvider = e.target.value;
                     // Sync the model field when provider changes
                     let newModel = settings.model;
-                    if (newProvider === 'ollama') {
-                      newModel = settings.ollamaModel;
+                    if (newProvider === 'local') {
+                      newModel = settings.localModel;
                     } else if (newProvider === 'openrouter') {
                       newModel = settings.openrouterModel;
                     } else if (newProvider === 'blackman') {
@@ -388,7 +511,7 @@ export function Settings({ onClose }: SettingsProps) {
                 >
                   <option value="anthropic">Anthropic Claude</option>
                   <option value="blackman">Blackman AI (Optimized)</option>
-                  <option value="ollama">Ollama (Local)</option>
+                  <option value="local">Local (llama.cpp)</option>
                   <option value="openrouter">OpenRouter</option>
                 </select>
               </div>
@@ -422,34 +545,80 @@ export function Settings({ onClose }: SettingsProps) {
                 </>
               )}
 
-              {settings.provider === 'ollama' && (
+              {settings.provider === 'local' && (
                 <>
-                  <h4>Ollama Settings</h4>
+                  <h4>Local llama.cpp Settings</h4>
                   <div className="form-group">
-                    <label htmlFor="ollama-url">Base URL</label>
-                    <input
-                      type="text"
-                      id="ollama-url"
-                      value={settings.ollamaBaseUrl}
-                      onChange={(e) => setSettings({ ...settings, ollamaBaseUrl: e.target.value })}
-                      placeholder="http://localhost:11434"
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label htmlFor="ollama-model">Model</label>
-                    <input
-                      type="text"
-                      id="ollama-model"
-                      value={settings.ollamaModel}
-                      onChange={(e) => setSettings({ ...settings, ollamaModel: e.target.value, model: e.target.value })}
-                      placeholder="qwen2.5-coder:14b"
-                    />
+                    <button
+                      className="btn-primary"
+                      onClick={setupLocalAi}
+                      disabled={settingUpLocalModel}
+                    >
+                      {settingUpLocalModel ? 'Setting up local AI...' : 'One-Click Setup Local AI'}
+                    </button>
                     <small>
-                      {settings.hardware?.recommendedModels?.[0] && (
-                        <>Recommended for your hardware: {settings.hardware.recommendedModels[0]}</>
-                      )}
+                      Teddy will choose the best model for your hardware, download it, and configure everything.
                     </small>
                   </div>
+                  <div className="form-group">
+                    <label htmlFor="local-port">Server Port</label>
+                    <input
+                      type="number"
+                      id="local-port"
+                      min={1}
+                      max={65535}
+                      value={settings.localPort}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          localPort: Number(e.target.value) || 8847,
+                        })
+                      }
+                      placeholder="8847"
+                    />
+                    <small>Default: 8847</small>
+                  </div>
+                  <div className="form-group">
+                    <label htmlFor="local-model">Model</label>
+                    <select
+                      id="local-model"
+                      value={settings.localModel}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          localModel: e.target.value,
+                          model: e.target.value,
+                        })
+                      }
+                    >
+                      {KNOWN_LOCAL_MODELS.map((model) => (
+                        <option key={model.value} value={model.value}>
+                          {model.label}
+                        </option>
+                      ))}
+                    </select>
+                    <small>
+                      Curated models optimized for reliable tool calling. Teddy downloads the selected model automatically when you save.
+                    </small>
+                  </div>
+                  <details className="advanced-settings">
+                    <summary>Advanced local settings</summary>
+                    <div className="advanced-settings-body">
+                      <div className="form-group">
+                        <label htmlFor="local-base-url">Custom Local Server URL (Optional)</label>
+                        <input
+                          type="text"
+                          id="local-base-url"
+                          value={settings.localBaseUrl || ''}
+                          onChange={(e) => setSettings({ ...settings, localBaseUrl: e.target.value })}
+                          placeholder="http://127.0.0.1:8847"
+                        />
+                        <small>
+                          Power-user mode: connect to your own OpenAI-compatible local server. Leave blank to use Teddy-managed local AI.
+                        </small>
+                      </div>
+                    </div>
+                  </details>
                 </>
               )}
 
@@ -849,9 +1018,18 @@ export function Settings({ onClose }: SettingsProps) {
 
               <div className="hardware-header" style={{ marginTop: '24px' }}>
                 <h3>Hardware Profile</h3>
-                <button className="btn-secondary" onClick={detectHardware}>
-                  🔄 Re-detect
-                </button>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button className="btn-secondary" onClick={detectHardware}>
+                    🔄 Re-detect
+                  </button>
+                  <button
+                    className="btn-primary"
+                    onClick={setupLocalAi}
+                    disabled={settingUpLocalModel}
+                  >
+                    {settingUpLocalModel ? 'Setting up...' : 'Setup Local AI'}
+                  </button>
+                </div>
               </div>
 
               {settings.hardware && settings.hardware.cpuBrand ? (
@@ -957,7 +1135,9 @@ export function Settings({ onClose }: SettingsProps) {
             Cancel
           </button>
           <button className="btn-primary" onClick={saveSettings} disabled={saving}>
-            {saving ? 'Saving...' : 'Save Settings'}
+            {saving
+              ? (savingLocalModel ? 'Downloading Model...' : 'Saving...')
+              : 'Save Settings'}
           </button>
         </div>
       </div>

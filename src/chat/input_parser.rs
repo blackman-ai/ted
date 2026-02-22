@@ -21,7 +21,13 @@ use super::commands::{
 pub fn parse_shell_command(input: &str) -> Option<&str> {
     let trimmed = input.trim();
     if trimmed.starts_with('>') {
-        Some(trimmed.strip_prefix('>').unwrap().trim())
+        // Safe unwrap: we already verified the string starts with '>'
+        Some(
+            trimmed
+                .strip_prefix('>')
+                .expect("string starts with '>'")
+                .trim(),
+        )
     } else {
         None
     }

@@ -16,14 +16,14 @@ npm --version
 # Rust & Cargo
 cargo --version  # Should be 1.70+
 
-# Ollama (optional but recommended)
-ollama --version
+# Optional: check for a local GGUF model
+ls ~/.ted/models/local/model.gguf
 ```
 
 If missing, install:
 - **Node.js**: https://nodejs.org/
 - **Rust**: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
-- **Ollama**: `curl -fsSL https://ollama.com/install.sh | sh`
+- **Optional local model**: place a GGUF model at `~/.ted/models/local/model.gguf`
 
 ---
 
@@ -60,7 +60,7 @@ cargo build --release
 
 **Expected output**:
 ```
-   Compiling ted v0.1.1
+   Compiling ted v0.x.x
     Finished release [optimized] target(s) in 2m 34s
 ```
 
@@ -69,26 +69,28 @@ The binary will be at: `target/release/ted`
 Verify it works:
 ```bash
 ./target/release/ted --version
-# Should output: ted 0.1.1
+# Should output: ted 0.x.x
 ```
 
 ---
 
-## Step 3: Setup Ollama (Recommended)
+## Step 3: Setup Local Provider (Recommended)
 
-For offline AI, use Ollama:
+For offline AI, use Ted's `local` provider (llama.cpp):
 
 ```bash
-# Start Ollama server (if not already running)
-ollama serve &
+# Ensure the local model directory exists
+mkdir -p ~/.ted/models/local
 
-# Pull a coding model (14B parameters, ~8GB download)
-ollama pull qwen2.5-coder:14b
+# Place a GGUF model file here
+# ~/.ted/models/local/model.gguf
 ```
 
-**Alternative models**:
-- `qwen2.5-coder:7b` - Smaller, faster (4GB)
-- `deepseek-coder-v2:latest` - Strong coding model (16GB)
+If you do not have a model yet, download a GGUF model from your preferred source
+and place it at:
+```bash
+~/.ted/models/local/model.gguf
+```
 
 **Skip this step** if you have an Anthropic API key:
 ```bash
@@ -184,12 +186,12 @@ Then open `~/teddy-test` in Teddy.
 
 ### Change AI Provider
 
-**To Ollama**:
+**To Local (llama.cpp)**:
 ```typescript
 // In ChatPanel, modify options:
 onSendMessage(prompt, {
-  provider: 'ollama',
-  model: 'qwen2.5-coder:14b'
+  provider: 'local',
+  model: 'local'
 });
 ```
 

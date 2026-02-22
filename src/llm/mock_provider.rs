@@ -98,7 +98,13 @@ impl MockProvider {
 
     /// Set the text response
     pub fn with_response(self, text: impl Into<String>) -> Self {
-        let mut responses = self.responses.lock().unwrap();
+        let mut responses = match self.responses.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                tracing::warn!("Mock provider responses lock was poisoned, recovering");
+                poisoned.into_inner()
+            }
+        };
         responses.clear();
         responses.push(MockResponse {
             text: text.into(),
@@ -110,7 +116,13 @@ impl MockProvider {
 
     /// Queue multiple responses (returned in order)
     pub fn with_responses(self, texts: Vec<String>) -> Self {
-        let mut responses = self.responses.lock().unwrap();
+        let mut responses = match self.responses.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                tracing::warn!("Mock provider responses lock was poisoned, recovering");
+                poisoned.into_inner()
+            }
+        };
         responses.clear();
         for text in texts {
             responses.push(MockResponse {
@@ -124,7 +136,13 @@ impl MockProvider {
 
     /// Set a tool call response
     pub fn with_tool_call(self, name: impl Into<String>, input: serde_json::Value) -> Self {
-        let mut responses = self.responses.lock().unwrap();
+        let mut responses = match self.responses.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                tracing::warn!("Mock provider responses lock was poisoned, recovering");
+                poisoned.into_inner()
+            }
+        };
         responses.clear();
         responses.push(MockResponse {
             text: String::new(),

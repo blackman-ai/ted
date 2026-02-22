@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2025 Blackman Artificial Intelligence Technologies Inc.
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use tower_lsp::lsp_types::*;
@@ -33,9 +34,12 @@ pub async fn provide_completions(
     };
 
     // Determine what kind of completion to provide based on context
+    let doc_path = doc.uri.to_file_path().ok();
     match doc.language_id.as_str() {
         "javascript" | "typescript" | "javascriptreact" | "typescriptreact" => {
-            items.extend(js_completions(prefix, &doc.content, workspace).await?);
+            items.extend(
+                js_completions(prefix, &doc.content, workspace, doc_path.as_deref()).await?,
+            );
         }
         "rust" => {
             items.extend(rust_completions(prefix, &doc.content, workspace).await?);
@@ -56,16 +60,18 @@ pub async fn provide_completions(
 async fn js_completions(
     prefix: &str,
     content: &str,
-    _workspace: Option<&Path>,
+    workspace: Option<&Path>,
+    current_file: Option<&Path>,
 ) -> Result<Vec<CompletionItem>> {
     let mut items = Vec::new();
 
     // Import path completions
-    if prefix.contains("import") || prefix.contains("from") || prefix.contains("require") {
-        // Check if we're in a string
-        if prefix.ends_with("'") || prefix.ends_with("\"") || prefix.ends_with("/") {
-            // TODO: Provide file path completions from workspace
-        }
+    if let Some(import_prefix) = extract_import_prefix(prefix) {
+        items.extend(js_import_path_completions(
+            &import_prefix,
+            workspace,
+            current_file,
+        )?);
     }
 
     // Extract function/variable names from the document for local completions
@@ -91,6 +97,150 @@ async fn js_completions(
     }
 
     Ok(items)
+}
+
+/// Extract the currently typed import path prefix from a JavaScript/TypeScript line prefix.
+fn extract_import_prefix(prefix: &str) -> Option<String> {
+    let is_import_context =
+        prefix.contains("import") || prefix.contains("from") || prefix.contains("require(");
+    if !is_import_context {
+        return None;
+    }
+
+    let quote_pos = prefix.rfind('\'').or_else(|| prefix.rfind('"'))?;
+    let path_prefix = &prefix[quote_pos + 1..];
+    Some(path_prefix.to_string())
+}
+
+fn js_import_path_completions(
+    import_prefix: &str,
+    workspace: Option<&Path>,
+    current_file: Option<&Path>,
+) -> Result<Vec<CompletionItem>> {
+    if import_prefix.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let Some((root, display_prefix)) =
+        resolve_import_search_root(import_prefix, workspace, current_file)
+    else {
+        return Ok(Vec::new());
+    };
+    let (search_dir, typed_leaf, suggestion_prefix) =
+        resolve_import_search_dir(&root, &display_prefix, import_prefix);
+
+    if !search_dir.exists() || !search_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut items = Vec::new();
+    let mut seen = HashSet::new();
+    for entry in std::fs::read_dir(search_dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let name = entry.file_name().to_string_lossy().to_string();
+
+        if name.starts_with('.') {
+            continue;
+        }
+        if !typed_leaf.is_empty() && !name.starts_with(&typed_leaf) {
+            continue;
+        }
+
+        let mut suggestion = format!("{}{}", suggestion_prefix, name);
+        let mut kind = CompletionItemKind::FILE;
+        if file_type.is_dir() {
+            suggestion.push('/');
+            kind = CompletionItemKind::FOLDER;
+        } else if let Some(trimmed) = trim_js_extension(&name) {
+            suggestion = format!("{}{}", suggestion_prefix, trimmed);
+        }
+
+        if seen.insert(suggestion.clone()) {
+            items.push(CompletionItem {
+                label: suggestion.clone(),
+                kind: Some(kind),
+                detail: Some("Import path".to_string()),
+                insert_text: Some(suggestion),
+                ..Default::default()
+            });
+        }
+    }
+
+    items.sort_by(|a, b| a.label.cmp(&b.label));
+    Ok(items)
+}
+
+fn resolve_import_search_root(
+    import_prefix: &str,
+    workspace: Option<&Path>,
+    current_file: Option<&Path>,
+) -> Option<(PathBuf, String)> {
+    if let Some(path) = import_prefix.strip_prefix("@/") {
+        if let Some(root) = workspace {
+            return Some((root.to_path_buf(), format!("@/{}", path)));
+        }
+    }
+
+    if import_prefix.starts_with("./") || import_prefix.starts_with("../") {
+        if let Some(current) = current_file {
+            if let Some(base) = current.parent() {
+                return Some((base.to_path_buf(), import_prefix.to_string()));
+            }
+        }
+    }
+
+    if import_prefix.starts_with('/') {
+        if let Some(root) = workspace {
+            let without_root = import_prefix.trim_start_matches('/');
+            return Some((root.to_path_buf(), without_root.to_string()));
+        }
+    }
+
+    None
+}
+
+fn resolve_import_search_dir(
+    root: &Path,
+    display_prefix: &str,
+    import_prefix: &str,
+) -> (PathBuf, String, String) {
+    let normalized = if import_prefix.starts_with("@/") {
+        import_prefix.trim_start_matches("@/")
+    } else if import_prefix.starts_with('/') {
+        import_prefix.trim_start_matches('/')
+    } else {
+        import_prefix
+    };
+
+    let has_trailing_slash = normalized.ends_with('/');
+    let (dir_part, leaf_part) = if has_trailing_slash {
+        (normalized, "")
+    } else if let Some(idx) = normalized.rfind('/') {
+        (&normalized[..=idx], &normalized[idx + 1..])
+    } else {
+        ("", normalized)
+    };
+
+    let search_dir = root.join(dir_part);
+    let suggestion_prefix = if display_prefix.starts_with("@/") {
+        format!("@/{}", dir_part)
+    } else if import_prefix.starts_with('/') {
+        format!("/{dir_part}")
+    } else {
+        dir_part.to_string()
+    };
+
+    (search_dir, leaf_part.to_string(), suggestion_prefix)
+}
+
+fn trim_js_extension(name: &str) -> Option<&str> {
+    for ext in [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"] {
+        if let Some(stripped) = name.strip_suffix(ext) {
+            return Some(stripped);
+        }
+    }
+    None
 }
 
 /// Extract JavaScript identifiers from content
@@ -464,6 +614,8 @@ fn get_word_at_end(s: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::TempDir;
 
     // Tests for get_word_at_end
     #[test]
@@ -699,5 +851,55 @@ mod tests {
         for item in &result {
             assert_eq!(item.kind, Some(CompletionItemKind::TEXT));
         }
+    }
+
+    #[test]
+    fn test_extract_import_prefix_from_from_clause() {
+        let prefix = "import { foo } from './compo";
+        assert_eq!(extract_import_prefix(prefix), Some("./compo".to_string()));
+    }
+
+    #[test]
+    fn test_extract_import_prefix_from_require() {
+        let prefix = "const util = require('../ut";
+        assert_eq!(extract_import_prefix(prefix), Some("../ut".to_string()));
+    }
+
+    #[test]
+    fn test_js_import_path_completions_relative() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        let src = root.join("src");
+        fs::create_dir_all(src.join("components")).unwrap();
+        fs::write(
+            src.join("components").join("button.tsx"),
+            "export const Button = 1;",
+        )
+        .unwrap();
+        fs::write(
+            src.join("components").join("card.tsx"),
+            "export const Card = 1;",
+        )
+        .unwrap();
+        let current = src.join("app.tsx");
+        fs::write(&current, "import x from './components/'").unwrap();
+
+        let items =
+            js_import_path_completions("./components/", Some(root), Some(&current)).unwrap();
+        let labels: Vec<String> = items.into_iter().map(|i| i.label).collect();
+
+        assert!(labels.contains(&"./components/button".to_string()));
+        assert!(labels.contains(&"./components/card".to_string()));
+    }
+
+    #[test]
+    fn test_js_import_path_completions_workspace_alias() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::write(root.join("lib").join("helpers.ts"), "export const h = 1;").unwrap();
+
+        let items = js_import_path_completions("@/lib/he", Some(root), None).unwrap();
+        assert!(items.iter().any(|item| item.label == "@/lib/helpers"));
     }
 }

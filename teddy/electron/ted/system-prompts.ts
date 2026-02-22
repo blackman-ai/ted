@@ -23,6 +23,8 @@ export interface TeddyPromptOptions {
   hardwareTier?: 'ultratiny' | 'ancient' | 'tiny' | 'small' | 'medium' | 'large' | 'cloud';
   /** Whether the project already has files */
   projectHasFiles?: boolean;
+  /** Whether this user turn is asking Teddy to build/edit/run something */
+  buildIntent?: boolean;
   /** Detected project type from existing files (if any) */
   detectedProjectType?: string;
   /** User's experience level preference (affects verbosity) */
@@ -60,6 +62,7 @@ export function generateTeddyPrompt(options: TeddyPromptOptions = {}): string {
   const {
     hardwareTier = 'medium',
     projectHasFiles = false,
+    buildIntent = true,
     detectedProjectType,
     experienceLevel = 'beginner',
     modelCapability = 'medium',
@@ -76,6 +79,18 @@ export function generateTeddyPrompt(options: TeddyPromptOptions = {}): string {
 You are running inside Teddy, a friendly app builder for everyone.
 Your job is to BUILD working applications, not give instructions.
 `);
+
+  if (!buildIntent) {
+    sections.push(`
+=== CONVERSATION MODE ===
+The user did not ask to build or modify code in this turn.
+Respond conversationally in plain text.
+Do NOT call file or shell tools.
+Do NOT create, edit, or delete files.
+If the user later asks to build something, switch back to app-builder behavior.
+`);
+    return sections.join('\n');
+  }
 
   // Smart technology selection guidance
   // More explicit for small models, more flexible for large models
@@ -109,6 +124,20 @@ Use whatever technology they mentioned.
 
 STEP 3: CREATE THE FILES
 Use file_write or shell commands. Do NOT just explain - BUILD IT.
+
+STEP 4: OUTPUT EXECUTABLE TOOL CALLS
+When you act, output tool-call JSON (not tutorials, not file examples).
+Use this exact structure:
+\`\`\`json
+{"name":"file_write","arguments":{"path":"index.html","content":"..."}}
+\`\`\`
+For shell commands:
+\`\`\`json
+{"name":"shell","arguments":{"command":"npm run dev"}}
+\`\`\`
+If you are building, emit tool-call JSON first. Do NOT only describe what to do.
+If you write plain-English steps first, Teddy cannot execute them.
+Your FIRST output must be an executable tool call JSON block.
 `);
   } else {
     sections.push(`

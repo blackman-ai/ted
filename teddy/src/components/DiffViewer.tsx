@@ -31,7 +31,7 @@ interface DiffViewerProps {
 }
 
 export function DiffViewer({
-  projectPath,
+  projectPath: _projectPath,
   pendingChanges,
   onAccept,
   onReject,
@@ -80,10 +80,6 @@ export function DiffViewer({
 
     return groups;
   }, [pendingChanges]);
-
-  const hasGroups = useMemo(() => {
-    return Array.from(groupedChanges.keys()).some(key => key !== null);
-  }, [groupedChanges]);
 
   const toggleGroup = (groupId: string) => {
     setExpandedGroups(prev => {

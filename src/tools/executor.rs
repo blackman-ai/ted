@@ -19,16 +19,32 @@ pub struct ToolExecutor {
 }
 
 impl ToolExecutor {
-    /// Create a new executor
-    pub fn new(context: ToolContext, trust_mode: bool) -> Self {
-        let permission_manager = if trust_mode {
+    fn build_permission_manager(trust_mode: bool) -> PermissionManager {
+        if trust_mode {
             PermissionManager::with_trust_mode()
         } else {
             PermissionManager::new()
-        };
+        }
+    }
+
+    /// Create a new executor
+    pub fn new(context: ToolContext, trust_mode: bool) -> Self {
+        let permission_manager = Self::build_permission_manager(trust_mode);
 
         Self {
             registry: ToolRegistry::with_builtins(),
+            permission_manager,
+            context,
+        }
+    }
+
+    /// Create a new executor with no registered tools.
+    /// Useful for strict chat-only turns where tool execution must be impossible.
+    pub fn new_without_tools(context: ToolContext, trust_mode: bool) -> Self {
+        let permission_manager = Self::build_permission_manager(trust_mode);
+
+        Self {
+            registry: ToolRegistry::new(),
             permission_manager,
             context,
         }
@@ -42,6 +58,38 @@ impl ToolExecutor {
     /// Get mutable access to the tool registry for registration of additional tools
     pub fn registry_mut(&mut self) -> &mut ToolRegistry {
         &mut self.registry
+    }
+
+    /// Check permissions and return the tool + context for external execution.
+    /// Used for spawning tools concurrently (e.g., multiple spawn_agent calls).
+    /// Returns Ok(Some(tool, context)) if approved, Ok(None) if denied, Err on error.
+    pub fn approve_and_get_tool(
+        &mut self,
+        tool_name: &str,
+        input: &serde_json::Value,
+    ) -> Result<Option<(std::sync::Arc<dyn super::Tool>, ToolContext)>> {
+        let tool = self
+            .registry
+            .get(tool_name)
+            .ok_or_else(|| TedError::ToolExecution(format!("Unknown tool: {}", tool_name)))?
+            .clone();
+
+        if tool.requires_permission() && self.permission_manager.needs_permission(tool_name) {
+            if let Some(request) = tool.permission_request(input) {
+                match self.permission_manager.request_permission(&request) {
+                    Ok(PermissionResponse::Deny) => return Ok(None),
+                    Err(e) => {
+                        return Err(TedError::ToolExecution(format!(
+                            "Failed to get permission: {}",
+                            e
+                        )));
+                    }
+                    _ => {} // Granted
+                }
+            }
+        }
+
+        Ok(Some((tool, self.context.clone())))
     }
 
     /// Execute a tool use from the LLM response
@@ -181,6 +229,16 @@ mod tests {
 
         // Executor in trust mode
         assert!(executor.permission_manager.is_trust_mode());
+    }
+
+    #[test]
+    fn test_executor_new_without_tools() {
+        let temp_dir = TempDir::new().unwrap();
+        let context = create_test_context(&temp_dir);
+        let executor = ToolExecutor::new_without_tools(context, false);
+
+        let definitions = executor.tool_definitions();
+        assert!(definitions.is_empty());
     }
 
     #[test]
@@ -864,5 +922,54 @@ mod tests {
         // Should be able to get a mutable reference to the registry
         let registry = executor.registry_mut();
         assert!(!registry.is_empty());
+    }
+
+    #[test]
+    fn test_approve_and_get_tool_unknown_tool_returns_error() {
+        let temp_dir = TempDir::new().unwrap();
+        let context = create_test_context(&temp_dir);
+        let mut executor = ToolExecutor::new(context, true);
+
+        let error = match executor
+            .approve_and_get_tool("definitely_unknown_tool", &serde_json::json!({}))
+        {
+            Ok(_) => panic!("Expected error for unknown tool"),
+            Err(e) => e,
+        };
+
+        match error {
+            TedError::ToolExecution(msg) => assert!(msg.contains("Unknown tool")),
+            other => panic!("Expected ToolExecution error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_approve_and_get_tool_known_tool_returns_tool_and_context() {
+        let temp_dir = TempDir::new().unwrap();
+        let context = create_test_context(&temp_dir);
+        let expected_dir = context.working_directory.clone();
+        let mut executor = ToolExecutor::new(context, true);
+
+        let approved = executor
+            .approve_and_get_tool("file_read", &serde_json::json!({"path":"Cargo.toml"}))
+            .unwrap();
+
+        assert!(approved.is_some());
+        let (tool, returned_context) = approved.unwrap();
+        assert_eq!(tool.name(), "file_read");
+        assert_eq!(returned_context.working_directory, expected_dir);
+    }
+
+    #[test]
+    fn test_approve_and_get_tool_non_trust_read_tool_is_auto_approved() {
+        let temp_dir = TempDir::new().unwrap();
+        let context = create_test_context(&temp_dir);
+        let mut executor = ToolExecutor::new(context, false);
+
+        let approved = executor
+            .approve_and_get_tool("grep", &serde_json::json!({"pattern":"test"}))
+            .unwrap();
+
+        assert!(approved.is_some());
     }
 }

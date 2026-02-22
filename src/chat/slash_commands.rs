@@ -651,6 +651,16 @@ fn execute_beads_stats(store: &BeadStore) -> SlashCommandResult {
 
 // === Model Command Execution ===
 
+fn normalize_model_lookup_name(input: &str) -> String {
+    input.trim().to_lowercase().replace(':', "-")
+}
+
+fn model_id_matches_query(model_id: &str, query: &str) -> bool {
+    let normalized_id = normalize_model_lookup_name(model_id);
+    let normalized_query = normalize_model_lookup_name(query);
+    normalized_id == normalized_query || normalized_id.contains(&normalized_query)
+}
+
 /// Execute /model command
 pub fn execute_model(args: &ModelArgs) -> SlashCommandResult {
     match args.subcommand.as_deref() {
@@ -780,11 +790,10 @@ fn execute_model_download(name: &str, quantization: Option<&str>) -> SlashComman
         }
     };
 
-    let name_lower = name.to_lowercase();
     let model = registry
         .models
         .iter()
-        .find(|m| m.id.to_lowercase() == name_lower || m.id.to_lowercase().contains(&name_lower));
+        .find(|m| model_id_matches_query(&m.id, name));
 
     match model {
         Some(m) => {
@@ -839,11 +848,13 @@ fn execute_model_download(name: &str, quantization: Option<&str>) -> SlashComman
             }
         }
         None => {
+            let normalized_query = normalize_model_lookup_name(name);
+            let name_lower = name.to_lowercase();
             let similar: Vec<_> = registry
                 .models
                 .iter()
                 .filter(|m| {
-                    m.id.to_lowercase().contains(&name_lower)
+                    normalize_model_lookup_name(&m.id).contains(&normalized_query)
                         || m.name.to_lowercase().contains(&name_lower)
                 })
                 .take(5)
@@ -868,11 +879,11 @@ fn execute_model_download(name: &str, quantization: Option<&str>) -> SlashComman
 /// Load a model for inference
 fn execute_model_load(name: &str) -> SlashCommandResult {
     let discovered = scan_for_models();
-    let name_lower = name.to_lowercase();
+    let normalized_query = normalize_model_lookup_name(name);
 
     let matching: Vec<_> = discovered
         .iter()
-        .filter(|m| m.filename.to_lowercase().contains(&name_lower))
+        .filter(|m| normalize_model_lookup_name(&m.filename).contains(&normalized_query))
         .collect();
 
     match matching.len() {
@@ -932,11 +943,10 @@ fn execute_model_info(name: &str) -> SlashCommandResult {
     };
 
     // Find model by ID (case-insensitive, partial match)
-    let name_lower = name.to_lowercase();
     let model = registry
         .models
         .iter()
-        .find(|m| m.id.to_lowercase() == name_lower || m.id.to_lowercase().contains(&name_lower));
+        .find(|m| model_id_matches_query(&m.id, name));
 
     match model {
         Some(m) => {
@@ -975,11 +985,13 @@ fn execute_model_info(name: &str) -> SlashCommandResult {
         }
         None => {
             // Try to find similar models
+            let normalized_query = normalize_model_lookup_name(name);
+            let name_lower = name.to_lowercase();
             let similar: Vec<_> = registry
                 .models
                 .iter()
                 .filter(|m| {
-                    m.id.to_lowercase().contains(&name_lower)
+                    normalize_model_lookup_name(&m.id).contains(&normalized_query)
                         || m.name.to_lowercase().contains(&name_lower)
                 })
                 .take(5)
@@ -1067,7 +1079,44 @@ fn detect_check_commands(working_dir: &Path) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::path::Path;
     use tempfile::TempDir;
+
+    static HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct HomeEnvGuard {
+        previous_home: Option<OsString>,
+    }
+
+    impl Drop for HomeEnvGuard {
+        fn drop(&mut self) {
+            if let Some(home) = self.previous_home.as_ref() {
+                std::env::set_var("HOME", home);
+            } else {
+                std::env::remove_var("HOME");
+            }
+        }
+    }
+
+    fn with_temp_home<F>(test_fn: F)
+    where
+        F: FnOnce(&TempDir),
+    {
+        let _lock = HOME_ENV_LOCK.lock().unwrap();
+        let previous_home = std::env::var_os("HOME");
+        let temp = TempDir::new().unwrap();
+        std::env::set_var("HOME", temp.path());
+        let _guard = HomeEnvGuard { previous_home };
+        test_fn(&temp);
+    }
+
+    fn create_fake_gguf(path: &Path) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, vec![0u8; 1_200_000]).unwrap();
+    }
 
     #[test]
     fn test_execute_commit_no_args() {
@@ -1512,6 +1561,330 @@ mod tests {
                 assert!(msg.contains("33.3% complete"));
             }
             _ => panic!("Expected Message"),
+        }
+    }
+
+    // === Model Command Tests ===
+
+    #[test]
+    fn test_execute_model_unknown_subcommand() {
+        let args = ModelArgs {
+            subcommand: Some("wat".to_string()),
+            name: None,
+            quantization: None,
+        };
+
+        match execute_model(&args) {
+            SlashCommandResult::Error(msg) => {
+                assert!(msg.contains("Unknown model subcommand"));
+                assert!(msg.contains("list, download"));
+            }
+            _ => panic!("Expected Error"),
+        }
+    }
+
+    #[test]
+    fn test_execute_model_usage_errors() {
+        let download = ModelArgs {
+            subcommand: Some("download".to_string()),
+            name: None,
+            quantization: None,
+        };
+        let load = ModelArgs {
+            subcommand: Some("load".to_string()),
+            name: None,
+            quantization: None,
+        };
+        let info = ModelArgs {
+            subcommand: Some("info".to_string()),
+            name: None,
+            quantization: None,
+        };
+        let switch = ModelArgs {
+            subcommand: Some("switch".to_string()),
+            name: None,
+            quantization: None,
+        };
+
+        assert!(matches!(
+            execute_model(&download),
+            SlashCommandResult::Error(msg) if msg.contains("Usage: /model download")
+        ));
+        assert!(matches!(
+            execute_model(&load),
+            SlashCommandResult::Error(msg) if msg.contains("Usage: /model load")
+        ));
+        assert!(matches!(
+            execute_model(&info),
+            SlashCommandResult::Error(msg) if msg.contains("Usage: /model info")
+        ));
+        assert!(matches!(
+            execute_model(&switch),
+            SlashCommandResult::Error(msg) if msg.contains("Usage: /model <model-name>")
+        ));
+    }
+
+    #[test]
+    fn test_execute_model_switch_message() {
+        let args = ModelArgs {
+            subcommand: Some("switch".to_string()),
+            name: Some("claude-test".to_string()),
+            quantization: None,
+        };
+
+        match execute_model(&args) {
+            SlashCommandResult::Message(msg) => {
+                assert!(msg.contains("Switching to model: claude-test"));
+                assert!(msg.contains("For local models, use /model load"));
+            }
+            _ => panic!("Expected Message"),
+        }
+    }
+
+    #[test]
+    fn test_execute_model_list_includes_installed_and_commands() {
+        with_temp_home(|temp| {
+            let model_path = temp
+                .path()
+                .join(".ted")
+                .join("models")
+                .join("local")
+                .join("demo-model.gguf");
+            create_fake_gguf(&model_path);
+
+            match execute_model_list() {
+                SlashCommandResult::Message(msg) => {
+                    assert!(msg.contains("Local Models"));
+                    assert!(msg.contains("[Installed on your system]"));
+                    assert!(msg.contains("demo-model.gguf"));
+                    assert!(msg.contains("[Available for Download"));
+                    assert!(msg.contains("/model info <name>"));
+                    assert!(msg.contains("/model download <name>"));
+                }
+                _ => panic!("Expected Message"),
+            }
+        });
+    }
+
+    #[test]
+    fn test_execute_model_download_success_with_explicit_quant() {
+        let registry = DownloadRegistry::embedded().unwrap();
+        let model = registry
+            .models
+            .iter()
+            .find(|m| !m.variants.is_empty())
+            .unwrap();
+        let quant = format!("{:?}", model.variants[0].quantization).to_lowercase();
+
+        match execute_model_download(&model.id, Some(&quant)) {
+            SlashCommandResult::SendToLlm(msg) => {
+                assert!(msg.contains("Download this model file"));
+                assert!(msg.contains("curl -L --progress-bar"));
+                assert!(msg.contains(&model.name));
+            }
+            _ => panic!("Expected SendToLlm"),
+        }
+    }
+
+    #[test]
+    fn test_execute_model_download_default_quantization() {
+        let registry = DownloadRegistry::embedded().unwrap();
+        let model = registry
+            .models
+            .iter()
+            .find(|m| {
+                m.variants
+                    .iter()
+                    .any(|v| format!("{:?}", v.quantization).eq_ignore_ascii_case("q4_k_m"))
+            })
+            .unwrap();
+
+        match execute_model_download(&model.id, None) {
+            SlashCommandResult::SendToLlm(msg) => {
+                assert!(msg.contains("Model:"));
+                assert!(msg.contains("(q4_k_m)"));
+            }
+            _ => panic!("Expected SendToLlm"),
+        }
+    }
+
+    #[test]
+    fn test_execute_model_download_accepts_colon_alias() {
+        match execute_model_download("qwen2.5-coder:1.5b", Some("q4_k_m")) {
+            SlashCommandResult::SendToLlm(msg) => {
+                assert!(msg.contains("Qwen2.5 Coder 1.5B"));
+                assert!(msg.contains("qwen2.5-coder-1.5b-instruct-q4_k_m.gguf"));
+            }
+            _ => panic!("Expected SendToLlm"),
+        }
+    }
+
+    #[test]
+    fn test_execute_model_download_quantization_not_available() {
+        let registry = DownloadRegistry::embedded().unwrap();
+        let model = registry
+            .models
+            .iter()
+            .find(|m| !m.variants.is_empty())
+            .unwrap();
+
+        match execute_model_download(&model.id, Some("not-a-real-quant")) {
+            SlashCommandResult::Error(msg) => {
+                assert!(msg.contains("not available"));
+                assert!(msg.contains("Available:"));
+            }
+            _ => panic!("Expected Error"),
+        }
+    }
+
+    #[test]
+    fn test_execute_model_download_not_found_with_suggestions() {
+        let registry = DownloadRegistry::embedded().unwrap();
+        let query = registry.models[0].name.clone();
+
+        match execute_model_download(&query, Some("q4_k_m")) {
+            SlashCommandResult::Error(msg) => {
+                assert!(msg.contains("Did you mean:"));
+            }
+            _ => panic!("Expected Error"),
+        }
+    }
+
+    #[test]
+    fn test_execute_model_download_not_found_without_suggestions() {
+        match execute_model_download("zzzzzz-model-not-found", Some("q4_k_m")) {
+            SlashCommandResult::Error(msg) => {
+                assert!(msg.contains("not found"));
+                assert!(msg.contains("/model list"));
+            }
+            _ => panic!("Expected Error"),
+        }
+    }
+
+    #[test]
+    fn test_execute_model_load_no_match() {
+        with_temp_home(
+            |_temp| match execute_model_load("definitely-not-installed") {
+                SlashCommandResult::Error(msg) => {
+                    assert!(msg.contains("No model matching"));
+                    assert!(msg.contains("/model download"));
+                }
+                _ => panic!("Expected Error"),
+            },
+        );
+    }
+
+    #[test]
+    fn test_execute_model_load_single_match() {
+        with_temp_home(|temp| {
+            let model_path = temp
+                .path()
+                .join(".ted")
+                .join("models")
+                .join("local")
+                .join("single-alpha.gguf");
+            create_fake_gguf(&model_path);
+
+            match execute_model_load("single-alpha") {
+                SlashCommandResult::Message(msg) => {
+                    assert!(msg.contains("Found:"));
+                    assert!(msg.contains("providers.local.model_path"));
+                    assert!(msg.contains("single-alpha.gguf"));
+                }
+                _ => panic!("Expected Message"),
+            }
+        });
+    }
+
+    #[test]
+    fn test_execute_model_load_single_match_with_colon_alias() {
+        with_temp_home(|temp| {
+            let model_path = temp
+                .path()
+                .join(".ted")
+                .join("models")
+                .join("local")
+                .join("qwen2.5-coder-1.5b-instruct-q4_k_m.gguf");
+            create_fake_gguf(&model_path);
+
+            match execute_model_load("qwen2.5-coder:1.5b") {
+                SlashCommandResult::Message(msg) => {
+                    assert!(msg.contains("Found:"));
+                    assert!(msg.contains("qwen2.5-coder-1.5b-instruct-q4_k_m.gguf"));
+                }
+                _ => panic!("Expected Message"),
+            }
+        });
+    }
+
+    #[test]
+    fn test_execute_model_load_multiple_matches() {
+        with_temp_home(|temp| {
+            let base = temp.path().join(".ted").join("models").join("local");
+            create_fake_gguf(&base.join("multi-1.gguf"));
+            create_fake_gguf(&base.join("multi-2.gguf"));
+
+            match execute_model_load("multi-") {
+                SlashCommandResult::Message(msg) => {
+                    assert!(msg.contains("Multiple models matching"));
+                    assert!(msg.contains("Specify a more precise name"));
+                }
+                _ => panic!("Expected Message"),
+            }
+        });
+    }
+
+    #[test]
+    fn test_execute_model_info_success() {
+        let registry = DownloadRegistry::embedded().unwrap();
+        let model = registry
+            .models
+            .iter()
+            .find(|m| !m.variants.is_empty())
+            .unwrap();
+
+        match execute_model_info(&model.id) {
+            SlashCommandResult::Message(msg) => {
+                assert!(msg.contains(&format!("Model: {}", model.name)));
+                assert!(msg.contains("Available Quantizations"));
+                assert!(msg.contains(&format!("/model download {}", model.id)));
+            }
+            _ => panic!("Expected Message"),
+        }
+    }
+
+    #[test]
+    fn test_execute_model_info_accepts_colon_alias() {
+        match execute_model_info("qwen2.5-coder:1.5b") {
+            SlashCommandResult::Message(msg) => {
+                assert!(msg.contains("Model: Qwen2.5 Coder 1.5B"));
+                assert!(msg.contains("/model download qwen2.5-coder-1.5b"));
+            }
+            _ => panic!("Expected Message"),
+        }
+    }
+
+    #[test]
+    fn test_execute_model_info_not_found_with_suggestions() {
+        let registry = DownloadRegistry::embedded().unwrap();
+        let query = registry.models[0].name.clone();
+
+        match execute_model_info(&query) {
+            SlashCommandResult::Error(msg) => {
+                assert!(msg.contains("Did you mean:"));
+            }
+            _ => panic!("Expected Error"),
+        }
+    }
+
+    #[test]
+    fn test_execute_model_info_not_found_without_suggestions() {
+        match execute_model_info("definitely-no-such-model-xyz") {
+            SlashCommandResult::Error(msg) => {
+                assert!(msg.contains("not found"));
+                assert!(msg.contains("/model list"));
+            }
+            _ => panic!("Expected Error"),
         }
     }
 }

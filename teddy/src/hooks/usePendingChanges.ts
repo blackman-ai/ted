@@ -13,7 +13,7 @@ import { PendingChange } from '../components/DiffViewer';
  */
 export function usePendingChanges() {
   const [pendingChanges, setPendingChanges] = useState<PendingChange[]>([]);
-  const [reviewMode, setReviewModeState] = useState(true); // Default to review mode
+  const [reviewMode, setReviewModeState] = useState(false); // Default to auto-apply mode
 
   // Sync review mode with main process on mount
   useEffect(() => {

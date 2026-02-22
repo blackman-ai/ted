@@ -81,6 +81,10 @@ pub enum TedError {
     /// Bead errors
     #[error("Bead error: {0}")]
     Bead(String),
+
+    /// Internal application error
+    #[error("Internal error: {0}")]
+    Internal(String),
 }
 
 /// API-specific error types
@@ -140,7 +144,7 @@ impl From<toml::ser::Error> for TedError {
 
 impl From<anyhow::Error> for TedError {
     fn from(err: anyhow::Error) -> Self {
-        TedError::Lsp(err.to_string())
+        TedError::Internal(err.to_string())
     }
 }
 
@@ -215,6 +219,17 @@ mod tests {
         let err = TedError::ToolExecution("test".to_string());
         let debug_str = format!("{:?}", err);
         assert!(debug_str.contains("ToolExecution"));
+    }
+
+    #[test]
+    fn test_ted_error_from_anyhow_maps_to_internal() {
+        let anyhow_err = anyhow::anyhow!("something failed");
+        let ted_err: TedError = anyhow_err.into();
+
+        match ted_err {
+            TedError::Internal(msg) => assert!(msg.contains("something failed")),
+            other => panic!("Expected Internal variant, got {:?}", other),
+        }
     }
 
     #[test]
@@ -372,8 +387,8 @@ mod tests {
     fn test_ted_error_from_anyhow() {
         let anyhow_err = anyhow::anyhow!("anyhow error message");
         let ted_err: TedError = anyhow_err.into();
-        // Should be converted to Lsp error
-        assert!(ted_err.to_string().contains("LSP error"));
+        // Should be converted to Internal error
+        assert!(ted_err.to_string().contains("Internal error"));
         assert!(ted_err.to_string().contains("anyhow error message"));
     }
 
@@ -395,6 +410,7 @@ mod tests {
             TedError::Agent("test".to_string()),
             TedError::Skill("test".to_string()),
             TedError::Bead("test".to_string()),
+            TedError::Internal("test".to_string()),
         ];
 
         for err in errors {

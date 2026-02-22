@@ -28,6 +28,7 @@ export interface AppConfig {
   lastProjectPath: string | null;
   recentProjects: RecentProject[];
   reviewModeEnabled: boolean;
+  reviewModeUserConfigured: boolean;
   previewAutoStart: boolean;
   previewPort: number;
 }
@@ -61,7 +62,8 @@ export interface SessionInfo {
 const DEFAULT_CONFIG: AppConfig = {
   lastProjectPath: null,
   recentProjects: [],
-  reviewModeEnabled: true,
+  reviewModeEnabled: false,
+  reviewModeUserConfigured: false,
   previewAutoStart: true,
   previewPort: 8081,  // Avoid conflict with Blackman backend on 8080
 };

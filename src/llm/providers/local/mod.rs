@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 
 use crate::error::{ApiError, Result, TedError};
@@ -27,6 +28,8 @@ use crate::llm::provider::{
 
 use server::LlamaServer;
 
+const PORT_SCAN_LIMIT: u16 = 5;
+
 /// Local LLM provider using llama-server subprocess
 pub struct LocalProvider {
     server: Arc<Mutex<Option<LlamaServer>>>,
@@ -35,6 +38,7 @@ pub struct LocalProvider {
     model_path: PathBuf,
     model_name: String,
     port: u16,
+    external_base_url: Option<String>,
     gpu_layers: Option<i32>,
     ctx_size: Option<u32>,
 }
@@ -55,13 +59,36 @@ impl LocalProvider {
             model_path,
             model_name,
             port,
+            external_base_url: None,
             gpu_layers,
+            ctx_size,
+        }
+    }
+
+    pub fn with_external_server(
+        base_url: String,
+        model_name: String,
+        ctx_size: Option<u32>,
+    ) -> Self {
+        Self {
+            server: Arc::new(Mutex::new(None)),
+            client: Client::new(),
+            binary_path: PathBuf::new(),
+            model_path: PathBuf::new(),
+            model_name,
+            port: 0,
+            external_base_url: Some(base_url.trim_end_matches('/').to_string()),
+            gpu_layers: None,
             ctx_size,
         }
     }
 
     /// Ensure the llama-server subprocess is running
     async fn ensure_server(&self) -> Result<String> {
+        if let Some(base_url) = &self.external_base_url {
+            return Ok(base_url.clone());
+        }
+
         let mut guard = self.server.lock().await;
 
         // Check if server is already running
@@ -71,20 +98,74 @@ impl LocalProvider {
             }
         }
 
-        // Start a new server
-        let server = LlamaServer::new(
-            self.binary_path.clone(),
-            self.model_path.clone(),
-            Some(self.port),
-            self.gpu_layers,
-            self.ctx_size,
-        );
+        // If another process already serves llama.cpp on this port (e.g. previous Teddy run),
+        // reuse it instead of failing with a bind error.
+        if self.is_existing_local_server_healthy().await {
+            tracing::info!("Reusing existing local server on port {}", self.port);
+            return Ok(format!("http://127.0.0.1:{}", self.port));
+        }
 
-        server.start().await?;
-        let url = server.base_url();
-        *guard = Some(server);
+        let mut last_bind_error: Option<TedError> = None;
 
-        Ok(url)
+        for port in startup_port_candidates(self.port) {
+            if port != self.port {
+                tracing::warn!(
+                    "Local server port {} unavailable; trying fallback port {}",
+                    self.port,
+                    port
+                );
+            }
+
+            // Start a new server
+            let server = LlamaServer::new(
+                self.binary_path.clone(),
+                self.model_path.clone(),
+                Some(port),
+                self.gpu_layers,
+                self.ctx_size,
+            );
+
+            match server.start().await {
+                Ok(()) => {
+                    let url = server.base_url();
+                    *guard = Some(server);
+                    return Ok(url);
+                }
+                Err(err) => {
+                    if is_bind_port_error(&err) {
+                        tracing::warn!("Local server bind failed on port {}: {}", port, err);
+                        last_bind_error = Some(err);
+                        continue;
+                    }
+                    return Err(err);
+                }
+            }
+        }
+
+        if let Some(err) = last_bind_error {
+            return Err(err);
+        }
+
+        Err(TedError::Config(format!(
+            "No available local server ports found in range {}-{}",
+            self.port,
+            self.port.saturating_add(PORT_SCAN_LIMIT)
+        )))
+    }
+
+    async fn is_existing_local_server_healthy(&self) -> bool {
+        let url = format!("http://127.0.0.1:{}/health", self.port);
+        let request = self
+            .client
+            .get(&url)
+            .timeout(Duration::from_millis(500))
+            .send()
+            .await;
+
+        match request {
+            Ok(response) => response.status().is_success(),
+            Err(_) => false,
+        }
     }
 
     /// Convert internal messages to OpenAI format
@@ -251,6 +332,28 @@ impl LocalProvider {
             stream: Some(stream),
         }
     }
+}
+
+fn startup_port_candidates(preferred: u16) -> Vec<u16> {
+    let mut candidates = Vec::with_capacity((PORT_SCAN_LIMIT + 1) as usize);
+    candidates.push(preferred);
+
+    let mut port = preferred;
+    for _ in 0..PORT_SCAN_LIMIT {
+        if port == u16::MAX {
+            break;
+        }
+        port += 1;
+        candidates.push(port);
+    }
+
+    candidates
+}
+
+fn is_bind_port_error(err: &TedError) -> bool {
+    let detail = err.to_string().to_lowercase();
+    detail.contains("port")
+        && (detail.contains("already in use") || detail.contains("couldn't bind"))
 }
 
 #[async_trait]
@@ -785,6 +888,43 @@ mod tests {
             None,
         );
         assert!(provider.supports_model("anything"));
+    }
+
+    #[test]
+    fn test_startup_port_candidates_include_preferred_first() {
+        let preferred = 8847;
+        let candidates = startup_port_candidates(preferred);
+        assert_eq!(candidates.first().copied(), Some(preferred));
+        assert!(!candidates.is_empty());
+        assert!(candidates.len() <= (PORT_SCAN_LIMIT + 1) as usize);
+    }
+
+    #[test]
+    fn test_is_bind_port_error_detects_expected_text() {
+        let err = TedError::Config(
+            "llama-server could not start because port 8847 is already in use".to_string(),
+        );
+        assert!(is_bind_port_error(&err));
+    }
+
+    #[test]
+    fn test_is_bind_port_error_false_for_other_errors() {
+        let err = TedError::Config("model loading failed".to_string());
+        assert!(!is_bind_port_error(&err));
+    }
+
+    #[tokio::test]
+    async fn test_local_provider_with_external_server_uses_base_url() {
+        let provider = LocalProvider::with_external_server(
+            "http://127.0.0.1:8847/".to_string(),
+            "qwen2.5-coder:7b".to_string(),
+            Some(8192),
+        );
+        assert_eq!(provider.name(), "local");
+        assert_eq!(provider.available_models()[0].id, "qwen2.5-coder:7b");
+
+        let base_url = provider.ensure_server().await.unwrap();
+        assert_eq!(base_url, "http://127.0.0.1:8847");
     }
 
     #[test]

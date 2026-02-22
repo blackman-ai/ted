@@ -12,6 +12,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 
+use super::common;
 use crate::error::{ApiError, Result, TedError};
 use crate::llm::message::{ContentBlock, Message, MessageContent, Role, ToolResultContent};
 use crate::llm::provider::{
@@ -251,7 +252,7 @@ impl OpenRouterProvider {
                 "rate_limit_exceeded" => TedError::Api(ApiError::RateLimited(60)),
                 "context_length_exceeded" => {
                     // Try to parse token counts from message
-                    let (current, limit) = Self::parse_token_counts(&message);
+                    let (current, limit) = common::parse_numeric_token_counts(&message);
                     TedError::Api(ApiError::ContextTooLong { current, limit })
                 }
                 "model_not_found" => TedError::Api(ApiError::ModelNotFound(message)),
@@ -259,33 +260,22 @@ impl OpenRouterProvider {
                     if message.contains("context")
                         || message.contains("token") && message.contains("limit")
                     {
-                        let (current, limit) = Self::parse_token_counts(&message);
+                        let (current, limit) = common::parse_numeric_token_counts(&message);
                         TedError::Api(ApiError::ContextTooLong { current, limit })
                     } else {
-                        TedError::Api(ApiError::ServerError { status, message })
+                        common::server_error(status, message)
                     }
                 }
             }
         } else {
-            TedError::Api(ApiError::ServerError {
-                status,
-                message: body.to_string(),
-            })
+            common::server_error(status, body.to_string())
         }
     }
 
     /// Parse token counts from an error message
+    #[cfg(test)]
     fn parse_token_counts(message: &str) -> (u32, u32) {
-        let numbers: Vec<u32> = message
-            .split(|c: char| !c.is_ascii_digit())
-            .filter_map(|s| s.parse().ok())
-            .collect();
-
-        match numbers.as_slice() {
-            [current, limit, ..] => (*current, *limit),
-            [single] => (*single, 0),
-            _ => (0, 0),
-        }
+        common::parse_numeric_token_counts(message)
     }
 }
 

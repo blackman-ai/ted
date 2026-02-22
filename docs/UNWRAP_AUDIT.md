@@ -96,7 +96,7 @@ Production code primarily uses safe patterns like `unwrap_or()` with fallbacks.
 | src/tools/external/mod.rs | 26 | Pending | Needs analysis |
 | src/llm/providers/anthropic.rs | 25 | Pending | Needs analysis |
 | src/tools/builtin/file_changeset.rs | 25 | Pending | Needs analysis |
-| src/llm/providers/ollama.rs | 24 | Pending | Needs analysis |
+| src/llm/providers/local/mod.rs | 24 | Pending | Needs analysis |
 | src/agents/runner.rs | 23 | Pending | Needs analysis |
 | src/tools/builtin/shell.rs | 23 | Pending | Needs analysis |
 | src/caps/builtin/defaults.rs | 23 | Pending | Needs analysis |

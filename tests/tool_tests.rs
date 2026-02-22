@@ -106,10 +106,10 @@ fn test_tool_context_trust_mode() {
 }
 
 /// Test that simulates JSON tool call round-trip through streaming
-/// This test reproduces the Ollama JSON tool calling flow
+/// This test reproduces the local-model JSON tool calling fallback flow
 #[test]
 fn test_json_tool_call_roundtrip() {
-    // Simulate what the Ollama provider does:
+    // Simulate what the local provider fallback parser does:
     // 1. Parse JSON tool call from text
     let model_output = r#"{"name": "glob", "arguments": {"pattern": "**/*"}}"#;
 
@@ -151,4 +151,54 @@ fn test_glob_tool_empty_input_fails() {
     let input = serde_json::json!({});
     let pattern = input["pattern"].as_str();
     assert!(pattern.is_none());
+}
+
+#[tokio::test]
+async fn test_shell_tool_blocks_relative_parent_escape_integration() {
+    let registry = ToolRegistry::with_builtins();
+    let shell = registry.get("shell").expect("shell tool should exist");
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let context = ToolContext::new(
+        temp_dir.path().to_path_buf(),
+        Some(temp_dir.path().to_path_buf()),
+        uuid::Uuid::new_v4(),
+        false,
+    );
+
+    let result = shell
+        .execute(
+            "shell-relative-escape".to_string(),
+            serde_json::json!({"command": "rm -rf ../outside"}),
+            &context,
+        )
+        .await
+        .unwrap();
+
+    assert!(result.is_error());
+    assert!(result.output_text().contains("outside workspace"));
+}
+
+#[tokio::test]
+async fn test_shell_tool_blocks_dangerous_root_rm_even_in_trust_mode() {
+    let registry = ToolRegistry::with_builtins();
+    let shell = registry.get("shell").expect("shell tool should exist");
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let context = ToolContext::new(
+        temp_dir.path().to_path_buf(),
+        Some(temp_dir.path().to_path_buf()),
+        uuid::Uuid::new_v4(),
+        true,
+    );
+
+    let result = shell
+        .execute(
+            "shell-root-delete".to_string(),
+            serde_json::json!({"command": "rm -r -f /"}),
+            &context,
+        )
+        .await
+        .unwrap();
+
+    assert!(result.is_error());
+    assert!(result.output_text().contains("blocked"));
 }
