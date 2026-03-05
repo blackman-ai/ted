@@ -4,6 +4,12 @@
 
 Teddy is a cross-platform desktop application that brings AI-assisted coding to everyone - developers and non-coders alike. Built on Electron, it provides a full-featured IDE experience with integrated AI capabilities, all running locally on your machine.
 
+## Project Status
+
+- Active roadmap and remaining work: `../docs/IMPROVEMENTS.md`
+- Current user-visible limitations: `./MVP_LIMITATIONS.md`
+- Architecture reference: `./ARCHITECTURE.md`
+
 ## Features
 
 - 🧸 **Local-first AI** - Works offline with Ted's `local` llama.cpp provider (no API keys required)
@@ -242,14 +248,12 @@ Changes to React components (`src/`) hot-reload instantly. Changes to Electron m
 
 ## Contributing
 
-We welcome contributions! This is an early MVP. Priority areas:
+We welcome contributions. Current priority areas:
 
-- [ ] Docker runtime detection and management
-- [ ] Auto-detect and start dev servers
-- [ ] Better file tree (search, multi-select)
-- [ ] Diff view for AI changes
-- [ ] PostgreSQL integration
-- [ ] Deploy integrations (Vercel, Netlify, etc.)
+- [ ] Local-model tool-call fallback robustness for ambiguous model output
+- [ ] Renderer/electron automated coverage beyond parser tests
+- [ ] UX polish for review/apply and error-edge handling
+- [ ] Embedded diagnostics and correlation improvements across Ted/Teddy events
 
 ## License
 

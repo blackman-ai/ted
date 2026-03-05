@@ -1,95 +1,104 @@
-# Improvements and Remaining Work
+# Improvements and Active Roadmap
 
-**Updated**: 2026-02-16  
-**Purpose**: live execution checklist for taking Ted/Teddy from strong MVP to production-hard.
+**Updated**: 2026-03-05  
+**Purpose**: canonical active roadmap for Ted/Teddy.
+
+This file is the source of truth for what is still in progress.  
+Completed historical execution batches are captured in `docs/GAP_CLOSURE_EXECUTION_PLAN.md`.
 
 ---
 
-## Current Snapshot
+## Product Vision
 
-- Rust test suite is broad and currently passing (`cargo test` green in this workspace).
-- Teddy frontend lint and type-check are passing.
-- Shared chat execution core is in place (`src/chat/engine.rs`) and used across runtimes.
-- `TedError::Internal` conversion for `anyhow::Error` is implemented.
-- Local provider migration (llama.cpp flow) is complete across core docs/codepaths, with compatibility shims where needed.
-- Shell safety hardening includes detection for `find ... -delete`.
-- Teddy file tree now supports recursive expand with backend-powered global search.
-- Teddy parser has automated tests (`npm run test:parser`) for tool-call fallback behavior.
-- Integration coverage now includes WAL/compaction recovery, embedded JSONL event flow assertions, and streaming tool-use loop regression tests.
-- Release workflow now includes host-matching binary startup smoke checks and package-content verification.
-- `embedded_runner` decomposition has started by splitting runtime helpers and tests into dedicated submodules/files.
-- `chat/session` and `tui/chat/runner` decomposition advanced: large inline test modules were split out, and runner settings/keymap logic moved into focused submodules.
-- `tui/chat/runner` runtime/render hot path was further decomposed into `runner/render.rs`, with passing regression tests.
-- `tui/chat/runner` decomposition continued by extracting `runner/commands.rs` and `runner/turn.rs`, reducing the main runner orchestration file substantially.
-- Large inline test modules were split from `main.rs`, `tui/app.rs`, and `agents/runner.rs` into dedicated `tests.rs` submodules.
-- `main.rs` decomposition advanced with command dispatch handlers (including `run_ask`) extracted to `src/main/cli_commands.rs` and chat rendering/session-selection helpers extracted to `src/main/chat_ui.rs`.
-- `main.rs` decomposition continued with runtime bootstrap extraction to `src/main/chat_runtime.rs` and CLI observer/agent-loop wrapper extraction to `src/main/agent_loop.rs`.
-- Large inline TUI test modules were moved out of `src/tui/chat/app.rs` and `src/tui/chat/ui.rs` into dedicated `tests.rs` files, keeping core runtime modules focused.
-- `src/main/tests.rs` cwd-sensitive tests were hardened with a lock + RAII guard to avoid global `set_current_dir` race/flakiness.
-- Structured logging now covers shared chat engine turn/tool/retry paths, TUI turn/command paths, and embedded run/tool paths; observability guidance is documented in `docs/OBSERVABILITY.md`.
-- Release workflow smoke checks now run through `scripts/release-smoke.sh` for consistent startup/help diagnostics on host-matching artifacts.
-- Local validation now includes successful runs of:
-  - `cargo test`
+Ted/Teddy should operate as one local-first coding-agent system with:
+- shared execution behavior across CLI, TUI, and embedded/Teddy surfaces,
+- composable caps identity and policy controls (including org governance),
+- explicit and auditable tool safety,
+- enough reliability and observability for daily production use.
+
+---
+
+## Status Legend
+
+- `complete`: shipped and validated; maintenance only.
+- `partial`: major capability shipped, but meaningful gaps remain.
+- `active`: currently prioritized implementation work.
+
+---
+
+## Current Validated Snapshot
+
+- Rust suite passes in this workspace (`cargo test -- --test-threads=1`).
+- Teddy checks pass (`npm run lint`, `npm run type-check`, `npm run test:parser`).
+- Release and perf smoke checks pass:
   - `scripts/release-smoke.sh target/debug/ted`
   - `scripts/perf-smoke.sh`
+- Shared chat core remains unified in `src/chat/engine.rs`.
+- Policy engine v2 (`allow|ask|deny`, include packs, lock rules, audit log, compliance command) is shipped.
+- Caps identity/policy rendering adapter is shipped with legacy `system_prompt` compatibility.
 
 ---
 
 ## 8 Workstreams (Current Status)
 
-1. **Security Hardening of Shell and Tool Execution** (`high`)
-   - Move from pattern blocklist toward structured allow/deny rules.
-   - Add stricter path and mutation gating for shell commands by default.
-   - Add focused adversarial tests for bypass attempts.
+1. **Security Hardening of Shell and Tool Execution** (`high`) - `partial`
+   - Structured policy controls are in place and enforced.
+   - Remaining work: deeper adversarial/bypass regression coverage and continued hardening.
 
-2. **Provider Robustness and Local-Model Tool-Call Fallbacks** (`high`)
-   - Improve handling when local models emit tool intent as raw text instead of structured tool events.
-   - Add deterministic parsing/normalization tests for local provider edge cases.
-   - Add clearer runtime diagnostics when tool-call parsing degrades.
+2. **Provider Robustness and Local-Model Tool-Call Fallbacks** (`high`) - `active`
+   - Fallback parsing and regression tests exist across Rust and Teddy parser layers.
+   - Remaining work: improve behavior on ambiguous free-form local model output and strengthen diagnostics.
 
-3. **Integration Test Expansion for Critical Flows** (`high`) - `baseline complete`
-   - Added integration tests around context/WAL recovery and compaction boundaries.
-   - Added provider-level streaming/tool-use behavior test coverage.
-   - Added end-to-end embedded JSONL flow regression assertions for Teddy interoperability.
+3. **Integration Test Expansion for Critical Flows** (`high`) - `complete`
+   - WAL/compaction recovery and embedded streaming/tool-loop regressions are covered.
+   - Ongoing work is maintenance-level test additions only.
 
-4. **Teddy UX Completion for Daily-Driver Use** (`high`)
-   - File tree has recursive expand + search; continue with large-project scaling behavior.
-   - Add keyboard shortcuts and stronger session ergonomics.
-   - Finish polish for review/diff flows and edge-case error display.
+4. **Teddy UX Completion for Daily-Driver Use** (`high`) - `active`
+   - Recursive file-tree expand/search, session controls, and shortcut overlays are in place.
+   - Remaining work: renderer/electron integration coverage and final UX polish for edge cases.
 
-5. **Codebase Decomposition of Large Modules** (`medium`) - `complete`
-   - Split oversized files (notably large provider and TUI modules) into focused submodules.
-   - Reduce cross-module coupling and improve incremental compile ergonomics.
+5. **Codebase Decomposition of Large Modules** (`medium`) - `partial`
+   - Significant decomposition has landed in `main`, TUI, and runner paths.
+   - Remaining work: reduce very large core modules (`chat/engine`, `tools/executor`, `embedded_runner`) incrementally.
 
-6. **Observability and Diagnostics** (`medium`) - `complete`
-   - Standardize structured logs across Rust + Teddy (including log levels and correlation IDs).
-   - Expose practical debug toggles for embedded mode and provider calls.
+6. **Observability and Diagnostics** (`medium`) - `partial`
+   - Structured logging and practical debug toggles are in place.
+   - Remaining work (tracked in `docs/OBSERVABILITY.md`): provider transport timing spans and cross-process correlation IDs.
 
 7. **Packaging and Distribution Hardening** (`medium`) - `complete`
-   - Validate portability on macOS/Linux/Windows release artifacts.
-   - Tighten bundled dependency checks and first-run diagnostics in Teddy.
-   - Add CI coverage for release packaging smoke checks.
+   - CI/release flows include host-matching smoke checks and package-content verification.
+   - Ongoing work is routine maintenance and platform drift monitoring.
 
-8. **Contributor and Architecture Documentation** (`medium`) - `complete`
-   - Keep architecture docs aligned with implementation changes.
-   - Add contributor-focused docs for debugging, testing, and release process.
-   - Keep feature/limitation docs synchronized with actual current behavior.
+8. **Contributor and Architecture Documentation** (`medium`) - `partial`
+   - Core architecture and policy docs are strong.
+   - Remaining work: keep status docs synchronized, remove stale MVP language, and maintain a single active roadmap narrative.
 
 ---
 
-## Recommended Execution Order
+## Priority Order (Current)
 
-1. Workstreams 1-3 (safety + correctness gates)  
-2. Workstream 4 (UX completion for end users)  
-3. Workstreams 5-6 (maintainability + diagnostics)  
-4. Workstreams 7-8 (distribution + contributor velocity)
+1. Workstream 1 (safety hardening follow-through)
+2. Workstream 2 (provider robustness)
+3. Workstream 4 (Teddy UX and integration confidence)
+4. Workstream 6 (observability gaps)
+5. Workstream 5 (module decomposition cleanup)
+6. Workstream 8 (docs coherence maintenance)
+
+---
+
+## Document Map
+
+- `docs/IMPROVEMENTS.md`: active roadmap and current status (this file).
+- `docs/GAP_CLOSURE_EXECUTION_PLAN.md`: completed execution batch history.
+- `docs/OBSERVABILITY.md`: logging model plus open diagnostics gaps.
+- `teddy/MVP_LIMITATIONS.md`: user-visible Teddy limitations and workarounds.
 
 ---
 
 ## Definition of “Done Enough” for v1
 
-- Security model is explicit and enforced by default.
-- Local-provider behavior is reliable, including tool-call edge cases.
-- CI covers core regressions (Rust/Teddy + embedded flow).
-- Teddy supports smooth everyday workflows without manual recovery steps.
-- Documentation matches reality and enables outside contributors to onboard quickly.
+- Security model is explicit, enforced, and resilient against common bypass patterns.
+- Local-provider behavior is dependable for tool-call execution, including fallback scenarios.
+- CI and smoke checks cover critical regressions across Rust and Teddy.
+- Teddy workflows are smooth without manual recovery for common development tasks.
+- Docs remain accurate, non-contradictory, and usable for external contributors.

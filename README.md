@@ -124,7 +124,7 @@ Press **Ctrl+C** to interrupt a running command without exiting the chat.
 
 ## Caps System
 
-Caps are stackable AI personas that modify Claude's behavior. They can define system prompts, tool permissions, and model preferences.
+Caps are stackable identity/policy layers that shape Ted's behavior. Caps can define structured identity metadata, tool permissions, model preferences, and legacy prompt text.
 
 ### Built-in Caps
 
@@ -156,7 +156,9 @@ ted caps create my-persona
 
 ### Custom Caps
 
-Caps are TOML files stored in `~/.ted/caps/`. Example:
+Caps are TOML files stored in `~/.ted/caps/`.
+
+Legacy prompt-style caps remain valid:
 
 ```toml
 name = "my-persona"
@@ -171,6 +173,31 @@ You are an expert in my specific domain...
 
 [tool_permissions]
 enable = ["file_read", "file_edit", "shell"]
+require_shell_confirmation = true
+```
+
+Structured identity-style caps can be composed without large prompt blocks:
+
+```toml
+name = "org-review"
+description = "Org review policy"
+priority = 60
+extends = ["code-reviewer", "security-analyst"]
+
+[identity]
+lenses = ["org-standards", "security", "review"]
+
+[identity.traits]
+verbosity = 0.3
+cautiousness = 0.8
+
+[identity.deliverables]
+require_diff_summary = true
+require_test_plan = true
+require_risks = true
+
+[tool_permissions]
+require_edit_confirmation = true
 require_shell_confirmation = true
 ```
 
@@ -189,6 +216,22 @@ Ted provides Claude with these built-in tools:
 
 Tools require permission by default. Use `--trust` to auto-approve, or configure per-cap permissions.
 
+Ted also supports optional static permission policies via:
+- `~/.ted/permissions.toml` (user scope)
+- `<project>/.ted/permissions.toml` (project scope)
+
+See [docs/PERMISSIONS_POLICY_V2.md](./docs/PERMISSIONS_POLICY_V2.md) for schema and examples.
+Policies support `include` packs and enforced `lock_rules` for org guardrails.
+
+```bash
+ted permissions show
+ted permissions init                 # create project template at .ted/permissions.toml
+ted permissions init --scope user    # create user template at ~/.ted/permissions.toml
+ted permissions check --tool shell --action "cargo test"
+ted permissions log --limit 50       # recent allow/deny/audit decisions
+ted compliance --since 2026-03-01    # compliance summary from permission audit log
+```
+
 ## Configuration
 
 Settings are stored in `~/.ted/settings.json`:
@@ -202,6 +245,9 @@ Settings are stored in `~/.ted/settings.json`:
   },
   "defaults": {
     "caps": ["base"],
+    "enforce_caps_policy": false,
+    "required_caps": [],
+    "disallowed_caps": [],
     "temperature": 0.7,
     "stream": true
   },
@@ -211,6 +257,11 @@ Settings are stored in `~/.ted/settings.json`:
   }
 }
 ```
+
+For managed environments, enable cap governance in `defaults`:
+- `enforce_caps_policy = true`
+- `required_caps` to force baseline org caps on every session
+- `disallowed_caps` to block ad-hoc caps that violate policy
 
 ### Settings Commands
 
@@ -230,8 +281,16 @@ Ted automatically tracks your sessions:
 ted history list          # List recent sessions
 ted history search "auth" # Search sessions
 ted history show abc123   # Show session details
+ted history attach abc123 # JSON attach metadata (caps/model/policy/context)
 ted chat --resume abc123  # Resume a session
 ```
+
+## Roadmap and Status Docs
+
+- Active roadmap: `docs/IMPROVEMENTS.md`
+- Completed execution batch log: `docs/GAP_CLOSURE_EXECUTION_PLAN.md`
+- Observability status and open gaps: `docs/OBSERVABILITY.md`
+- Teddy user-visible limitations: `teddy/MVP_LIMITATIONS.md`
 
 ## Context Management
 

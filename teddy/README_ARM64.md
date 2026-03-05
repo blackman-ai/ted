@@ -209,7 +209,7 @@ sudo apt-get install -y fuse libfuse2
 
 - [BUILD_ARM64.md](./BUILD_ARM64.md) - Detailed build instructions
 - [Main README](../README.md) - Ted project overview
-- [ROADMAP](../ROADMAP.md) - Development roadmap
+- [Active roadmap](../docs/IMPROVEMENTS.md) - Current priorities and remaining work
 - [Raspberry Pi prototype runbook](../docs/RASPBERRY_PI_PROTOTYPE.md)
 - [Raspberry Pi OS](https://www.raspberrypi.com/software/) - Official OS
 - [llama.cpp](https://github.com/ggml-org/llama.cpp) - Local inference runtime

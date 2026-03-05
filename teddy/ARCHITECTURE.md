@@ -1,8 +1,10 @@
 # Teddy Architecture
 
-**Version**: 0.1.0 MVP
-**Status**: Initial Implementation
-**Last Updated**: 2026-01-12
+**Version**: 0.1.x
+**Status**: Active implementation
+**Last Updated**: 2026-03-05
+
+For active roadmap status, see `../docs/IMPROVEMENTS.md`.
 
 ## Overview
 
