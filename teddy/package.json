@@ -16,7 +16,9 @@
     "preview": "electron-vite preview",
     "lint": "eslint src --ext ts,tsx",
     "type-check": "tsc --noEmit",
-    "test:parser": "tsc -p tsconfig.test.json --pretty false && node --test .test-dist/tests/parser.test.js"
+    "test:parser": "tsc -p tsconfig.test.json --pretty false && node --test .test-dist/tests/parser.test.js",
+    "test:hooks": "tsc -p tsconfig.test.json --pretty false && node --test .test-dist/tests/hooks.test.js",
+    "test:unit": "tsc -p tsconfig.test.json --pretty false && node --test .test-dist/tests/*.test.js"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",

@@ -12,6 +12,7 @@
     "noEmitOnError": true
   },
   "include": [
+    "electron/hooks/runner.ts",
     "electron/ted/parser.ts",
     "electron/types/protocol.ts",
     "electron/utils/logger.ts",
