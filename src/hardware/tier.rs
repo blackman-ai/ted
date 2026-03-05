@@ -111,9 +111,13 @@ impl HardwareTier {
     /// Get recommended models for this tier
     pub fn recommended_models(&self) -> Vec<&'static str> {
         match self {
-            HardwareTier::UltraTiny => vec!["qwen2.5-coder:3b", "qwen2.5-coder:1.5b"],
-            HardwareTier::Ancient => vec!["qwen2.5-coder:1.5b", "qwen2.5-coder:3b"],
-            HardwareTier::Tiny => vec!["qwen2.5-coder:3b", "qwen2.5-coder:1.5b"],
+            HardwareTier::UltraTiny => {
+                vec!["qwen3.5:2b", "qwen2.5-coder:3b", "qwen2.5-coder:1.5b"]
+            }
+            HardwareTier::Ancient => {
+                vec!["qwen3.5:2b", "qwen2.5-coder:1.5b", "qwen2.5-coder:3b"]
+            }
+            HardwareTier::Tiny => vec!["qwen3.5:2b", "qwen2.5-coder:3b", "qwen2.5-coder:1.5b"],
             HardwareTier::Small => vec!["qwen2.5-coder:3b", "qwen2.5-coder:7b"],
             HardwareTier::Medium => vec!["qwen2.5-coder:7b", "qwen2.5-coder:14b"],
             HardwareTier::Large => vec!["qwen2.5-coder:14b", "qwen2.5-coder:32b"],

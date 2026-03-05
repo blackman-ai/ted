@@ -234,6 +234,8 @@ pub fn get_known_models(provider_name: &str) -> Vec<&'static str> {
             "claude-3-5-haiku-20241022",
         ],
         "local" => vec![
+            "qwen3.5:2b",
+            "qwen3:4b",
             "qwen2.5-coder:14b",
             "qwen2.5-coder:7b",
             "qwen2.5-coder:3b",

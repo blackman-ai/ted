@@ -218,6 +218,44 @@ fn test_extract_tool_uses_from_text_dedupes_identical_calls() {
     assert_eq!(extracted[0].1["path"], "README.md");
 }
 
+#[test]
+fn test_extract_tool_uses_from_text_qwen_xml_when_qwen_model() {
+    let text = r#"
+<tool_call>
+<function=file_write>
+<parameter=path>
+src/main.ts
+</parameter>
+<parameter=content>
+console.log("hello");
+</parameter>
+</function>
+</tool_call>
+"#;
+
+    let extracted = extract_tool_uses_from_text_for_context(text, "local", "qwen3.5-2b");
+    assert_eq!(extracted.len(), 1);
+    assert_eq!(extracted[0].0, "file_write");
+    assert_eq!(extracted[0].1["path"], "src/main.ts");
+    assert_eq!(extracted[0].1["content"], "console.log(\"hello\");");
+}
+
+#[test]
+fn test_extract_tool_uses_from_text_qwen_xml_skipped_for_non_qwen_models() {
+    let text = r#"
+<tool_call>
+<function=file_read>
+<parameter=path>
+README.md
+</parameter>
+</function>
+</tool_call>
+"#;
+
+    let extracted = extract_tool_uses_from_text_for_context(text, "local", "codellama:7b");
+    assert!(extracted.is_empty());
+}
+
 // ===== map_file_read_arguments tests =====
 
 #[test]
@@ -1504,6 +1542,28 @@ data: {{\"type\":\"message_stop\"}}\n\n"
             )
     }
 
+    fn anthropic_tool_use_stream_response(
+        tool_id: &str,
+        tool_name: &str,
+        input_json: &str,
+    ) -> String {
+        let escaped_input = serde_json::to_string(input_json).expect("input should serialize");
+        format!(
+            "event: message_start\n\
+data: {{\"type\":\"message_start\",\"message\":{{\"id\":\"msg_tool\",\"model\":\"claude-sonnet-4-20250514\"}}}}\n\n\
+event: content_block_start\n\
+data: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"tool_use\",\"id\":\"{tool_id}\",\"name\":\"{tool_name}\"}}}}\n\n\
+event: content_block_delta\n\
+data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":{escaped_input}}}}}\n\n\
+event: content_block_stop\n\
+data: {{\"type\":\"content_block_stop\",\"index\":0}}\n\n\
+event: message_delta\n\
+data: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"tool_use\"}},\"usage\":{{\"input_tokens\":12,\"output_tokens\":6}}}}\n\n\
+event: message_stop\n\
+data: {{\"type\":\"message_stop\"}}\n\n"
+        )
+    }
+
     #[tokio::test]
     async fn test_run_embedded_chat_emits_expected_event_flow_for_text_turn() {
         use std::sync::{Arc, Mutex};
@@ -1596,6 +1656,229 @@ data: {{\"type\":\"message_stop\"}}\n\n"
                     .unwrap_or("")
                     .contains("Hello from stream.")
         }));
+    }
+
+    #[tokio::test]
+    async fn test_run_embedded_chat_qwen_xml_tool_inference_in_review_mode() {
+        use std::sync::{Arc, Mutex};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let qwen_xml = r#"<tool_call>
+<function=file_write>
+<parameter=path>
+tmp-qwen-review.txt
+</parameter>
+<parameter=content>
+hello from qwen
+</parameter>
+</function>
+</tool_call>"#;
+        let stream_body = anthropic_text_stream_response(qwen_xml);
+
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(stream_body),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let mut args = create_test_chat_args();
+        args.provider = Some("anthropic".to_string());
+        args.model = Some("qwen3.5-2b".to_string());
+        args.review_mode = true;
+        args.prompt = Some("write the file".to_string());
+
+        let endpoint = format!("{}/v1/messages", mock_server.uri());
+        let settings = create_anthropic_stream_settings(&endpoint);
+
+        let event_buffer = Arc::new(Mutex::new(Vec::new()));
+        let session_id = uuid::Uuid::new_v4();
+        let emitter = Arc::new(JsonLEmitter::with_buffer(
+            session_id.to_string(),
+            Arc::clone(&event_buffer),
+        ));
+
+        run_embedded_chat_with_emitter(args, settings, session_id, emitter)
+            .await
+            .expect("qwen xml review flow should succeed");
+
+        let lines = event_buffer
+            .lock()
+            .expect("buffer should not be poisoned")
+            .clone();
+        let events: Vec<serde_json::Value> = lines
+            .iter()
+            .map(|line| serde_json::from_str(line).expect("event line should be valid JSON"))
+            .collect();
+
+        assert!(
+            events.iter().any(|event| event["type"] == "file_create"
+                && event["data"]["path"] == "tmp-qwen-review.txt"),
+            "expected file_create preview event from inferred qwen xml tool call"
+        );
+
+        let completion = events
+            .iter()
+            .find(|event| event["type"] == "completion")
+            .expect("expected completion event");
+        assert_eq!(completion["data"]["success"], true);
+        assert_eq!(completion["data"]["summary"], "Modified 1 file(s)");
+    }
+
+    #[tokio::test]
+    async fn test_run_embedded_chat_qwen_xml_file_edit_preview_in_review_mode() {
+        use std::sync::{Arc, Mutex};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let qwen_xml = r#"<tool_call>
+<function=file_edit>
+<parameter=path>
+tmp-qwen-review.txt
+</parameter>
+<parameter=old_string>
+before
+</parameter>
+<parameter=new_string>
+after
+</parameter>
+</function>
+</tool_call>"#;
+        let stream_body = anthropic_text_stream_response(qwen_xml);
+
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(stream_body),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let mut args = create_test_chat_args();
+        args.provider = Some("anthropic".to_string());
+        args.model = Some("qwen3.5-2b".to_string());
+        args.review_mode = true;
+        args.prompt = Some("edit the file".to_string());
+
+        let endpoint = format!("{}/v1/messages", mock_server.uri());
+        let settings = create_anthropic_stream_settings(&endpoint);
+
+        let event_buffer = Arc::new(Mutex::new(Vec::new()));
+        let session_id = uuid::Uuid::new_v4();
+        let emitter = Arc::new(JsonLEmitter::with_buffer(
+            session_id.to_string(),
+            Arc::clone(&event_buffer),
+        ));
+
+        run_embedded_chat_with_emitter(args, settings, session_id, emitter)
+            .await
+            .expect("qwen xml file_edit review flow should succeed");
+
+        let lines = event_buffer
+            .lock()
+            .expect("buffer should not be poisoned")
+            .clone();
+        let events: Vec<serde_json::Value> = lines
+            .iter()
+            .map(|line| serde_json::from_str(line).expect("event line should be valid JSON"))
+            .collect();
+
+        assert!(
+            events.iter().any(|event| event["type"] == "file_edit"
+                && event["data"]["path"] == "tmp-qwen-review.txt"),
+            "expected file_edit preview event from inferred qwen xml tool call"
+        );
+
+        let completion = events
+            .iter()
+            .find(|event| event["type"] == "completion")
+            .expect("expected completion event");
+        assert_eq!(completion["data"]["success"], true);
+        assert_eq!(completion["data"]["summary"], "Modified 1 file(s)");
+    }
+
+    #[tokio::test]
+    async fn test_run_embedded_chat_no_tools_handles_native_tool_use() {
+        use std::sync::{Arc, Mutex};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let stream_body = anthropic_tool_use_stream_response(
+            "tool_1",
+            "shell",
+            r#"{"command":"echo should-not-run"}"#,
+        );
+
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(stream_body),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let mut args = create_test_chat_args();
+        args.provider = Some("anthropic".to_string());
+        args.model = Some("claude-sonnet-4-20250514".to_string());
+        args.no_tools = true;
+        args.prompt = Some("try running a command".to_string());
+
+        let endpoint = format!("{}/v1/messages", mock_server.uri());
+        let settings = create_anthropic_stream_settings(&endpoint);
+
+        let event_buffer = Arc::new(Mutex::new(Vec::new()));
+        let session_id = uuid::Uuid::new_v4();
+        let emitter = Arc::new(JsonLEmitter::with_buffer(
+            session_id.to_string(),
+            Arc::clone(&event_buffer),
+        ));
+
+        run_embedded_chat_with_emitter(args, settings, session_id, emitter)
+            .await
+            .expect("no-tools native tool-use flow should succeed");
+
+        let lines = event_buffer
+            .lock()
+            .expect("buffer should not be poisoned")
+            .clone();
+        let events: Vec<serde_json::Value> = lines
+            .iter()
+            .map(|line| serde_json::from_str(line).expect("event line should be valid JSON"))
+            .collect();
+
+        let history = events
+            .iter()
+            .rev()
+            .find(|event| event["type"] == "conversation_history")
+            .expect("expected final conversation history");
+        let messages = history["data"]["messages"]
+            .as_array()
+            .expect("history should contain messages array");
+        assert!(messages.iter().any(|msg| {
+            msg["role"] == "assistant"
+                && msg["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("I can chat and help plan. Ask me to build when you're ready.")
+        }));
+
+        let completion = events
+            .iter()
+            .find(|event| event["type"] == "completion")
+            .expect("expected completion event");
+        assert_eq!(completion["data"]["success"], false);
+        assert_eq!(completion["data"]["summary"], "Waiting for your response");
     }
 
     #[tokio::test]

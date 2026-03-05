@@ -5,8 +5,6 @@
 //!
 //! Runs Ted in embedded mode, outputting JSONL events instead of interactive TUI.
 
-use regex::Regex;
-use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -14,7 +12,10 @@ mod history;
 mod tooling;
 
 use self::history::{extract_history_messages, HistoryMessage};
-use self::tooling::{is_file_mod_tool, parse_tool_from_json, EmbeddedToolExecutionStrategy};
+use self::tooling::{
+    extract_tool_uses_from_text_with_adapters, is_file_mod_tool, parse_tool_from_json,
+    EmbeddedToolExecutionStrategy,
+};
 #[cfg(test)]
 use self::tooling::{
     map_file_edit_arguments, map_file_read_arguments, map_file_write_arguments,
@@ -516,7 +517,8 @@ async fn run_embedded_chat_with_emitter(
         // Local/smaller models may emit JSON tool calls inside text instead of native tool blocks.
         // Parse those so we can still execute actions instead of stopping at prose.
         if !args.no_tools && tool_uses.is_empty() && !current_text.trim().is_empty() {
-            let inferred_tool_uses = extract_tool_uses_from_text(&current_text);
+            let inferred_tool_uses =
+                extract_tool_uses_from_text_for_context(&current_text, &provider_name, &model);
             if !inferred_tool_uses.is_empty() {
                 tracing::info!(
                     target: "ted.embedded",
@@ -964,103 +966,17 @@ async fn run_embedded_chat_with_emitter(
     Ok(())
 }
 
+#[cfg(test)]
 fn extract_tool_uses_from_text(text: &str) -> Vec<(String, serde_json::Value)> {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return Vec::new();
-    }
-
-    let mut candidates = Vec::new();
-    let mut seen_candidates = HashSet::new();
-
-    let mut add_candidate = |candidate: &str| {
-        let c = candidate.trim();
-        if c.is_empty() || seen_candidates.contains(c) {
-            return;
-        }
-        seen_candidates.insert(c.to_string());
-        candidates.push(c.to_string());
-    };
-
-    add_candidate(trimmed);
-
-    let code_fence_re =
-        Regex::new(r"(?s)```(?:json)?\s*(.*?)\s*```").expect("code fence regex should be valid");
-    for capture in code_fence_re.captures_iter(trimmed) {
-        if let Some(body) = capture.get(1) {
-            add_candidate(body.as_str());
-        }
-    }
-
-    let mut tool_uses: Vec<(String, serde_json::Value)> = Vec::new();
-    let mut seen_tool_calls = HashSet::new();
-
-    for candidate in candidates {
-        if let Some(value) = parse_json_candidate(&candidate) {
-            collect_tool_uses_from_value(&value, &mut tool_uses, &mut seen_tool_calls);
-        }
-    }
-
-    tool_uses
+    extract_tool_uses_from_text_for_context(text, "", "")
 }
 
-fn parse_json_candidate(candidate: &str) -> Option<serde_json::Value> {
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(candidate) {
-        return Some(value);
-    }
-
-    let first_brace = candidate.find('{')?;
-    let last_brace = candidate.rfind('}')?;
-    if last_brace <= first_brace {
-        return None;
-    }
-
-    serde_json::from_str::<serde_json::Value>(&candidate[first_brace..=last_brace]).ok()
-}
-
-fn collect_tool_uses_from_value(
-    value: &serde_json::Value,
-    tool_uses: &mut Vec<(String, serde_json::Value)>,
-    seen_tool_calls: &mut HashSet<String>,
-) {
-    match value {
-        serde_json::Value::Array(items) => {
-            for item in items {
-                collect_tool_uses_from_value(item, tool_uses, seen_tool_calls);
-            }
-        }
-        serde_json::Value::Object(obj) => {
-            if let Some((name, input)) = parse_tool_from_json(value) {
-                let key = format!("{}:{}", name, input);
-                if seen_tool_calls.insert(key) {
-                    tool_uses.push((name, input));
-                }
-            }
-
-            // OpenAI-compatible tool call chunk: {"function":{"name":"...","arguments":...}}
-            if let Some(function) = obj.get("function").and_then(|v| v.as_object()) {
-                if let Some(name) = function.get("name").and_then(|v| v.as_str()) {
-                    let synthetic = serde_json::json!({
-                        "name": name,
-                        "arguments": function.get("arguments").cloned().unwrap_or_else(|| serde_json::json!({}))
-                    });
-                    if let Some((mapped_name, mapped_input)) = parse_tool_from_json(&synthetic) {
-                        let key = format!("{}:{}", mapped_name, mapped_input);
-                        if seen_tool_calls.insert(key) {
-                            tool_uses.push((mapped_name, mapped_input));
-                        }
-                    }
-                }
-            }
-
-            for key in ["tool_calls", "calls", "actions", "content"] {
-                if let Some(nested) = obj.get(key) {
-                    collect_tool_uses_from_value(nested, tool_uses, seen_tool_calls);
-                }
-            }
-        }
-        _ => {}
-    }
+fn extract_tool_uses_from_text_for_context(
+    text: &str,
+    provider_name: &str,
+    model: &str,
+) -> Vec<(String, serde_json::Value)> {
+    extract_tool_uses_from_text_with_adapters(text, provider_name, model)
 }
 
 #[cfg(test)]

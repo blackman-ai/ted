@@ -16,15 +16,17 @@ No model names or shell commands needed.
 
 Run these in order:
 
-1. `qwen2.5-coder-3b` + `q4_k_m` (default baseline)
-2. `qwen2.5-coder-1.5b` + `q4_k_m` (fast fallback)
-3. `qwen3-4b` + `q4_k_m` (agentic alternative)
-4. `qwen2.5-coder-7b` + `q4_k_m` (quality stretch target)
+1. `qwen3.5-2b` + `q4_k_m` (new agentic baseline)
+2. `qwen2.5-coder-3b` + `q4_k_m` (coding-focused baseline)
+3. `qwen2.5-coder-1.5b` + `q4_k_m` (fast fallback)
+4. `qwen3-4b` + `q4_k_m` (agentic alternative)
+5. `qwen2.5-coder-7b` + `q4_k_m` (quality stretch target)
 
 ## Expected Tradeoffs
 
 | Model | Quant | Approx file size | Why |
 |---|---|---:|---|
+| qwen3.5-2b | q4_k_m | 1.2 GB | New small agentic model with strong tool-use |
 | qwen2.5-coder-1.5b | q4_k_m | 1.0 GB | Fastest + safest on thermals |
 | qwen2.5-coder-3b | q4_k_m | 2.1 GB | Best baseline quality/speed on Pi 5 8GB |
 | qwen3-4b | q4_k_m | 2.5 GB | Better tool-use/agent behavior in some flows |
@@ -33,6 +35,12 @@ Run these in order:
 ## One-Command Setup
 
 Use the setup helper script in this repo:
+
+```bash
+./scripts/pi-prototype.sh qwen3.5-2b q4_k_m --smoke
+```
+
+Coding-first baseline:
 
 ```bash
 ./scripts/pi-prototype.sh qwen2.5-coder-3b q4_k_m --smoke

@@ -1600,6 +1600,19 @@ fn test_run_settings_command_get_local_model() {
 }
 
 #[test]
+fn test_run_settings_command_get_local_base_url() {
+    let settings = Settings::default();
+    let args = ted::cli::SettingsArgs {
+        command: Some(ted::cli::SettingsCommands::Get {
+            key: "local.base_url".to_string(),
+        }),
+    };
+
+    let result = run_settings_command(args, settings);
+    assert!(result.is_ok());
+}
+
+#[test]
 fn test_run_settings_command_get_local_model_path() {
     let settings = Settings::default();
     let args = ted::cli::SettingsArgs {
@@ -2503,6 +2516,21 @@ fn test_run_settings_command_set_local_model() {
         command: Some(ted::cli::SettingsCommands::Set {
             key: "local.model".to_string(),
             value: "llama3".to_string(),
+        }),
+    };
+
+    let result = run_settings_command(args, settings);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_run_settings_command_set_local_base_url() {
+    let _guard = sandbox_ted_home();
+    let settings = Settings::default();
+    let args = ted::cli::SettingsArgs {
+        command: Some(ted::cli::SettingsCommands::Set {
+            key: "local.base_url".to_string(),
+            value: "http://127.0.0.1:8000".to_string(),
         }),
     };
 

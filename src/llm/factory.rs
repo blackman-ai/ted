@@ -21,6 +21,8 @@ fn expected_instruct_slug(model: &str) -> Option<&'static str> {
         "qwen2.5-coder:7b" => Some("qwen2.5-coder-7b-instruct"),
         "qwen3:4b" => Some("qwen3-4b-instruct"),
         "qwen3-4b" => Some("qwen3-4b-instruct"),
+        "qwen3.5:2b" => Some("qwen3.5-2b"),
+        "qwen3.5-2b" => Some("qwen3.5-2b"),
         "qwen3-coder-30b-a3b" => Some("qwen3-coder-30b-a3b-instruct"),
         _ => None,
     }
@@ -265,6 +267,7 @@ mod tests {
             expected_instruct_slug("qwen3:4b"),
             Some("qwen3-4b-instruct")
         );
+        assert_eq!(expected_instruct_slug("qwen3.5:2b"), Some("qwen3.5-2b"));
         assert_eq!(
             expected_instruct_slug("qwen3-coder-30b-a3b"),
             Some("qwen3-coder-30b-a3b-instruct")

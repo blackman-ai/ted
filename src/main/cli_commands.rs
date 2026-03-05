@@ -110,6 +110,14 @@ pub(super) fn run_settings_command(
                 "local.model" => {
                     settings.providers.local.default_model = value;
                 }
+                "local.base_url" => {
+                    let trimmed = value.trim();
+                    settings.providers.local.base_url = if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    };
+                }
                 "local.model_path" => {
                     settings.providers.local.model_path = std::path::PathBuf::from(value);
                 }
@@ -139,6 +147,12 @@ pub(super) fn run_settings_command(
                 "provider" => settings.defaults.provider.clone(),
                 "local.port" => settings.providers.local.port.to_string(),
                 "local.model" => settings.providers.local.default_model.clone(),
+                "local.base_url" => settings
+                    .providers
+                    .local
+                    .base_url
+                    .clone()
+                    .unwrap_or_default(),
                 "local.model_path" => settings.providers.local.model_path.display().to_string(),
                 "openrouter.model" => settings.providers.openrouter.default_model.clone(),
                 "blackman.model" => settings.providers.blackman.default_model.clone(),

@@ -41,6 +41,18 @@ resolve_download() {
       URL="https://huggingface.co/Qwen/Qwen2.5-Coder-3B-Instruct-GGUF/resolve/main/qwen2.5-coder-3b-instruct-q8_0.gguf"
       FILENAME="qwen2.5-coder-3b-instruct-q8_0.gguf"
       ;;
+    qwen3.5-2b:q4_k_m)
+      URL="https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
+      FILENAME="qwen3.5-2b-q4_k_m.gguf"
+      ;;
+    qwen3.5-2b:q5_k_m)
+      URL="https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q5_K_M.gguf"
+      FILENAME="qwen3.5-2b-q5_k_m.gguf"
+      ;;
+    qwen3.5-2b:q8_0)
+      URL="https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q8_0.gguf"
+      FILENAME="qwen3.5-2b-q8_0.gguf"
+      ;;
     qwen3-4b:q4_k_m)
       URL="https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
       FILENAME="qwen3-4b-instruct-2507-q4_k_m.gguf"
@@ -67,6 +79,7 @@ resolve_download() {
       echo "Supported examples:"
       echo "  ./scripts/pi-prototype.sh qwen2.5-coder-3b q4_k_m --smoke"
       echo "  ./scripts/pi-prototype.sh qwen2.5-coder-1.5b q4_k_m --smoke"
+      echo "  ./scripts/pi-prototype.sh qwen3.5-2b q4_k_m --smoke"
       echo "  ./scripts/pi-prototype.sh qwen3-4b q4_k_m --smoke"
       echo "  ./scripts/pi-prototype.sh qwen2.5-coder-7b q4_k_m"
       exit 2

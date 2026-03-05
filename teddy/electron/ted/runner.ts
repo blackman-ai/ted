@@ -68,7 +68,9 @@ export class TedRunner extends EventEmitter {
   constructor(options: TedRunnerOptions) {
     super();
     this.options = options;
-    this.parser = new TedParser({ enableSyntheticEvents: !options.noTools });
+    // Ted now emits normalized tool/file/command events directly in embedded mode.
+    // Keep Teddy as a protocol consumer instead of re-parsing assistant text.
+    this.parser = new TedParser({ enableSyntheticEvents: false });
 
     // Forward parser events
     this.parser.on('event', (event) => this.emit('event', event));

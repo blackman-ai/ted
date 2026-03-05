@@ -310,6 +310,11 @@ Ted supports fully local/offline inference through the `local` provider, which u
    ted settings set local.model local
    ted settings set local.port 8847
    ```
+   Optional (use an existing OpenAI-compatible local server instead of launching llama-server):
+   ```bash
+   ted settings set local.base_url http://127.0.0.1:8000
+   ted settings set local.model qwen3.5-2b
+   ```
 3. Ensure you have a GGUF model available (for example under `~/.ted/models/local/model.gguf`) or pass `--model-path` when starting chat.
 
 ### Usage
@@ -333,6 +338,7 @@ Local provider settings can be configured via CLI or in `~/.ted/settings.json`:
 ted settings set provider local
 ted settings set local.port 8847
 ted settings set local.model local
+ted settings set local.base_url http://127.0.0.1:8000   # optional external server
 ```
 
 ```json
@@ -340,7 +346,8 @@ ted settings set local.model local
   "providers": {
     "local": {
       "port": 8847,
-      "default_model": "local"
+      "base_url": "http://127.0.0.1:8000",
+      "default_model": "qwen3.5-2b"
     }
   },
   "defaults": {
