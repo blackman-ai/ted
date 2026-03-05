@@ -170,6 +170,13 @@ export interface ConversationMemory {
   content: string;
 }
 
+export interface PendingChangeApplyRequest {
+  type: 'create' | 'edit' | 'delete';
+  path: string;
+  originalContent?: string;
+  newContent?: string;
+}
+
 export interface TeddyAPI {
   // Dialog
   openFolderDialog: () => Promise<string | null>;
@@ -186,6 +193,7 @@ export interface TeddyAPI {
   // Review mode - when enabled, file operations are not auto-applied
   setReviewMode: (enabled: boolean) => Promise<{ success: boolean }>;
   getReviewMode: () => Promise<{ enabled: boolean }>;
+  applyPendingChange: (change: PendingChangeApplyRequest) => Promise<{ success: boolean; error?: string }>;
 
   // Session management
   listSessions: () => Promise<SessionInfo[]>;
@@ -318,6 +326,8 @@ const api: TeddyAPI = {
   // Review mode
   setReviewMode: (enabled: boolean) => ipcRenderer.invoke('review:set', enabled),
   getReviewMode: () => ipcRenderer.invoke('review:get'),
+  applyPendingChange: (change: PendingChangeApplyRequest) =>
+    ipcRenderer.invoke('review:applyChange', change),
 
   // Session management
   listSessions: () => ipcRenderer.invoke('session:list'),

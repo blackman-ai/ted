@@ -63,13 +63,14 @@ export function usePendingChanges() {
     if (!change) return false;
 
     try {
-      // Apply the change
-      if (change.type === 'create') {
-        await window.teddy.writeFile(change.path, change.newContent);
-      } else if (change.type === 'edit') {
-        await window.teddy.writeFile(change.path, change.newContent);
-      } else if (change.type === 'delete') {
-        await window.teddy.deleteFile(change.path);
+      const result = await window.teddy.applyPendingChange({
+        type: change.type,
+        path: change.path,
+        originalContent: change.originalContent,
+        newContent: change.newContent,
+      });
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to apply pending change');
       }
 
       // Remove from pending
@@ -97,12 +98,14 @@ export function usePendingChanges() {
     // Apply changes in order
     for (const change of pendingChanges) {
       try {
-        if (change.type === 'create') {
-          await window.teddy.writeFile(change.path, change.newContent);
-        } else if (change.type === 'edit') {
-          await window.teddy.writeFile(change.path, change.newContent);
-        } else if (change.type === 'delete') {
-          await window.teddy.deleteFile(change.path);
+        const result = await window.teddy.applyPendingChange({
+          type: change.type,
+          path: change.path,
+          originalContent: change.originalContent,
+          newContent: change.newContent,
+        });
+        if (!result.success) {
+          throw new Error(result.error || 'Failed to apply pending change');
         }
       } catch (err) {
         console.error(`Failed to apply change ${change.id}:`, err);

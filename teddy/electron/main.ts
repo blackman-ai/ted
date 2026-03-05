@@ -1643,6 +1643,90 @@ ipcMain.handle('review:get', async () => {
 });
 
 /**
+ * Apply a pending review-mode change via the same hook pipeline used for Ted events.
+ */
+ipcMain.handle(
+  'review:applyChange',
+  async (
+    _,
+    change: {
+      type: 'create' | 'edit' | 'delete';
+      path: string;
+      originalContent?: string;
+      newContent?: string;
+    }
+  ) => {
+    try {
+      if (!currentProjectRoot) {
+        throw new Error('No project selected');
+      }
+      if (!fileApplier) {
+        throw new Error('File applier is not initialized');
+      }
+
+      const timestamp = Date.now();
+      const sessionId = currentSessionId ?? 'review-mode';
+      let event: TedFileOperationEvent;
+
+      if (change.type === 'create') {
+        if (typeof change.newContent !== 'string') {
+          throw new Error('Create change missing newContent');
+        }
+        event = {
+          type: 'file_create',
+          timestamp,
+          session_id: sessionId,
+          data: {
+            path: change.path,
+            content: change.newContent,
+          },
+        };
+      } else if (change.type === 'edit') {
+        if (typeof change.newContent !== 'string') {
+          throw new Error('Edit change missing newContent');
+        }
+
+        const oldText =
+          typeof change.originalContent === 'string'
+            ? change.originalContent
+            : await fs.readFile(
+                resolveProjectPath(currentProjectRoot, change.path),
+                'utf-8'
+              );
+
+        event = {
+          type: 'file_edit',
+          timestamp,
+          session_id: sessionId,
+          data: {
+            path: change.path,
+            operation: 'replace',
+            old_text: oldText,
+            new_text: change.newContent,
+          },
+        };
+      } else {
+        event = {
+          type: 'file_delete',
+          timestamp,
+          session_id: sessionId,
+          data: {
+            path: change.path,
+          },
+        };
+      }
+
+      await processTedFileOperationWithHooks(event);
+      return { success: true };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log('[REVIEW:APPLY_CHANGE] Failed:', message);
+      return { success: false, error: message };
+    }
+  }
+);
+
+/**
  * Clear conversation history (start fresh)
  */
 ipcMain.handle('ted:clearHistory', async () => {
