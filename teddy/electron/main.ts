@@ -10,7 +10,19 @@ import crypto from 'crypto';
 import { TedRunner } from './ted/runner';
 import { FileApplier } from './operations/file-applier';
 import { AutoCommit } from './git/auto-commit';
-import { TedEvent, ConversationHistoryEvent } from './types/protocol';
+import {
+  TedEvent,
+  ConversationHistoryEvent,
+  FileCreateEvent,
+  FileEditEvent,
+  FileDeleteEvent,
+} from './types/protocol';
+import {
+  HookRunner,
+  HookOperationEnvelope,
+  HookNonBlockingResult,
+  logHookResult,
+} from './hooks/runner';
 import { storage, ProjectContext } from './storage/config';
 import {
   type TedSettings,
@@ -106,6 +118,7 @@ let tedRunner: TedRunner | null = null;
 let fileApplier: FileApplier | null = null;
 let autoCommit: AutoCommit | null = null;
 let fileWatcher: FileWatcherType | null = null;
+let hookRunner: HookRunner | null = null;
 let currentProjectRoot: string | null = null;
 
 // Review mode - when enabled, file operations are sent to renderer for review instead of auto-applying
@@ -328,6 +341,335 @@ function shouldSkipTreeEntry(name: string): boolean {
   return name.startsWith('.') || FILE_TREE_EXCLUDED_NAMES.has(name);
 }
 
+type TedFileOperationEvent = FileCreateEvent | FileEditEvent | FileDeleteEvent;
+type HookNotificationLevel = 'info' | 'success' | 'error';
+
+function emitHookNotification(level: HookNotificationLevel, message: string, url?: string): void {
+  const payload = { level, message, url };
+  mainWindow?.webContents.send('hook:notification', payload);
+  mainWindow?.webContents.send(
+    'ted:stderr',
+    `[HOOK/${level}] ${message}${url ? ` (${url})` : ''}`
+  );
+}
+
+function emitHookResultNotifications(scope: string, result: HookNonBlockingResult): void {
+  logHookResult(scope, result);
+  for (const message of result.messages) {
+    emitHookNotification('info', `${scope}: ${message}`);
+  }
+  for (const error of result.errors) {
+    emitHookNotification('error', `${scope}: ${error}`);
+  }
+  if (result.url) {
+    emitHookNotification('success', `${scope}: ${result.url}`, result.url);
+  }
+}
+
+function toHookOperation(event: TedFileOperationEvent): HookOperationEnvelope {
+  return {
+    type: event.type,
+    timestamp: event.timestamp,
+    session_id: event.session_id,
+    data: { ...event.data },
+  };
+}
+
+function coerceHookOperation(
+  operation: HookOperationEnvelope,
+  fallbackEvent: TedFileOperationEvent
+): TedFileOperationEvent | null {
+  const timestamp =
+    typeof operation.timestamp === 'number' && Number.isFinite(operation.timestamp)
+      ? operation.timestamp
+      : fallbackEvent.timestamp;
+  const sessionId =
+    typeof operation.session_id === 'string' && operation.session_id.trim().length > 0
+      ? operation.session_id
+      : fallbackEvent.session_id;
+
+  if (operation.type === 'file_create') {
+    const pathValue = operation.data.path;
+    const contentValue = operation.data.content;
+    if (typeof pathValue !== 'string' || typeof contentValue !== 'string') {
+      return null;
+    }
+
+    const data: FileCreateEvent['data'] = {
+      path: pathValue,
+      content: contentValue,
+    };
+    if (typeof operation.data.mode === 'number' && Number.isFinite(operation.data.mode)) {
+      data.mode = Math.floor(operation.data.mode);
+    }
+
+    return {
+      type: 'file_create',
+      timestamp,
+      session_id: sessionId,
+      data,
+    };
+  }
+
+  if (operation.type === 'file_edit') {
+    const pathValue = operation.data.path;
+    const opValue = operation.data.operation;
+    if (typeof pathValue !== 'string') {
+      return null;
+    }
+    if (opValue !== 'replace' && opValue !== 'insert' && opValue !== 'delete') {
+      return null;
+    }
+
+    const data: FileEditEvent['data'] = {
+      path: pathValue,
+      operation: opValue,
+    };
+    if (typeof operation.data.old_text === 'string') {
+      data.old_text = operation.data.old_text;
+    }
+    if (typeof operation.data.new_text === 'string') {
+      data.new_text = operation.data.new_text;
+    }
+    if (typeof operation.data.text === 'string') {
+      data.text = operation.data.text;
+    }
+    if (typeof operation.data.line === 'number' && Number.isFinite(operation.data.line)) {
+      data.line = Math.floor(operation.data.line);
+    }
+
+    return {
+      type: 'file_edit',
+      timestamp,
+      session_id: sessionId,
+      data,
+    };
+  }
+
+  if (operation.type === 'file_delete') {
+    const pathValue = operation.data.path;
+    if (typeof pathValue !== 'string') {
+      return null;
+    }
+
+    return {
+      type: 'file_delete',
+      timestamp,
+      session_id: sessionId,
+      data: { path: pathValue },
+    };
+  }
+
+  return null;
+}
+
+function summarizeHookOperations(operations: TedFileOperationEvent[]): string {
+  if (operations.length === 0) {
+    return 'No file operations provided.';
+  }
+
+  const summarizeEdit = (operation: FileEditEvent): string => {
+    if (operation.data.operation === 'replace') {
+      const oldText = operation.data.old_text ? operation.data.old_text.slice(0, 60) : '';
+      const newText = operation.data.new_text ? operation.data.new_text.slice(0, 60) : '';
+      return `replace "${oldText}" -> "${newText}"`;
+    }
+    if (operation.data.operation === 'insert') {
+      const inserted = operation.data.text ? operation.data.text.slice(0, 60) : '';
+      return `insert at line ${operation.data.line ?? '?'}: "${inserted}"`;
+    }
+    const deleted = operation.data.text ? operation.data.text.slice(0, 60) : '';
+    return `delete at line ${operation.data.line ?? '?'}: "${deleted}"`;
+  };
+
+  const summary = operations
+    .slice(0, 10)
+    .map((operation) => {
+      if (operation.type === 'file_edit') {
+        return `- ${operation.type}: ${operation.data.path} (${summarizeEdit(operation)})`;
+      }
+      if (operation.type === 'file_create') {
+        return `- ${operation.type}: ${operation.data.path}`;
+      }
+      return `- ${operation.type}: ${operation.data.path}`;
+    })
+    .join('\n');
+
+  if (operations.length <= 10) {
+    return summary;
+  }
+
+  return `${summary}\n- ...and ${operations.length - 10} more`;
+}
+
+async function requestBeforeApplyHookApproval(
+  reason: string | undefined,
+  operations: TedFileOperationEvent[]
+): Promise<boolean> {
+  if (!mainWindow) {
+    return false;
+  }
+
+  const result = await dialog.showMessageBox(mainWindow, {
+    type: 'question',
+    title: 'Confirm File Changes',
+    message: 'A BeforeApplyChanges hook requires confirmation before applying file operations.',
+    detail: [
+      reason ? `Reason: ${reason}` : 'Reason: Hook requested confirmation.',
+      '',
+      'Planned operations:',
+      summarizeHookOperations(operations),
+    ].join('\n'),
+    buttons: ['Apply Changes', 'Deny'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+  });
+
+  return result.response === 0;
+}
+
+function trackSessionFileOperation(event: TedFileOperationEvent): void {
+  const filePath = event.data.path;
+  if (event.type === 'file_create') {
+    if (!filesCreatedThisSession.includes(filePath)) {
+      filesCreatedThisSession.push(filePath);
+      log('[SESSION] Tracking file created:', filePath);
+    }
+    return;
+  }
+
+  if (event.type === 'file_edit') {
+    if (!filesEditedThisSession.includes(filePath) && !filesCreatedThisSession.includes(filePath)) {
+      filesEditedThisSession.push(filePath);
+      log('[SESSION] Tracking file edited:', filePath);
+    }
+  }
+}
+
+async function applyTedFileOperationEvent(event: TedFileOperationEvent): Promise<void> {
+  if (!fileApplier) {
+    throw new Error('File applier is not initialized');
+  }
+
+  trackSessionFileOperation(event);
+
+  if (event.type === 'file_create') {
+    await fileApplier.applyCreate(event);
+    mainWindow?.webContents.send('file:changed', {
+      type: 'create',
+      path: event.data.path,
+    });
+    return;
+  }
+
+  if (event.type === 'file_edit') {
+    try {
+      await fileApplier.applyEdit(event);
+      mainWindow?.webContents.send('file:changed', {
+        type: 'edit',
+        path: event.data.path,
+      });
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      mainWindow?.webContents.send('ted:edit-failed', {
+        path: event.data.path,
+        error: errorMsg,
+        operation: event.data.operation,
+        oldText: event.data.old_text?.substring(0, 200),
+      });
+      throw err;
+    }
+    return;
+  }
+
+  await fileApplier.applyDelete(event);
+  mainWindow?.webContents.send('file:changed', {
+    type: 'delete',
+    path: event.data.path,
+  });
+}
+
+async function processTedFileOperationWithHooks(event: TedFileOperationEvent): Promise<void> {
+  if (!currentProjectRoot || !fileApplier) {
+    return;
+  }
+
+  let operations: TedFileOperationEvent[] = [event];
+  if (hookRunner) {
+    const beforeResult = await hookRunner.runBeforeApply({
+      projectRoot: currentProjectRoot,
+      sessionId: event.session_id,
+      operations: operations.map(toHookOperation),
+    });
+    emitHookResultNotifications('BeforeApplyChanges', beforeResult);
+
+    if (beforeResult.decision === 'deny') {
+      emitHookNotification(
+        'error',
+        beforeResult.reason ?? 'BeforeApplyChanges hook blocked file operations'
+      );
+      return;
+    }
+
+    if (beforeResult.updatedOps && beforeResult.updatedOps.length > 0) {
+      const converted = beforeResult.updatedOps
+        .map((operation) => coerceHookOperation(operation, event))
+        .filter((item): item is TedFileOperationEvent => item !== null);
+
+      if (converted.length === 0) {
+        emitHookNotification('error', 'Hook returned invalid updatedOps payload');
+        return;
+      }
+
+      operations = converted;
+    }
+
+    if (beforeResult.decision === 'ask') {
+      const approved = await requestBeforeApplyHookApproval(beforeResult.reason, operations);
+      if (!approved) {
+        emitHookNotification(
+          'info',
+          'File changes were denied after hook confirmation prompt'
+        );
+        return;
+      }
+    }
+  }
+
+  const appliedOperations: TedFileOperationEvent[] = [];
+  for (const operation of operations) {
+    try {
+      await applyTedFileOperationEvent(operation);
+      appliedOperations.push(operation);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      emitHookNotification(
+        'error',
+        `Failed to apply ${operation.type} on ${operation.data.path}: ${message}`
+      );
+    }
+  }
+
+  if (!hookRunner || appliedOperations.length === 0) {
+    return;
+  }
+
+  const afterResult = await hookRunner.runAfterApply({
+    projectRoot: currentProjectRoot,
+    sessionId: event.session_id,
+    operations: appliedOperations.map(toHookOperation),
+  });
+  emitHookResultNotifications('AfterApplyChanges', afterResult);
+}
+
+function hookResultHandledExternally(result: HookNonBlockingResult): boolean {
+  if (result.url) {
+    return true;
+  }
+  return result.artifacts?.handled === true || result.artifacts?.skipDefault === true;
+}
+
 async function loadProjectMemories(limit: number): Promise<ConversationMemoryRecord[]> {
   if (!currentProjectRoot) {
     return [];
@@ -491,6 +833,7 @@ ipcMain.handle('project:set', async (_, projectPath: string) => {
   // Initialize helpers
   fileApplier = new FileApplier({ projectRoot: projectPath });
   autoCommit = new AutoCommit({ projectRoot: projectPath });
+  hookRunner = new HookRunner({ projectRoot: projectPath });
 
   // Initialize git repo if needed
   await autoCommit.init();
@@ -1019,61 +1362,33 @@ User request: `;
 
   // Apply file operations - either auto-apply or send to renderer for review
   tedRunner.on('file_create', async (event) => {
-    // Track file creation for session state (used in next turn's system prompt)
-    const filePath = event.data.path;
-    if (!filesCreatedThisSession.includes(filePath)) {
-      filesCreatedThisSession.push(filePath);
-      log('[SESSION] Tracking file created:', filePath);
-    }
-
     if (reviewModeEnabled) {
       // In review mode, just forward the event - don't apply
-      log('[FILE_CREATE] Review mode - forwarding to renderer:', filePath);
-      // The event is already forwarded via 'event' listener above
-    } else {
-      // Auto-apply when review mode is off
-      try {
-        await fileApplier?.applyCreate(event);
-        mainWindow?.webContents.send('file:changed', {
-          type: 'create',
-          path: filePath,
-        });
-      } catch (err) {
-        console.error('Failed to apply file create:', err);
-      }
+      trackSessionFileOperation(event);
+      log('[FILE_CREATE] Review mode - forwarding to renderer:', event.data.path);
+      return;
+    }
+
+    try {
+      await processTedFileOperationWithHooks(event);
+    } catch (err) {
+      console.error('Failed to process file_create event:', err);
     }
   });
 
   tedRunner.on('file_edit', async (event) => {
-    // Track file edit for session state (used in next turn's system prompt)
-    const filePath = event.data.path;
-    if (!filesEditedThisSession.includes(filePath) && !filesCreatedThisSession.includes(filePath)) {
-      filesEditedThisSession.push(filePath);
-      log('[SESSION] Tracking file edited:', filePath);
-    }
-
     if (reviewModeEnabled) {
       // In review mode, just forward the event - don't apply
-      log('[FILE_EDIT] Review mode - forwarding to renderer:', filePath);
-    } else {
-      try {
-        await fileApplier?.applyEdit(event);
-        mainWindow?.webContents.send('file:changed', {
-          type: 'edit',
-          path: filePath,
-        });
-      } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        console.error('Failed to apply file edit:', errorMsg);
-        // Notify the user that the edit failed
-        mainWindow?.webContents.send('ted:edit-failed', {
-          path: filePath,
-          error: errorMsg,
-          operation: event.data.operation,
-          // Include what the model tried to replace (truncated for display)
-          oldText: event.data.old_text?.substring(0, 200),
-        });
-      }
+      trackSessionFileOperation(event);
+      log('[FILE_EDIT] Review mode - forwarding to renderer:', event.data.path);
+      return;
+    }
+
+    try {
+      await processTedFileOperationWithHooks(event);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error('Failed to process file_edit event:', errorMsg);
     }
   });
 
@@ -1081,16 +1396,13 @@ User request: `;
     if (reviewModeEnabled) {
       // In review mode, just forward the event - don't apply
       log('[FILE_DELETE] Review mode - forwarding to renderer:', event.data.path);
-    } else {
-      try {
-        await fileApplier?.applyDelete(event);
-        mainWindow?.webContents.send('file:changed', {
-          type: 'delete',
-          path: event.data.path,
-        });
-      } catch (err) {
-        console.error('Failed to apply file delete:', err);
-      }
+      return;
+    }
+
+    try {
+      await processTedFileOperationWithHooks(event);
+    } catch (err) {
+      console.error('Failed to process file_delete event:', err);
     }
   });
 
@@ -1565,12 +1877,39 @@ ipcMain.handle('cache:clear', async () => {
 ipcMain.handle('deploy:vercel', async (_, options) => {
   log('[DEPLOY:VERCEL]', { projectPath: options.projectPath });
   try {
+    const deployProjectRoot = options.projectPath || currentProjectRoot;
+    let deployHookResult: HookNonBlockingResult | null = null;
+    if (hookRunner && deployProjectRoot) {
+      deployHookResult = await hookRunner.runOnDeploy({
+        projectRoot: deployProjectRoot,
+        target: 'vercel',
+        metadata: {
+          provider: 'vercel',
+          options,
+        },
+      });
+      emitHookResultNotifications('OnDeploy', deployHookResult);
+
+      if (hookResultHandledExternally(deployHookResult)) {
+        const hookMessage =
+          deployHookResult.messages[0] ?? 'Deployment handled by OnDeploy hook';
+        return {
+          success: true,
+          url: deployHookResult.url,
+          deploymentId: 'hook',
+          message: hookMessage,
+          artifacts: deployHookResult.artifacts,
+        };
+      }
+    }
+
     // Send progress update to renderer
     if (mainWindow) {
       mainWindow.webContents.send('deploy:progress', { status: 'starting', message: 'Preparing deployment...' });
     }
 
     const result = await deployProject(options);
+    const hookMessage = deployHookResult?.messages[0];
 
     if (result.success && mainWindow) {
       mainWindow.webContents.send('deploy:success', { url: result.url, deploymentId: result.deploymentId });
@@ -1578,7 +1917,11 @@ ipcMain.handle('deploy:vercel', async (_, options) => {
       mainWindow.webContents.send('deploy:error', { error: result.error });
     }
 
-    return result;
+    return {
+      ...result,
+      message: hookMessage,
+      artifacts: deployHookResult?.artifacts,
+    };
   } catch (err) {
     log('[DEPLOY:VERCEL] Failed:', err);
     if (mainWindow) {
@@ -1622,12 +1965,40 @@ ipcMain.handle('deploy:getVercelStatus', async (_, deploymentId, token) => {
 ipcMain.handle('deploy:netlify', async (_, options) => {
   log('[DEPLOY:NETLIFY]', { projectPath: options.projectPath });
   try {
+    const deployProjectRoot = options.projectPath || currentProjectRoot;
+    let deployHookResult: HookNonBlockingResult | null = null;
+    if (hookRunner && deployProjectRoot) {
+      deployHookResult = await hookRunner.runOnDeploy({
+        projectRoot: deployProjectRoot,
+        target: 'netlify',
+        metadata: {
+          provider: 'netlify',
+          options,
+        },
+      });
+      emitHookResultNotifications('OnDeploy', deployHookResult);
+
+      if (hookResultHandledExternally(deployHookResult)) {
+        const hookMessage =
+          deployHookResult.messages[0] ?? 'Deployment handled by OnDeploy hook';
+        return {
+          success: true,
+          url: deployHookResult.url,
+          deployId: 'hook',
+          siteId: 'hook',
+          message: hookMessage,
+          artifacts: deployHookResult.artifacts,
+        };
+      }
+    }
+
     // Send progress update to renderer
     if (mainWindow) {
       mainWindow.webContents.send('deploy:progress', { status: 'starting', message: 'Preparing Netlify deployment...' });
     }
 
     const result = await deployNetlifyProject(options);
+    const hookMessage = deployHookResult?.messages[0];
 
     if (result.success && mainWindow) {
       mainWindow.webContents.send('deploy:success', { url: result.url, deployId: result.deployId, siteId: result.siteId });
@@ -1635,7 +2006,11 @@ ipcMain.handle('deploy:netlify', async (_, options) => {
       mainWindow.webContents.send('deploy:error', { error: result.error });
     }
 
-    return result;
+    return {
+      ...result,
+      message: hookMessage,
+      artifacts: deployHookResult?.artifacts,
+    };
   } catch (err) {
     log('[DEPLOY:NETLIFY] Failed:', err);
     if (mainWindow) {
@@ -1783,8 +2158,32 @@ ipcMain.handle('tunnel:getUrl', async (_, port) => {
 ipcMain.handle('share:start', async (_, options: { port: number; projectName?: string; customSlug?: string }) => {
   log('[SHARE:START]', options);
   try {
+    let shareHookResult: HookNonBlockingResult | null = null;
+    if (hookRunner && currentProjectRoot) {
+      shareHookResult = await hookRunner.runOnShare({
+        projectRoot: currentProjectRoot,
+        target: 'custom',
+        metadata: {
+          options,
+        },
+      });
+      emitHookResultNotifications('OnShare', shareHookResult);
+
+      if (hookResultHandledExternally(shareHookResult)) {
+        return {
+          success: true,
+          slug: options.customSlug || 'hook-share',
+          previewUrl: shareHookResult.url,
+          tunnelUrl: shareHookResult.url,
+          message: shareHookResult.messages[0] ?? 'Share handled by OnShare hook',
+          artifacts: shareHookResult.artifacts,
+        };
+      }
+    }
+
     const share = await getShareModule();
     const result = await share.startShare(options);
+    const hookMessage = shareHookResult?.messages[0];
 
     if (result.success && mainWindow) {
       mainWindow.webContents.send('share:started', {
@@ -1794,7 +2193,11 @@ ipcMain.handle('share:start', async (_, options: { port: number; projectName?: s
       });
     }
 
-    return result;
+    return {
+      ...result,
+      message: hookMessage,
+      artifacts: shareHookResult?.artifacts,
+    };
   } catch (err) {
     log('[SHARE:START] Failed:', err);
     throw err;

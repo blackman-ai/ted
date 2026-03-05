@@ -313,9 +313,19 @@ export function Preview({ projectPath }: PreviewProps) {
         vercelToken: settings.vercelToken,
       });
 
-      if (result.success && result.url) {
-        setDeploymentUrl(result.url);
-        setServerOutput(`✓ Deployed successfully! Click to open: ${result.url}`);
+      if (result.success) {
+        if (result.url) {
+          setDeploymentUrl(result.url);
+        }
+        if (result.message) {
+          setServerOutput(
+            result.url ? `✓ ${result.message} (${result.url})` : `✓ ${result.message}`
+          );
+        } else if (result.url) {
+          setServerOutput(`✓ Deployed successfully! Click to open: ${result.url}`);
+        } else {
+          setServerOutput('✓ Deployment completed');
+        }
       } else {
         setServerOutput(`✗ Deployment failed: ${result.error || 'Unknown error'}`);
       }
@@ -349,9 +359,19 @@ export function Preview({ projectPath }: PreviewProps) {
         netlifyToken: settings.netlifyToken,
       });
 
-      if (result.success && result.url) {
-        setDeploymentUrl(result.url);
-        setServerOutput(`✓ Deployed successfully! Click to open: ${result.url}`);
+      if (result.success) {
+        if (result.url) {
+          setDeploymentUrl(result.url);
+        }
+        if (result.message) {
+          setServerOutput(
+            result.url ? `✓ ${result.message} (${result.url})` : `✓ ${result.message}`
+          );
+        } else if (result.url) {
+          setServerOutput(`✓ Deployed successfully! Click to open: ${result.url}`);
+        } else {
+          setServerOutput('✓ Deployment completed');
+        }
       } else {
         setServerOutput(`✗ Deployment failed: ${result.error || 'Unknown error'}`);
       }
@@ -421,11 +441,22 @@ export function Preview({ projectPath }: PreviewProps) {
       // Use shareStart to get a teddy.rocks subdomain
       const result = await window.teddy.shareStart({ port });
 
-      if (result.success && result.previewUrl) {
-        setTunnelUrl(result.previewUrl);
-        setServerOutput(`✓ Sharing at: ${result.previewUrl}`);
-        // Copy to clipboard
-        navigator.clipboard.writeText(result.previewUrl).catch(() => {});
+      if (result.success) {
+        if (result.previewUrl) {
+          setTunnelUrl(result.previewUrl);
+          navigator.clipboard.writeText(result.previewUrl).catch(() => {});
+        }
+        if (result.message) {
+          setServerOutput(
+            result.previewUrl
+              ? `✓ ${result.message} (${result.previewUrl})`
+              : `✓ ${result.message}`
+          );
+        } else if (result.previewUrl) {
+          setServerOutput(`✓ Sharing at: ${result.previewUrl}`);
+        } else {
+          setServerOutput('✓ Share action completed');
+        }
       } else {
         setServerOutput(`✗ Failed to create share link: ${result.error}`);
       }

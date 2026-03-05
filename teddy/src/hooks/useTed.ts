@@ -66,6 +66,12 @@ export function useTed() {
       addLog('info', `Git commit: ${info.summary}`);
     });
 
+    const unsubHookNotification = window.teddy.onHookNotification((info) => {
+      const level = info.level === 'error' ? 'error' : 'info';
+      const suffix = info.url ? ` (${info.url})` : '';
+      addLog(level, `[Hook] ${info.message}${suffix}`);
+    });
+
     return () => {
       unsubEvent();
       unsubStderr();
@@ -73,6 +79,7 @@ export function useTed() {
       unsubExit();
       unsubFileChanged();
       unsubGitCommitted();
+      unsubHookNotification();
     };
   }, []);
 

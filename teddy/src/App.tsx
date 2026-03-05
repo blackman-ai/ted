@@ -275,6 +275,14 @@ function App() {
     setNotifications((prev) => prev.filter((n) => n.id !== id));
   }, []);
 
+  useEffect(() => {
+    const unsubscribe = window.teddy.onHookNotification((info) => {
+      const suffix = info.url ? ` (${info.url})` : '';
+      pushNotification(info.level, `${info.message}${suffix}`);
+    });
+    return () => unsubscribe();
+  }, [pushNotification]);
+
   const startFreshChat = useCallback(async () => {
     clearEvents();
     await window.teddy.clearHistory();

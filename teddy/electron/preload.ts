@@ -97,6 +97,8 @@ export interface DeploymentResult {
   success: boolean;
   url?: string;
   deploymentId?: string;
+  message?: string;
+  artifacts?: Record<string, unknown>;
   error?: string;
 }
 
@@ -120,6 +122,8 @@ export interface NetlifyDeploymentResult {
   url?: string;
   deployId?: string;
   siteId?: string;
+  message?: string;
+  artifacts?: Record<string, unknown>;
   error?: string;
 }
 
@@ -254,6 +258,8 @@ export interface TeddyAPI {
     slug?: string;
     previewUrl?: string;
     tunnelUrl?: string;
+    message?: string;
+    artifacts?: Record<string, unknown>;
     error?: string;
   }>;
   shareStop: (port: number) => Promise<{ success: boolean }>;
@@ -289,6 +295,11 @@ export interface TeddyAPI {
   onFileChanged: (callback: (info: { type: string; path: string }) => void) => () => void;
   onFileExternalChange: (callback: (event: { type: string; path: string; relativePath: string }) => void) => () => void;
   onGitCommitted: (callback: (info: { files: string[]; summary: string }) => void) => () => void;
+  onHookNotification: (callback: (info: {
+    level: 'info' | 'success' | 'error';
+    message: string;
+    url?: string;
+  }) => void) => () => void;
 }
 
 const api: TeddyAPI = {
@@ -429,6 +440,15 @@ const api: TeddyAPI = {
     const listener = (_: unknown, info: { files: string[]; summary: string }) => callback(info);
     ipcRenderer.on('git:committed', listener);
     return () => ipcRenderer.removeListener('git:committed', listener);
+  },
+
+  onHookNotification: (callback) => {
+    const listener = (
+      _: unknown,
+      info: { level: 'info' | 'success' | 'error'; message: string; url?: string }
+    ) => callback(info);
+    ipcRenderer.on('hook:notification', listener);
+    return () => ipcRenderer.removeListener('hook:notification', listener);
   },
 };
 
