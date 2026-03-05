@@ -19,6 +19,7 @@ use crossterm::{
 use ratatui::prelude::*;
 
 use crate::caps::available_caps;
+use crate::caps::render::render_system_prompt;
 use crate::config::Settings;
 use crate::context::ContextManager;
 use crate::error::{Result, TedError};
@@ -81,6 +82,12 @@ pub struct TuiState {
     pub agent_progress_tracker: Option<ProgressTracker>,
     /// Flag indicating caps changed and system prompt needs regeneration
     pub caps_changed: bool,
+    /// Whether org cap governance is enforced.
+    pub enforce_caps_policy: bool,
+    /// Required caps that must remain active when governance is enabled.
+    pub required_caps: Vec<String>,
+    /// Disallowed caps that cannot be activated when governance is enabled.
+    pub disallowed_caps: Vec<String>,
     /// Queued messages to send after current processing completes
     pub pending_messages: Vec<String>,
     /// Tool call ID of the agent whose conversation is shown in the split pane
@@ -122,6 +129,9 @@ impl TuiState {
             enabled_caps,
             agent_progress_tracker: None,
             caps_changed: false,
+            enforce_caps_policy: settings.defaults.enforce_caps_policy,
+            required_caps: settings.defaults.required_caps.clone(),
+            disallowed_caps: settings.defaults.disallowed_caps.clone(),
             pending_messages: Vec::new(),
             focused_agent_tool_id: None,
         }
@@ -256,6 +266,29 @@ pub async fn run_chat_tui_loop(
     // Create TUI state with agent progress tracker
     let mut state =
         TuiState::new(config.clone(), &settings).with_progress_tracker(agent_progress_tracker);
+    let mut governed_caps = state.enabled_caps.clone();
+    crate::caps::enforce_governance(
+        &mut governed_caps,
+        state.enforce_caps_policy,
+        &state.required_caps,
+        &state.disallowed_caps,
+    )?;
+    if governed_caps != state.enabled_caps {
+        state.enabled_caps = governed_caps.clone();
+        state.config.caps = governed_caps.clone();
+        if let Some(ref mut settings_state) = state.settings_state {
+            settings_state.caps_enabled = governed_caps.clone();
+        }
+        let loader = crate::caps::CapLoader::new();
+        let resolver = crate::caps::CapResolver::new(loader);
+        let merged = resolver.resolve_and_merge(&governed_caps)?;
+        let rendered_system_prompt = render_system_prompt(&merged);
+        conversation.set_system(rendered_system_prompt);
+        state.set_status("Applied cap governance policy");
+    }
+    if let Some(warning) = tool_executor.policy_load_warning() {
+        state.set_error(&format!("Permissions policy warning: {}", warning));
+    }
     let mut message_count = session_info.message_count;
     let interrupted = Arc::new(AtomicBool::new(false));
 
@@ -579,7 +612,8 @@ pub async fn run_chat_tui_loop(
             let loader = crate::caps::CapLoader::new();
             let resolver = crate::caps::CapResolver::new(loader);
             if let Ok(merged) = resolver.resolve_and_merge(&state.enabled_caps) {
-                conversation.set_system(&merged.system_prompt);
+                let rendered_system_prompt = render_system_prompt(&merged);
+                conversation.set_system(rendered_system_prompt);
                 state.set_status("Caps updated - system prompt regenerated");
             }
         }

@@ -9,6 +9,7 @@ use crossterm::{
     ExecutableCommand,
 };
 
+use ted::caps::render::render_system_prompt;
 use ted::caps::resolver::MergedCap;
 use ted::caps::{CapLoader, CapResolver};
 use ted::chat::{ChatSession, SessionState};
@@ -432,8 +433,9 @@ pub(super) async fn initialize_chat_runtime(
         if !session_info.caps.is_empty() && args.cap.is_empty() {
             cap_names = session_info.caps.clone();
             merged_cap = resolver.resolve_and_merge(&cap_names)?;
-            if !merged_cap.system_prompt.is_empty() {
-                conversation.set_system(&merged_cap.system_prompt);
+            let rendered_system_prompt = render_system_prompt(&merged_cap);
+            if !rendered_system_prompt.is_empty() {
+                conversation.set_system(rendered_system_prompt);
             }
         }
     }

@@ -5,7 +5,7 @@
 //!
 //! Provides the standard set of caps that ship with Ted.
 
-use crate::caps::schema::{Cap, CapToolPermissions};
+use crate::caps::schema::{Cap, CapDeliverables, CapIdentity, CapToolPermissions, CapTraits};
 
 /// Get a built-in cap by name
 pub fn get_builtin(name: &str) -> Option<Cap> {
@@ -39,6 +39,19 @@ fn base() -> Cap {
     Cap::new("base")
         .with_description("Base configuration for Ted")
         .with_priority(0)
+        .with_identity(CapIdentity {
+            traits: Some(CapTraits {
+                verbosity: Some(0.3),
+                planning_depth: Some(0.5),
+                evidence_threshold: Some(0.5),
+                ..Default::default()
+            }),
+            lenses: vec!["execution".to_string(), "task-tracking".to_string()],
+            deliverables: Some(CapDeliverables {
+                require_checklist: Some(false),
+                ..Default::default()
+            }),
+        })
         .with_system_prompt(
             r#"Guidelines:
 - Be concise and direct
@@ -171,6 +184,25 @@ fn security_analyst() -> Cap {
         .with_description("Security-focused code review")
         .with_priority(20)
         .extends(&["base"])
+        .with_identity(CapIdentity {
+            traits: Some(CapTraits {
+                cautiousness: Some(0.95),
+                pedantry: Some(0.9),
+                evidence_threshold: Some(0.9),
+                planning_depth: Some(0.8),
+                ..Default::default()
+            }),
+            lenses: vec![
+                "security".to_string(),
+                "threat-modeling".to_string(),
+                "review".to_string(),
+            ],
+            deliverables: Some(CapDeliverables {
+                require_risks: Some(true),
+                require_security_review: Some(true),
+                ..Default::default()
+            }),
+        })
         .with_tool_permissions(CapToolPermissions {
             enable: Vec::new(),
             disable: Vec::new(),
@@ -222,6 +254,27 @@ fn code_reviewer() -> Cap {
         .with_description("Thorough code review persona")
         .with_priority(15)
         .extends(&["base"])
+        .with_identity(CapIdentity {
+            traits: Some(CapTraits {
+                verbosity: Some(0.4),
+                cautiousness: Some(0.7),
+                pedantry: Some(0.8),
+                planning_depth: Some(0.8),
+                refactor_bias: Some(0.6),
+                ..Default::default()
+            }),
+            lenses: vec![
+                "review".to_string(),
+                "correctness".to_string(),
+                "maintainability".to_string(),
+            ],
+            deliverables: Some(CapDeliverables {
+                require_diff_summary: Some(true),
+                require_test_plan: Some(true),
+                require_risks: Some(true),
+                ..Default::default()
+            }),
+        })
         .with_system_prompt(
             r#"You are a thorough code reviewer. When reviewing code, evaluate:
 
@@ -323,6 +376,7 @@ mod tests {
         assert!(cap.is_builtin);
         assert_eq!(cap.priority, 0);
         assert!(cap.extends.is_empty());
+        assert!(cap.identity.is_some());
     }
 
     #[test]
@@ -359,6 +413,7 @@ mod tests {
         assert!(cap.is_builtin);
         assert_eq!(cap.priority, 20);
         assert!(cap.extends.contains(&"base".to_string()));
+        assert!(cap.identity.is_some());
         // Security analyst should have blocked commands
         assert!(cap
             .tool_permissions
@@ -377,6 +432,7 @@ mod tests {
         assert!(cap.is_builtin);
         assert_eq!(cap.priority, 15);
         assert!(cap.extends.contains(&"base".to_string()));
+        assert!(cap.identity.is_some());
     }
 
     #[test]

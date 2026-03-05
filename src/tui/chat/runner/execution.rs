@@ -297,7 +297,10 @@ impl<B: Backend> crate::chat::engine::ToolExecutionStrategy for TuiToolExecution
                     agent_handles.push((id.clone(), handle));
                 }
                 Ok(None) => {
-                    tool_results.push(ToolResult::error(id, "Permission denied by user"));
+                    let deny_message = tool_executor
+                        .take_last_denial_message()
+                        .unwrap_or_else(|| "Permission denied".to_string());
+                    tool_results.push(ToolResult::error(id, deny_message));
                 }
                 Err(e) => {
                     tool_results.push(ToolResult::error(id, e.to_string()));
@@ -926,6 +929,60 @@ mod tests {
             .and_then(|m| m.find_tool_call("read_1"))
             .unwrap();
         assert_eq!(tool_call.status, ToolCallStatus::Success);
+    }
+
+    #[tokio::test]
+    async fn test_tool_execution_strategy_policy_deny_shell_uses_policy_message() {
+        let temp = TempDir::new().unwrap();
+        let policy_dir = temp.path().join(".ted");
+        std::fs::create_dir_all(&policy_dir).unwrap();
+        std::fs::write(
+            policy_dir.join("permissions.toml"),
+            r#"
+[[rules]]
+effect = "deny"
+tools = ["shell"]
+commands = ["echo *"]
+reason = "tui parity deny"
+"#,
+        )
+        .unwrap();
+
+        let mut state = make_state();
+        state
+            .messages
+            .push(DisplayMessage::assistant(String::new(), vec![]));
+        let mut terminal = make_terminal();
+        let mut executor = make_tool_executor(temp.path());
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let calls = vec![(
+            "deny_1".to_string(),
+            "shell".to_string(),
+            serde_json::json!({"command": "echo blocked"}),
+        )];
+
+        let mut strategy = TuiToolExecutionStrategy {
+            state: &mut state,
+            terminal: &mut terminal,
+        };
+        let batch = strategy
+            .execute_tool_calls(&mut executor, &calls, &interrupted)
+            .await
+            .unwrap();
+
+        assert_eq!(batch.results.len(), 1);
+        assert!(batch.results[0].is_error());
+        assert!(batch.results[0]
+            .output_text()
+            .contains("Denied by permission policy"));
+        assert!(batch.results[0].output_text().contains("tui parity deny"));
+
+        let tool_call = state
+            .messages
+            .last()
+            .and_then(|m| m.find_tool_call("deny_1"))
+            .unwrap();
+        assert_eq!(tool_call.status, ToolCallStatus::Failed);
     }
 
     #[tokio::test]

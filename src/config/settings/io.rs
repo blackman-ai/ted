@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2025 Blackman Artificial Intelligence Technologies Inc.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 
@@ -115,6 +115,26 @@ impl Settings {
         Self::ted_home().join("plans")
     }
 
+    /// Get the audit directory.
+    pub fn audit_dir() -> PathBuf {
+        Self::ted_home().join("audit")
+    }
+
+    /// Get the user permissions policy file path.
+    pub fn permissions_policy_path() -> PathBuf {
+        Self::ted_home().join("permissions.toml")
+    }
+
+    /// Get the project permissions policy file path.
+    pub fn project_permissions_policy_path(project_root: &Path) -> PathBuf {
+        project_root.join(".ted").join("permissions.toml")
+    }
+
+    /// Get the append-only permissions audit log path.
+    pub fn permissions_audit_log_path() -> PathBuf {
+        Self::audit_dir().join("permissions.jsonl")
+    }
+
     /// Ensure all required directories exist.
     pub fn ensure_directories() -> Result<()> {
         let mut dirs = vec![
@@ -123,6 +143,7 @@ impl Settings {
             Self::commands_dir(),
             Self::context_path(),
             Self::plans_dir(),
+            Self::audit_dir(),
         ];
 
         // Add the parent directory of the default settings path if it exists.

@@ -13,6 +13,7 @@
 
 pub mod builtin;
 pub mod loader;
+pub mod render;
 pub mod resolver;
 pub mod schema;
 
@@ -20,7 +21,7 @@ pub use loader::CapLoader;
 pub use resolver::CapResolver;
 pub use schema::{Cap, CapToolPermissions};
 
-use crate::error::Result;
+use crate::error::{Result, TedError};
 
 /// Load and resolve caps by name
 pub fn load_caps(names: &[String]) -> Result<Vec<Cap>> {
@@ -33,6 +34,51 @@ pub fn load_caps(names: &[String]) -> Result<Vec<Cap>> {
 pub fn available_caps() -> Result<Vec<(String, bool)>> {
     let loader = CapLoader::new();
     loader.list_available()
+}
+
+/// Apply organization cap governance rules to a cap stack.
+///
+/// When `enforce_policy` is false, this is a no-op.
+/// When enabled:
+/// - disallowed caps are rejected
+/// - required caps are appended if missing
+/// - final cap list is de-duplicated with stable ordering
+pub fn enforce_governance(
+    cap_names: &mut Vec<String>,
+    enforce_policy: bool,
+    required_caps: &[String],
+    disallowed_caps: &[String],
+) -> Result<()> {
+    if !enforce_policy {
+        return Ok(());
+    }
+
+    let disallowed: std::collections::HashSet<String> = disallowed_caps.iter().cloned().collect();
+
+    if let Some(conflict) = required_caps.iter().find(|cap| disallowed.contains(*cap)) {
+        return Err(TedError::Config(format!(
+            "Invalid governance settings: required cap '{}' is also disallowed",
+            conflict
+        )));
+    }
+
+    if let Some(conflict) = cap_names.iter().find(|cap| disallowed.contains(*cap)) {
+        return Err(TedError::InvalidInput(format!(
+            "Cap '{}' is disallowed by governance policy",
+            conflict
+        )));
+    }
+
+    for required in required_caps {
+        if !cap_names.iter().any(|cap| cap == required) {
+            cap_names.push(required.clone());
+        }
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    cap_names.retain(|cap| seen.insert(cap.clone()));
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -123,5 +169,62 @@ mod tests {
         // Verify CapToolPermissions is re-exported
         let perms = CapToolPermissions::default();
         assert!(perms.enable.is_empty());
+    }
+
+    #[test]
+    fn test_enforce_governance_disabled_is_noop() {
+        let mut caps = vec!["code-reviewer".to_string()];
+        enforce_governance(
+            &mut caps,
+            false,
+            &["security-analyst".to_string()],
+            &["code-reviewer".to_string()],
+        )
+        .expect("governance should be disabled");
+
+        assert_eq!(caps, vec!["code-reviewer".to_string()]);
+    }
+
+    #[test]
+    fn test_enforce_governance_adds_required_and_dedupes() {
+        let mut caps = vec![
+            "code-reviewer".to_string(),
+            "code-reviewer".to_string(),
+            "documentation".to_string(),
+        ];
+        enforce_governance(&mut caps, true, &["security-analyst".to_string()], &[])
+            .expect("governance should succeed");
+
+        assert_eq!(
+            caps,
+            vec![
+                "code-reviewer".to_string(),
+                "documentation".to_string(),
+                "security-analyst".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_enforce_governance_rejects_disallowed_active_cap() {
+        let mut caps = vec!["security-analyst".to_string()];
+        let err = enforce_governance(&mut caps, true, &[], &["security-analyst".to_string()])
+            .expect_err("disallowed cap should fail");
+        assert!(err.to_string().contains("disallowed by governance policy"));
+    }
+
+    #[test]
+    fn test_enforce_governance_rejects_conflicting_required_and_disallowed() {
+        let mut caps = vec!["base".to_string()];
+        let err = enforce_governance(
+            &mut caps,
+            true,
+            &["security-analyst".to_string()],
+            &["security-analyst".to_string()],
+        )
+        .expect_err("conflicting governance should fail");
+        assert!(err
+            .to_string()
+            .contains("required cap 'security-analyst' is also disallowed"));
     }
 }

@@ -95,6 +95,9 @@ impl HistoryStore {
 
     /// Save the history index
     fn save(&self) -> Result<()> {
+        if let Some(parent) = self.index_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         let content = serde_json::to_string_pretty(&self.sessions)?;
         std::fs::write(&self.index_path, content)?;
         Ok(())

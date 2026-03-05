@@ -41,6 +41,15 @@ pub struct Cap {
     #[serde(default)]
     pub model: Option<CapModelPreferences>,
 
+    /// Structured identity + policy metadata (optional)
+    #[serde(default)]
+    pub identity: Option<CapIdentity>,
+
+    /// Internal legacy prompt override when migrating old caps.
+    /// If unset, `system_prompt` is treated as legacy text.
+    #[serde(skip, default)]
+    pub legacy_system_prompt: Option<String>,
+
     /// Whether this cap is a built-in
     #[serde(skip)]
     pub is_builtin: bool,
@@ -66,6 +75,8 @@ impl Cap {
             tool_permissions: CapToolPermissions::default(),
             system_prompt: String::new(),
             model: None,
+            identity: None,
+            legacy_system_prompt: None,
             is_builtin: false,
             source_path: None,
         }
@@ -106,6 +117,60 @@ impl Cap {
         self.tool_permissions = perms;
         self
     }
+
+    /// Set structured identity metadata
+    pub fn with_identity(mut self, identity: CapIdentity) -> Self {
+        self.identity = Some(identity);
+        self
+    }
+}
+
+/// Structured identity + policy metadata for composable caps.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CapIdentity {
+    /// Behavioral trait overrides (last explicit value wins during merge)
+    #[serde(default)]
+    pub traits: Option<CapTraits>,
+
+    /// Focus lenses (union + stable order de-duplication during merge)
+    #[serde(default)]
+    pub lenses: Vec<String>,
+
+    /// Required deliverables for responses/reviews
+    #[serde(default)]
+    pub deliverables: Option<CapDeliverables>,
+}
+
+/// Tunable behavior traits in the range 0.0..=1.0.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CapTraits {
+    #[serde(default)]
+    pub verbosity: Option<f32>,
+    #[serde(default)]
+    pub cautiousness: Option<f32>,
+    #[serde(default)]
+    pub pedantry: Option<f32>,
+    #[serde(default)]
+    pub planning_depth: Option<f32>,
+    #[serde(default)]
+    pub evidence_threshold: Option<f32>,
+    #[serde(default)]
+    pub refactor_bias: Option<f32>,
+}
+
+/// Structured output expectations for responses/reviews.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CapDeliverables {
+    #[serde(default)]
+    pub require_diff_summary: Option<bool>,
+    #[serde(default)]
+    pub require_test_plan: Option<bool>,
+    #[serde(default)]
+    pub require_risks: Option<bool>,
+    #[serde(default)]
+    pub require_security_review: Option<bool>,
+    #[serde(default)]
+    pub require_checklist: Option<bool>,
 }
 
 /// Tool permission configuration for a cap
@@ -272,6 +337,8 @@ mod tests {
         assert!(cap.extends.is_empty());
         assert_eq!(cap.system_prompt, "");
         assert!(cap.model.is_none());
+        assert!(cap.identity.is_none());
+        assert!(cap.legacy_system_prompt.is_none());
         assert!(!cap.is_builtin);
         assert!(cap.source_path.is_none());
     }
@@ -312,6 +379,24 @@ mod tests {
         let cap = Cap::new("test").with_tool_permissions(perms.clone());
         assert!(!cap.tool_permissions.require_edit_confirmation);
         assert!(!cap.tool_permissions.require_shell_confirmation);
+    }
+
+    #[test]
+    fn test_cap_with_identity() {
+        let identity = CapIdentity {
+            traits: Some(CapTraits {
+                verbosity: Some(0.5),
+                ..Default::default()
+            }),
+            lenses: vec!["review".to_string()],
+            deliverables: Some(CapDeliverables {
+                require_test_plan: Some(true),
+                ..Default::default()
+            }),
+        };
+        let cap = Cap::new("test").with_identity(identity.clone());
+        assert!(cap.identity.is_some());
+        assert_eq!(cap.identity.unwrap().lenses, identity.lenses);
     }
 
     #[test]
@@ -568,6 +653,37 @@ max_tokens = 4096
         );
         assert_eq!(model.temperature, Some(0.7));
         assert_eq!(model.max_tokens, Some(4096));
+    }
+
+    #[test]
+    fn test_toml_parsing_with_identity() {
+        let toml = r#"
+name = "identity-test"
+
+[identity]
+lenses = ["security", "review"]
+
+[identity.traits]
+verbosity = 0.2
+cautiousness = 0.9
+
+[identity.deliverables]
+require_test_plan = true
+require_security_review = true
+"#;
+
+        let cap: Cap = toml::from_str(toml).unwrap();
+        let identity = cap.identity.unwrap();
+        assert_eq!(
+            identity.lenses,
+            vec!["security".to_string(), "review".to_string()]
+        );
+        let traits = identity.traits.unwrap();
+        assert_eq!(traits.verbosity, Some(0.2));
+        assert_eq!(traits.cautiousness, Some(0.9));
+        let deliverables = identity.deliverables.unwrap();
+        assert_eq!(deliverables.require_test_plan, Some(true));
+        assert_eq!(deliverables.require_security_review, Some(true));
     }
 
     #[test]

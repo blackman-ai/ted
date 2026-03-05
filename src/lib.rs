@@ -19,6 +19,7 @@
 //! See `docs/ARCHITECTURE.md` for a cross-module system overview.
 
 pub mod agents;
+pub mod audit;
 pub mod beads;
 pub mod caps;
 pub mod chat;

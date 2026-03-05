@@ -9,8 +9,12 @@
 use std::collections::HashSet;
 
 use super::loader::CapLoader;
-use super::schema::{Cap, CapModelPreferences, CapToolPermissions};
+use super::schema::{
+    Cap, CapDeliverables, CapIdentity, CapModelPreferences, CapToolPermissions, CapTraits,
+};
 use crate::error::Result;
+
+const LEGACY_PROMPT_DELIMITER: &str = "\n\n---\n\n";
 
 /// Resolver for loading and merging caps
 pub struct CapResolver {
@@ -74,14 +78,21 @@ impl CapResolver {
     /// Merge multiple caps into a single effective configuration
     pub fn merge(&self, caps: &[Cap]) -> MergedCap {
         let mut merged = MergedCap::default();
+        let mut legacy_prompt_chunks = Vec::new();
 
         for cap in caps {
-            // Append system prompts
-            if !cap.system_prompt.is_empty() {
-                if !merged.system_prompt.is_empty() {
-                    merged.system_prompt.push_str("\n\n");
-                }
-                merged.system_prompt.push_str(&cap.system_prompt);
+            // Treat legacy prompt text as an append-only tail section.
+            let legacy_prompt = cap
+                .legacy_system_prompt
+                .as_deref()
+                .unwrap_or(&cap.system_prompt)
+                .trim();
+            if !legacy_prompt.is_empty() {
+                legacy_prompt_chunks.push(legacy_prompt.to_string());
+            }
+
+            if let Some(identity) = &cap.identity {
+                merged_identity(&mut merged.resolved_identity, identity);
             }
 
             // Merge tool permissions
@@ -98,6 +109,10 @@ impl CapResolver {
             }
         }
 
+        if !legacy_prompt_chunks.is_empty() {
+            merged.legacy_prompt_tail = Some(legacy_prompt_chunks.join(LEGACY_PROMPT_DELIMITER));
+        }
+
         merged
     }
 
@@ -108,15 +123,92 @@ impl CapResolver {
     }
 }
 
+fn merged_identity(target: &mut ResolvedCapIdentity, incoming: &CapIdentity) {
+    if let Some(incoming_traits) = incoming.traits.as_ref() {
+        merge_traits(&mut target.traits, incoming_traits);
+    }
+
+    for lens in &incoming.lenses {
+        let normalized_lens = lens.trim();
+        if normalized_lens.is_empty() {
+            continue;
+        }
+
+        if !target
+            .lenses
+            .iter()
+            .any(|existing| existing == normalized_lens)
+        {
+            target.lenses.push(normalized_lens.to_string());
+        }
+    }
+
+    if let Some(incoming_deliverables) = incoming.deliverables.as_ref() {
+        merge_deliverables(&mut target.deliverables, incoming_deliverables);
+    }
+}
+
+fn clamp_trait_value(value: f32) -> f32 {
+    value.clamp(0.0, 1.0)
+}
+
+fn merge_trait_field(target: &mut Option<f32>, incoming: Option<f32>) {
+    if let Some(value) = incoming {
+        *target = Some(clamp_trait_value(value));
+    }
+}
+
+fn merge_traits(target: &mut CapTraits, incoming: &CapTraits) {
+    merge_trait_field(&mut target.verbosity, incoming.verbosity);
+    merge_trait_field(&mut target.cautiousness, incoming.cautiousness);
+    merge_trait_field(&mut target.pedantry, incoming.pedantry);
+    merge_trait_field(&mut target.planning_depth, incoming.planning_depth);
+    merge_trait_field(&mut target.evidence_threshold, incoming.evidence_threshold);
+    merge_trait_field(&mut target.refactor_bias, incoming.refactor_bias);
+}
+
+fn merge_deliverable_field(target: &mut Option<bool>, incoming: Option<bool>) {
+    if let Some(value) = incoming {
+        *target = Some(value);
+    }
+}
+
+fn merge_deliverables(target: &mut CapDeliverables, incoming: &CapDeliverables) {
+    merge_deliverable_field(
+        &mut target.require_diff_summary,
+        incoming.require_diff_summary,
+    );
+    merge_deliverable_field(&mut target.require_test_plan, incoming.require_test_plan);
+    merge_deliverable_field(&mut target.require_risks, incoming.require_risks);
+    merge_deliverable_field(
+        &mut target.require_security_review,
+        incoming.require_security_review,
+    );
+    merge_deliverable_field(&mut target.require_checklist, incoming.require_checklist);
+}
+
+/// Resolved identity/policy stack after cap merging.
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedCapIdentity {
+    /// Merged behavior traits (last explicit value wins).
+    pub traits: CapTraits,
+    /// Merged focus lenses (stable-order unique list).
+    pub lenses: Vec<String>,
+    /// Merged deliverable requirements (last explicit value wins).
+    pub deliverables: CapDeliverables,
+}
+
 /// The result of merging multiple caps
 #[derive(Debug, Clone, Default)]
 pub struct MergedCap {
-    /// Combined system prompt from all caps
-    pub system_prompt: String,
+    /// Merged structured identity and policy
+    pub resolved_identity: ResolvedCapIdentity,
     /// Merged tool permissions
     pub tool_permissions: CapToolPermissions,
     /// Model preferences (from last cap with preferences)
     pub model_preferences: Option<CapModelPreferences>,
+    /// Joined legacy prompt text from source caps
+    pub legacy_prompt_tail: Option<String>,
     /// Names of caps that were merged (in order)
     pub source_caps: Vec<String>,
 }
@@ -206,7 +298,22 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_system_prompts() {
+    fn test_resolve_preserves_priority_sorting() {
+        let loader = CapLoader::new();
+        let resolver = CapResolver::new(loader);
+
+        let caps = resolver
+            .resolve(&["security-analyst".to_string(), "code-reviewer".to_string()])
+            .unwrap();
+        let priorities: Vec<i32> = caps.iter().map(|cap| cap.priority).collect();
+        let mut sorted = priorities.clone();
+        sorted.sort();
+
+        assert_eq!(priorities, sorted);
+    }
+
+    #[test]
+    fn test_merge_legacy_prompt_tail() {
         let loader = CapLoader::new();
         let resolver = CapResolver::new(loader);
 
@@ -214,9 +321,10 @@ mod tests {
             .resolve(&["base".to_string(), "rust-expert".to_string()])
             .unwrap();
         let merged = resolver.merge(&caps);
+        let legacy = merged.legacy_prompt_tail.unwrap();
 
-        assert!(merged.system_prompt.contains("concise")); // From base
-        assert!(merged.system_prompt.contains("Rust")); // From rust-expert
+        assert!(legacy.contains("concise")); // From base
+        assert!(legacy.contains("Rust")); // From rust-expert
     }
 
     #[test]
@@ -225,9 +333,10 @@ mod tests {
         let resolver = CapResolver::new(loader);
 
         let merged = resolver.merge(&[]);
-        assert!(merged.system_prompt.is_empty());
+        assert!(merged.legacy_prompt_tail.is_none());
         assert!(merged.source_caps.is_empty());
         assert!(merged.model_preferences.is_none());
+        assert!(merged.resolved_identity.lenses.is_empty());
     }
 
     #[test]
@@ -257,6 +366,107 @@ mod tests {
     }
 
     #[test]
+    fn test_identity_merge_deterministic() {
+        let loader = CapLoader::new();
+        let resolver = CapResolver::new(loader);
+
+        let cap1 = Cap {
+            name: "first".to_string(),
+            identity: Some(CapIdentity {
+                traits: Some(CapTraits {
+                    verbosity: Some(0.2),
+                    cautiousness: Some(0.4),
+                    ..Default::default()
+                }),
+                lenses: vec!["security".to_string(), "review".to_string()],
+                deliverables: Some(CapDeliverables {
+                    require_test_plan: Some(true),
+                    require_risks: Some(true),
+                    ..Default::default()
+                }),
+            }),
+            ..Cap::new("first")
+        };
+        let cap2 = Cap {
+            name: "second".to_string(),
+            identity: Some(CapIdentity {
+                traits: Some(CapTraits {
+                    verbosity: Some(0.8),
+                    planning_depth: Some(0.9),
+                    ..Default::default()
+                }),
+                lenses: vec!["review".to_string(), "performance".to_string()],
+                deliverables: Some(CapDeliverables {
+                    require_test_plan: Some(false),
+                    require_security_review: Some(true),
+                    ..Default::default()
+                }),
+            }),
+            ..Cap::new("second")
+        };
+
+        let merged = resolver.merge(&[cap1, cap2]);
+        assert_eq!(merged.resolved_identity.traits.verbosity, Some(0.8));
+        assert_eq!(merged.resolved_identity.traits.cautiousness, Some(0.4));
+        assert_eq!(merged.resolved_identity.traits.planning_depth, Some(0.9));
+        assert_eq!(
+            merged.resolved_identity.lenses,
+            vec![
+                "security".to_string(),
+                "review".to_string(),
+                "performance".to_string()
+            ]
+        );
+        assert_eq!(
+            merged.resolved_identity.deliverables.require_test_plan,
+            Some(false)
+        );
+        assert_eq!(
+            merged.resolved_identity.deliverables.require_risks,
+            Some(true)
+        );
+        assert_eq!(
+            merged
+                .resolved_identity
+                .deliverables
+                .require_security_review,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn test_identity_trait_values_are_clamped() {
+        let loader = CapLoader::new();
+        let resolver = CapResolver::new(loader);
+
+        let cap1 = Cap {
+            name: "first".to_string(),
+            identity: Some(CapIdentity {
+                traits: Some(CapTraits {
+                    verbosity: Some(4.2),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Cap::new("first")
+        };
+        let cap2 = Cap {
+            name: "second".to_string(),
+            identity: Some(CapIdentity {
+                traits: Some(CapTraits {
+                    verbosity: Some(-3.0),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Cap::new("second")
+        };
+
+        let merged = resolver.merge(&[cap1, cap2]);
+        assert_eq!(merged.resolved_identity.traits.verbosity, Some(0.0));
+    }
+
+    #[test]
     fn test_resolve_and_merge() {
         let loader = CapLoader::new();
         let resolver = CapResolver::new(loader);
@@ -264,7 +474,7 @@ mod tests {
         // When resolving just "base", source_caps will be empty because
         // "base" is hidden from the list (always applied silently)
         let merged = resolver.resolve_and_merge(&["base".to_string()]).unwrap();
-        assert!(!merged.system_prompt.is_empty());
+        assert!(merged.legacy_prompt_tail.is_some());
         // source_caps excludes "base"
         assert!(merged.source_caps.is_empty());
 
@@ -272,16 +482,17 @@ mod tests {
         let merged2 = resolver
             .resolve_and_merge(&["rust-expert".to_string()])
             .unwrap();
-        assert!(!merged2.system_prompt.is_empty());
+        assert!(merged2.legacy_prompt_tail.is_some());
         assert!(merged2.source_caps.contains(&"rust-expert".to_string()));
     }
 
     #[test]
     fn test_merged_cap_default() {
         let merged = MergedCap::default();
-        assert!(merged.system_prompt.is_empty());
+        assert!(merged.legacy_prompt_tail.is_none());
         assert!(merged.source_caps.is_empty());
         assert!(merged.model_preferences.is_none());
+        assert!(merged.resolved_identity.lenses.is_empty());
     }
 
     #[test]
@@ -364,17 +575,18 @@ mod tests {
     #[test]
     fn test_merged_cap_debug_and_clone() {
         let merged = MergedCap {
-            system_prompt: "Test prompt".to_string(),
+            legacy_prompt_tail: Some("Test prompt".to_string()),
             tool_permissions: CapToolPermissions::default(),
             model_preferences: None,
             source_caps: vec!["base".to_string()],
+            ..Default::default()
         };
 
         let debug_str = format!("{:?}", merged);
         assert!(debug_str.contains("Test prompt"));
 
         let cloned = merged.clone();
-        assert_eq!(cloned.system_prompt, "Test prompt");
+        assert_eq!(cloned.legacy_prompt_tail, Some("Test prompt".to_string()));
         assert_eq!(cloned.source_caps, vec!["base"]);
     }
 

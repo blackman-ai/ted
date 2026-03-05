@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2025 Blackman Artificial Intelligence Technologies Inc.
 
+use std::collections::BTreeMap;
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crossterm::{
@@ -9,6 +11,7 @@ use crossterm::{
     ExecutableCommand,
 };
 
+use ted::audit::{PermissionAuditLog, PermissionDecision};
 use ted::caps::CapLoader;
 use ted::chat;
 use ted::cli::UpdateArgs;
@@ -19,6 +22,7 @@ use ted::history::HistoryStore;
 use ted::llm::factory::ProviderFactory;
 use ted::llm::message::Message;
 use ted::llm::provider::{CompletionRequest, LlmProvider};
+use ted::tools::{PermissionPolicy, PolicyEffect, PolicySource};
 use ted::update;
 use ted::utils;
 
@@ -782,6 +786,334 @@ blocked_commands = []
     Ok(())
 }
 
+const DEFAULT_PERMISSIONS_POLICY_TEMPLATE: &str = r#"# Ted permissions policy
+# Rules are evaluated in order; the last matching rule wins.
+# Project policy is evaluated after user policy.
+#
+# Fields:
+# - effect: allow | ask | deny
+# - tools: tool name globs (e.g. "shell", "file_*")
+# - commands: shell command globs (optional)
+# - paths: affected path globs (optional)
+# - destructive: true/false matcher (optional)
+# - reason: optional human-readable note
+
+[[rules]]
+effect = "allow"
+tools = ["shell"]
+commands = ["cargo *"]
+reason = "Routine Rust build/test workflow"
+
+[[rules]]
+effect = "deny"
+tools = ["shell"]
+commands = ["rm -rf *", "git push --force*"]
+reason = "High-risk destructive operations"
+
+[[rules]]
+effect = "ask"
+tools = ["file_edit", "file_write"]
+paths = ["migrations/**", "db/**"]
+reason = "Require confirmation for schema-impacting changes"
+
+# Optional lock-mode guardrails. Lock rules are evaluated after normal rules
+# and override regular allow/ask outcomes when matched.
+#
+#[[lock_rules]]
+#effect = "deny"
+#tools = ["shell"]
+#commands = ["git push --force*"]
+#reason = "Org policy: force push blocked"
+"#;
+
+fn resolve_policy_paths() -> Result<(PathBuf, PathBuf, PathBuf)> {
+    let cwd = std::env::current_dir()?;
+    let project_root = utils::find_project_root_from(&cwd).unwrap_or_else(|| cwd.clone());
+    let user_path = Settings::permissions_policy_path();
+    let project_path = Settings::project_permissions_policy_path(&project_root);
+    Ok((user_path, project_path, project_root))
+}
+
+fn format_policy_source(source: &PolicySource) -> String {
+    match source {
+        PolicySource::User(path) => format!("user ({})", path.display()),
+        PolicySource::Project(path) => format!("project ({})", path.display()),
+    }
+}
+
+fn print_policy_file_section(label: &str, path: &PathBuf) -> Result<()> {
+    let content = std::fs::read_to_string(path)?;
+    println!("\n{} ({})", label, path.display());
+    println!("---");
+    println!("{}", content.trim_end());
+    println!("---");
+    Ok(())
+}
+
+/// Run permissions policy subcommands
+pub(super) fn run_permissions_command(args: ted::cli::PermissionsArgs) -> Result<()> {
+    let (user_path, project_path, project_root) = resolve_policy_paths()?;
+
+    match args.command {
+        ted::cli::PermissionsCommands::Show => {
+            let policy = PermissionPolicy::load_from_paths(&user_path, Some(&project_path))?;
+            println!("\nPermissions policy");
+            println!("  User file:    {}", user_path.display());
+            println!("  Project file: {}", project_path.display());
+            println!("  Project root: {}", project_root.display());
+            println!("  Merge order:  user -> project (last matching rule wins)");
+            println!(
+                "  Audit log:    {}",
+                Settings::permissions_audit_log_path().display()
+            );
+            println!(
+                "  Status:       user={} project={}",
+                if user_path.exists() {
+                    "present"
+                } else {
+                    "missing"
+                },
+                if project_path.exists() {
+                    "present"
+                } else {
+                    "missing"
+                }
+            );
+
+            if policy.is_empty() {
+                println!("\nNo active policy rules loaded.");
+                println!("Initialize a template with:");
+                println!("  ted permissions init");
+                println!("  ted permissions init --scope user");
+                println!();
+                return Ok(());
+            }
+
+            if user_path.exists() {
+                print_policy_file_section("User policy", &user_path)?;
+            }
+            if project_path.exists() {
+                print_policy_file_section("Project policy", &project_path)?;
+            }
+            println!();
+        }
+        ted::cli::PermissionsCommands::Init { scope, force } => {
+            let target = match scope {
+                ted::cli::PermissionPolicyScope::User => user_path,
+                ted::cli::PermissionPolicyScope::Project => project_path,
+            };
+
+            if target.exists() && !force {
+                return Err(TedError::InvalidInput(format!(
+                    "Policy file already exists: {} (use --force to overwrite)",
+                    target.display()
+                )));
+            }
+
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+
+            std::fs::write(&target, DEFAULT_PERMISSIONS_POLICY_TEMPLATE)?;
+            println!("Created policy template at {}", target.display());
+            println!("Inspect active policy with: ted permissions show");
+        }
+        ted::cli::PermissionsCommands::Check {
+            tool,
+            action,
+            path,
+            destructive,
+        } => {
+            let policy = PermissionPolicy::load_from_paths(&user_path, Some(&project_path))?;
+            let matched = policy.evaluate(&tool, &action, &path, destructive);
+            println!("\nPermission policy check");
+            println!("  Tool:         {}", tool);
+            println!("  Action:       {}", action);
+            println!("  Destructive:  {}", destructive);
+            if path.is_empty() {
+                println!("  Paths:        (none)");
+            } else {
+                println!("  Paths:        {}", path.join(", "));
+            }
+
+            match matched {
+                Some(matched) => {
+                    let effect = match matched.effect {
+                        PolicyEffect::Allow => "allow",
+                        PolicyEffect::Ask => "ask",
+                        PolicyEffect::Deny => "deny",
+                    };
+                    println!("  Decision:     {}", effect);
+                    println!("  Matched rule: {}", format_policy_source(&matched.source));
+                    if let Some(reason) = matched.reason {
+                        println!("  Reason:       {}", reason);
+                    }
+                }
+                None => {
+                    println!("  Decision:     ask");
+                    println!("  Matched rule: none");
+                    println!("  Reason:       no matching policy rule");
+                }
+            }
+            println!();
+        }
+        ted::cli::PermissionsCommands::Log { limit } => {
+            let audit = PermissionAuditLog::default();
+            let events = audit.read_recent(limit)?;
+
+            println!(
+                "\nPermission audit log ({})",
+                Settings::permissions_audit_log_path().display()
+            );
+            if events.is_empty() {
+                println!("No permission decisions recorded yet.\n");
+                return Ok(());
+            }
+
+            for event in events {
+                let ts = event.timestamp.format("%Y-%m-%d %H:%M:%S UTC");
+                let decision = match event.decision {
+                    PermissionDecision::AutoAllow => "auto_allow",
+                    PermissionDecision::PolicyAllow => "policy_allow",
+                    PermissionDecision::PolicyDeny => "policy_deny",
+                    PermissionDecision::PromptAllow => "prompt_allow",
+                    PermissionDecision::PromptDeny => "prompt_deny",
+                    PermissionDecision::PromptAllowAll => "prompt_allow_all",
+                    PermissionDecision::PromptTrustAll => "prompt_trust_all",
+                    PermissionDecision::PromptError => "prompt_error",
+                };
+                let mut details: Vec<String> = Vec::new();
+                if let Some(scope) = event.policy_scope {
+                    details.push(scope);
+                }
+                if let Some(reason) = event.policy_reason {
+                    details.push(reason);
+                }
+                if let Some(note) = event.note {
+                    details.push(note);
+                }
+
+                println!(
+                    "{} | {} | {} | {}",
+                    ts, event.tool_name, decision, event.action_description
+                );
+                if !event.affected_paths.is_empty() {
+                    println!("  paths: {}", event.affected_paths.join(", "));
+                }
+                if !details.is_empty() {
+                    println!("  details: {}", details.join(" | "));
+                }
+            }
+            println!();
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_compliance_since(since: &str) -> Result<chrono::DateTime<chrono::Utc>> {
+    if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(since) {
+        return Ok(parsed.with_timezone(&chrono::Utc));
+    }
+
+    if let Ok(parsed_date) = chrono::NaiveDate::parse_from_str(since, "%Y-%m-%d") {
+        let naive = parsed_date
+            .and_hms_opt(0, 0, 0)
+            .ok_or_else(|| TedError::InvalidInput("Invalid date value".to_string()))?;
+        return Ok(chrono::DateTime::from_naive_utc_and_offset(
+            naive,
+            chrono::Utc,
+        ));
+    }
+
+    Err(TedError::InvalidInput(format!(
+        "Invalid --since value '{}'. Use YYYY-MM-DD or RFC3339.",
+        since
+    )))
+}
+
+/// Run compliance reporting command
+pub(super) fn run_compliance_command(args: ted::cli::ComplianceArgs) -> Result<()> {
+    let since = match args.since.as_deref() {
+        Some(value) => Some(parse_compliance_since(value)?),
+        None => None,
+    };
+
+    let audit = PermissionAuditLog::default();
+    let mut events = audit.read_recent(args.limit)?;
+    if let Some(since_ts) = since {
+        events.retain(|event| event.timestamp >= since_ts);
+    }
+
+    println!(
+        "\nCompliance report ({})",
+        Settings::permissions_audit_log_path().display()
+    );
+    if let Some(since) = args.since {
+        println!("Since: {}", since);
+    }
+    println!("Scanned events: {}", events.len());
+
+    if events.is_empty() {
+        println!("No matching audit events.\n");
+        return Ok(());
+    }
+
+    let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut deny_total = 0usize;
+    let mut trust_total = 0usize;
+    let mut prompt_errors = 0usize;
+    let mut denied_tools: BTreeMap<String, usize> = BTreeMap::new();
+
+    for event in &events {
+        let key = match event.decision {
+            PermissionDecision::AutoAllow => "auto_allow",
+            PermissionDecision::PolicyAllow => "policy_allow",
+            PermissionDecision::PolicyDeny => "policy_deny",
+            PermissionDecision::PromptAllow => "prompt_allow",
+            PermissionDecision::PromptDeny => "prompt_deny",
+            PermissionDecision::PromptAllowAll => "prompt_allow_all",
+            PermissionDecision::PromptTrustAll => "prompt_trust_all",
+            PermissionDecision::PromptError => "prompt_error",
+        };
+        *counts.entry(key).or_insert(0) += 1;
+
+        if matches!(
+            event.decision,
+            PermissionDecision::PolicyDeny | PermissionDecision::PromptDeny
+        ) {
+            deny_total += 1;
+            *denied_tools.entry(event.tool_name.clone()).or_insert(0) += 1;
+        }
+        if matches!(event.decision, PermissionDecision::PromptTrustAll) {
+            trust_total += 1;
+        }
+        if matches!(event.decision, PermissionDecision::PromptError) {
+            prompt_errors += 1;
+        }
+    }
+
+    println!("Denies: {}", deny_total);
+    println!("Trust escalations: {}", trust_total);
+    println!("Prompt errors: {}", prompt_errors);
+    println!("\nDecision breakdown:");
+    for (decision, count) in counts {
+        println!("  {}: {}", decision, count);
+    }
+
+    if !denied_tools.is_empty() {
+        println!("\nMost denied tools:");
+        let mut sorted_denied: Vec<(String, usize)> = denied_tools.into_iter().collect();
+        sorted_denied.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        for (tool, count) in sorted_denied.into_iter().take(5) {
+            println!("  {}: {}", tool, count);
+        }
+    }
+
+    println!();
+    Ok(())
+}
+
 /// Run a custom command from .ted/commands/
 pub(super) fn run_custom_command(args: Vec<String>) -> Result<()> {
     if args.is_empty() {
@@ -826,6 +1158,58 @@ pub(super) fn run_custom_command(args: Vec<String>) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct SessionPolicyState {
+    user_policy_path: String,
+    project_policy_path: String,
+    user_policy_present: bool,
+    project_policy_present: bool,
+}
+
+#[derive(serde::Serialize)]
+struct SessionContextMetadata {
+    message_count: usize,
+    max_response_tokens: u32,
+    cold_retention_days: u32,
+    context_storage_path: String,
+}
+
+#[derive(serde::Serialize)]
+struct SessionCapabilityMetadata {
+    provider: String,
+    model: String,
+    caps: Vec<String>,
+    policy: SessionPolicyState,
+    context: SessionContextMetadata,
+}
+
+#[derive(serde::Serialize)]
+struct SessionAttachContract {
+    session_id: String,
+    started_at: String,
+    last_active: String,
+    working_directory: String,
+    project_root: Option<String>,
+    summary: Option<String>,
+    capabilities: SessionCapabilityMetadata,
+}
+
+fn resolve_history_session_id(store: &HistoryStore, session_id: &str) -> Result<uuid::Uuid> {
+    if session_id.len() == 8 {
+        let sessions = store.list_recent(1000);
+        sessions
+            .iter()
+            .find(|s| s.id.to_string().starts_with(session_id))
+            .map(|s| s.id)
+            .ok_or_else(|| {
+                TedError::InvalidInput(format!("No session found matching '{}'", session_id))
+            })
+    } else {
+        uuid::Uuid::parse_str(session_id)
+            .map_err(|_| TedError::InvalidInput("Invalid session ID format".to_string()))
+    }
 }
 
 /// Run history subcommands
@@ -878,24 +1262,7 @@ pub(super) fn run_history_command(args: ted::cli::HistoryArgs) -> Result<()> {
         }
 
         ted::cli::HistoryCommands::Show { session_id } => {
-            // Parse session ID (support both full and short forms)
-            let id = if session_id.len() == 8 {
-                // Short form - find matching session
-                let sessions = store.list_recent(1000);
-                sessions
-                    .iter()
-                    .find(|s| s.id.to_string().starts_with(&session_id))
-                    .map(|s| s.id)
-                    .ok_or_else(|| {
-                        TedError::InvalidInput(format!(
-                            "No session found matching '{}'",
-                            session_id
-                        ))
-                    })?
-            } else {
-                uuid::Uuid::parse_str(&session_id)
-                    .map_err(|_| TedError::InvalidInput("Invalid session ID format".to_string()))?
-            };
+            let id = resolve_history_session_id(&store, &session_id)?;
 
             let session = store.get(id).ok_or_else(|| {
                 TedError::InvalidInput(format!("Session '{}' not found", session_id))
@@ -925,6 +1292,53 @@ pub(super) fn run_history_command(args: ted::cli::HistoryArgs) -> Result<()> {
 
             println!("To resume this session:");
             println!("  ted chat --resume {}\n", &session.id.to_string()[..8]);
+        }
+        ted::cli::HistoryCommands::Attach { session_id } => {
+            let id = resolve_history_session_id(&store, &session_id)?;
+            let session = store.get(id).ok_or_else(|| {
+                TedError::InvalidInput(format!("Session '{}' not found", session_id))
+            })?;
+
+            let settings = Settings::load().unwrap_or_default();
+            let provider = settings.defaults.provider.clone();
+            let model = ProviderFactory::default_model(&provider, &settings);
+            let project_base = session
+                .project_root
+                .as_ref()
+                .unwrap_or(&session.working_directory);
+            let user_policy_path = Settings::permissions_policy_path();
+            let project_policy_path = Settings::project_permissions_policy_path(project_base);
+
+            let contract = SessionAttachContract {
+                session_id: session.id.to_string(),
+                started_at: session.started_at.to_rfc3339(),
+                last_active: session.last_active.to_rfc3339(),
+                working_directory: session.working_directory.display().to_string(),
+                project_root: session
+                    .project_root
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+                summary: session.summary.clone(),
+                capabilities: SessionCapabilityMetadata {
+                    provider: provider.clone(),
+                    model,
+                    caps: session.caps.clone(),
+                    policy: SessionPolicyState {
+                        user_policy_path: user_policy_path.display().to_string(),
+                        project_policy_path: project_policy_path.display().to_string(),
+                        user_policy_present: user_policy_path.exists(),
+                        project_policy_present: project_policy_path.exists(),
+                    },
+                    context: SessionContextMetadata {
+                        message_count: session.message_count,
+                        max_response_tokens: settings.defaults.max_tokens,
+                        cold_retention_days: settings.context.cold_retention_days,
+                        context_storage_path: settings.context.storage_path.display().to_string(),
+                    },
+                },
+            };
+
+            println!("{}", serde_json::to_string_pretty(&contract)?);
         }
 
         ted::cli::HistoryCommands::Delete { session_id } => {

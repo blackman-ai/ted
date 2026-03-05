@@ -1472,6 +1472,57 @@ fn test_parse_tool_from_json_grep_passthrough() {
     assert_eq!(args["pattern"], "TODO");
 }
 
+#[tokio::test]
+async fn test_embedded_tool_execution_strategy_policy_deny_shell_uses_policy_message() {
+    use crate::chat::engine::ToolExecutionStrategy;
+    use crate::tools::{ToolContext, ToolExecutor};
+    use tempfile::TempDir;
+
+    let temp = TempDir::new().expect("temp dir");
+    let policy_dir = temp.path().join(".ted");
+    std::fs::create_dir_all(&policy_dir).expect("create policy dir");
+    std::fs::write(
+        policy_dir.join("permissions.toml"),
+        r#"
+[[rules]]
+effect = "deny"
+tools = ["shell"]
+commands = ["echo *"]
+reason = "embedded parity deny"
+"#,
+    )
+    .expect("write policy");
+
+    let context = ToolContext::new(
+        temp.path().to_path_buf(),
+        Some(temp.path().to_path_buf()),
+        uuid::Uuid::new_v4(),
+        false,
+    );
+    let mut executor = ToolExecutor::new(context, false);
+    let calls = vec![(
+        "deny_1".to_string(),
+        "shell".to_string(),
+        json!({"command":"echo blocked"}),
+    )];
+    let interrupted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut strategy = super::tooling::EmbeddedToolExecutionStrategy { review_mode: false };
+
+    let batch = strategy
+        .execute_tool_calls(&mut executor, &calls, &interrupted)
+        .await
+        .expect("tool execution should succeed with deny result");
+
+    assert_eq!(batch.results.len(), 1);
+    assert!(batch.results[0].is_error());
+    assert!(batch.results[0]
+        .output_text()
+        .contains("Denied by permission policy"));
+    assert!(batch.results[0]
+        .output_text()
+        .contains("embedded parity deny"));
+}
+
 // ==================== Integration tests for run_embedded_chat ====================
 
 mod integration {
@@ -1656,6 +1707,22 @@ data: {{\"type\":\"message_stop\"}}\n\n"
                     .unwrap_or("")
                     .contains("Hello from stream.")
         }));
+    }
+
+    #[tokio::test]
+    async fn test_run_embedded_chat_rejects_disallowed_cap_by_governance() {
+        let mut args = create_test_chat_args();
+        args.cap = vec!["security-analyst".to_string()];
+        args.provider = Some("local".to_string());
+
+        let mut settings = create_test_settings("http://127.0.0.1:65535/v1/chat/completions");
+        settings.defaults.enforce_caps_policy = true;
+        settings.defaults.disallowed_caps = vec!["security-analyst".to_string()];
+
+        let err = run_embedded_chat(args, settings)
+            .await
+            .expect_err("disallowed cap should fail before execution");
+        assert!(err.to_string().contains("disallowed by governance policy"));
     }
 
     #[tokio::test]

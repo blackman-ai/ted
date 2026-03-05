@@ -220,6 +220,18 @@ pub struct DefaultsConfig {
     #[serde(default = "default_caps")]
     pub caps: Vec<String>,
 
+    /// Enforce org-level cap governance rules.
+    #[serde(default)]
+    pub enforce_caps_policy: bool,
+
+    /// Caps that must always be active when enforcement is enabled.
+    #[serde(default)]
+    pub required_caps: Vec<String>,
+
+    /// Caps that are blocked when enforcement is enabled.
+    #[serde(default)]
+    pub disallowed_caps: Vec<String>,
+
     /// Default temperature for LLM
     #[serde(default = "default_temperature")]
     pub temperature: f32,
@@ -646,6 +658,9 @@ impl Default for DefaultsConfig {
     fn default() -> Self {
         Self {
             caps: default_caps(),
+            enforce_caps_policy: false,
+            required_caps: Vec::new(),
+            disallowed_caps: Vec::new(),
             temperature: default_temperature(),
             stream: true,
             provider: default_provider(),
@@ -702,6 +717,9 @@ mod tests {
         assert!(config.stream);
         assert_eq!(config.provider, "anthropic");
         assert_eq!(config.max_tokens, 8192);
+        assert!(!config.enforce_caps_policy);
+        assert!(config.required_caps.is_empty());
+        assert!(config.disallowed_caps.is_empty());
     }
 
     #[test]

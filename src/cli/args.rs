@@ -49,11 +49,17 @@ pub enum Commands {
     /// Caps management
     Caps(CapsArgs),
 
+    /// Permissions policy management
+    Permissions(PermissionsArgs),
+
     /// History management
     History(HistoryArgs),
 
     /// Context/storage management
     Context(ContextArgs),
+
+    /// Compliance and governance reporting
+    Compliance(ComplianceArgs),
 
     /// Open settings TUI or manage configuration
     #[command(alias = "config")]
@@ -219,6 +225,66 @@ pub struct CapsArgs {
     pub command: CapsCommands,
 }
 
+/// Arguments for permissions policy management
+#[derive(clap::Args, Debug)]
+pub struct PermissionsArgs {
+    #[command(subcommand)]
+    pub command: PermissionsCommands,
+}
+
+/// Target scope for policy initialization
+#[derive(ValueEnum, Clone, Debug, PartialEq, Eq)]
+pub enum PermissionPolicyScope {
+    /// Initialize user policy at ~/.ted/permissions.toml
+    User,
+    /// Initialize project policy at <project>/.ted/permissions.toml
+    Project,
+}
+
+/// Permissions subcommands
+#[derive(Subcommand, Debug)]
+pub enum PermissionsCommands {
+    /// Show active permissions policy files and merge order
+    Show,
+
+    /// Create a permissions.toml template
+    Init {
+        /// Policy scope to initialize
+        #[arg(long, value_enum, default_value = "project")]
+        scope: PermissionPolicyScope,
+
+        /// Overwrite existing file
+        #[arg(short, long)]
+        force: bool,
+    },
+
+    /// Dry-run policy evaluation for a proposed action
+    Check {
+        /// Tool name (e.g. shell, file_edit, file_write)
+        #[arg(long)]
+        tool: String,
+
+        /// Action description (for shell, use the command text)
+        #[arg(long)]
+        action: String,
+
+        /// One or more affected paths to match path rules
+        #[arg(long = "path")]
+        path: Vec<String>,
+
+        /// Mark action as destructive
+        #[arg(long)]
+        destructive: bool,
+    },
+
+    /// Show recent permission audit decisions
+    Log {
+        /// Maximum number of recent events
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+    },
+}
+
 /// Caps subcommands
 #[derive(Subcommand, Debug)]
 pub enum CapsCommands {
@@ -293,6 +359,12 @@ pub enum HistoryCommands {
         session_id: String,
     },
 
+    /// Emit machine-readable session attach metadata
+    Attach {
+        /// Session ID (full or short prefix)
+        session_id: String,
+    },
+
     /// Delete a session
     Delete {
         /// Session ID
@@ -312,6 +384,18 @@ pub enum HistoryCommands {
 pub struct ContextArgs {
     #[command(subcommand)]
     pub command: ContextCommands,
+}
+
+/// Arguments for compliance reporting
+#[derive(clap::Args, Debug)]
+pub struct ComplianceArgs {
+    /// Only include events at/after this date (YYYY-MM-DD or RFC3339)
+    #[arg(long)]
+    pub since: Option<String>,
+
+    /// Maximum number of recent audit events to scan
+    #[arg(short, long, default_value = "2000")]
+    pub limit: usize,
 }
 
 /// Context subcommands
@@ -752,6 +836,149 @@ mod tests {
         }
     }
 
+    // ==================== Permissions Commands ====================
+
+    #[test]
+    fn test_permissions_show() {
+        let cli = Cli::parse_from(["ted", "permissions", "show"]);
+        if let Some(Commands::Permissions(args)) = cli.command {
+            assert!(matches!(args.command, PermissionsCommands::Show));
+        } else {
+            panic!("Expected Permissions command");
+        }
+    }
+
+    #[test]
+    fn test_permissions_init_defaults_to_project() {
+        let cli = Cli::parse_from(["ted", "permissions", "init"]);
+        if let Some(Commands::Permissions(args)) = cli.command {
+            assert!(matches!(
+                args.command,
+                PermissionsCommands::Init {
+                    scope: PermissionPolicyScope::Project,
+                    force: false
+                }
+            ));
+        } else {
+            panic!("Expected Permissions command");
+        }
+    }
+
+    #[test]
+    fn test_permissions_init_user_force() {
+        let cli = Cli::parse_from(["ted", "permissions", "init", "--scope", "user", "--force"]);
+        if let Some(Commands::Permissions(args)) = cli.command {
+            assert!(matches!(
+                args.command,
+                PermissionsCommands::Init {
+                    scope: PermissionPolicyScope::User,
+                    force: true
+                }
+            ));
+        } else {
+            panic!("Expected Permissions command");
+        }
+    }
+
+    #[test]
+    fn test_permissions_check_minimal() {
+        let cli = Cli::parse_from([
+            "ted",
+            "permissions",
+            "check",
+            "--tool",
+            "shell",
+            "--action",
+            "cargo test",
+        ]);
+        if let Some(Commands::Permissions(args)) = cli.command {
+            if let PermissionsCommands::Check {
+                tool,
+                action,
+                path,
+                destructive,
+            } = args.command
+            {
+                assert_eq!(tool, "shell");
+                assert_eq!(action, "cargo test");
+                assert!(path.is_empty());
+                assert!(!destructive);
+            } else {
+                panic!("Expected Check subcommand");
+            }
+        } else {
+            panic!("Expected Permissions command");
+        }
+    }
+
+    #[test]
+    fn test_permissions_check_with_paths_and_destructive() {
+        let cli = Cli::parse_from([
+            "ted",
+            "permissions",
+            "check",
+            "--tool",
+            "file_edit",
+            "--action",
+            "Edit file: secrets/prod.env",
+            "--path",
+            "secrets/prod.env",
+            "--path",
+            "secrets/staging.env",
+            "--destructive",
+        ]);
+        if let Some(Commands::Permissions(args)) = cli.command {
+            if let PermissionsCommands::Check {
+                tool,
+                action,
+                path,
+                destructive,
+            } = args.command
+            {
+                assert_eq!(tool, "file_edit");
+                assert_eq!(action, "Edit file: secrets/prod.env");
+                assert_eq!(
+                    path,
+                    vec![
+                        "secrets/prod.env".to_string(),
+                        "secrets/staging.env".to_string()
+                    ]
+                );
+                assert!(destructive);
+            } else {
+                panic!("Expected Check subcommand");
+            }
+        } else {
+            panic!("Expected Permissions command");
+        }
+    }
+
+    #[test]
+    fn test_permissions_log_default_limit() {
+        let cli = Cli::parse_from(["ted", "permissions", "log"]);
+        if let Some(Commands::Permissions(args)) = cli.command {
+            assert!(matches!(
+                args.command,
+                PermissionsCommands::Log { limit: 20 }
+            ));
+        } else {
+            panic!("Expected Permissions command");
+        }
+    }
+
+    #[test]
+    fn test_permissions_log_custom_limit() {
+        let cli = Cli::parse_from(["ted", "permissions", "log", "--limit", "50"]);
+        if let Some(Commands::Permissions(args)) = cli.command {
+            assert!(matches!(
+                args.command,
+                PermissionsCommands::Log { limit: 50 }
+            ));
+        } else {
+            panic!("Expected Permissions command");
+        }
+    }
+
     // ==================== History Commands ====================
 
     #[test]
@@ -804,6 +1031,20 @@ mod tests {
                 assert_eq!(session_id, "abc-123");
             } else {
                 panic!("Expected Show subcommand");
+            }
+        } else {
+            panic!("Expected History command");
+        }
+    }
+
+    #[test]
+    fn test_history_attach() {
+        let cli = Cli::parse_from(["ted", "history", "attach", "abc-123"]);
+        if let Some(Commands::History(args)) = cli.command {
+            if let HistoryCommands::Attach { session_id } = args.command {
+                assert_eq!(session_id, "abc-123");
+            } else {
+                panic!("Expected Attach subcommand");
             }
         } else {
             panic!("Expected History command");
@@ -937,6 +1178,37 @@ mod tests {
             ));
         } else {
             panic!("Expected Context command");
+        }
+    }
+
+    // ==================== Compliance Command ====================
+
+    #[test]
+    fn test_compliance_command_defaults() {
+        let cli = Cli::parse_from(["ted", "compliance"]);
+        if let Some(Commands::Compliance(args)) = cli.command {
+            assert!(args.since.is_none());
+            assert_eq!(args.limit, 2000);
+        } else {
+            panic!("Expected Compliance command");
+        }
+    }
+
+    #[test]
+    fn test_compliance_command_with_since_and_limit() {
+        let cli = Cli::parse_from([
+            "ted",
+            "compliance",
+            "--since",
+            "2026-03-01",
+            "--limit",
+            "100",
+        ]);
+        if let Some(Commands::Compliance(args)) = cli.command {
+            assert_eq!(args.since, Some("2026-03-01".to_string()));
+            assert_eq!(args.limit, 100);
+        } else {
+            panic!("Expected Compliance command");
         }
     }
 

@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use crate::caps::render::render_system_prompt;
 use crate::caps::resolver::MergedCap;
 use crate::caps::{CapLoader, CapResolver};
 use crate::config::Settings;
@@ -239,8 +240,9 @@ impl ChatSessionBuilder {
 
         // Create conversation with system prompt from caps
         let mut conversation = Conversation::new();
-        if !merged_cap.system_prompt.is_empty() {
-            conversation.set_system(&merged_cap.system_prompt);
+        let rendered_system_prompt = render_system_prompt(&merged_cap);
+        if !rendered_system_prompt.is_empty() {
+            conversation.set_system(rendered_system_prompt);
         }
 
         // Initialize history tracking
@@ -414,8 +416,9 @@ impl ChatSession {
         self.cap_names = cap_names.clone();
         self.merged_cap = self.cap_resolver.resolve_and_merge(&self.cap_names)?;
 
-        if !self.merged_cap.system_prompt.is_empty() {
-            self.conversation.set_system(&self.merged_cap.system_prompt);
+        let rendered_system_prompt = render_system_prompt(&self.merged_cap);
+        if !rendered_system_prompt.is_empty() {
+            self.conversation.set_system(rendered_system_prompt);
         }
 
         self.session_info.caps = cap_names;

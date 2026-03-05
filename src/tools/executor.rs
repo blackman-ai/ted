@@ -5,49 +5,273 @@
 //!
 //! Handles executing tools with permission checks and error handling.
 
+use std::path::Path;
+
+use crate::audit::{PermissionAuditEvent, PermissionAuditLog, PermissionDecision};
 use crate::error::{Result, TedError};
 use crate::llm::message::{ContentBlock, Message};
 use crate::llm::provider::ContentBlockResponse;
 
 use super::{PermissionManager, PermissionResponse, ToolContext, ToolRegistry, ToolResult};
 
+enum PermissionAuthorization {
+    Allowed,
+    Denied(String),
+}
+
 /// Tool executor that handles permission checks and execution
 pub struct ToolExecutor {
     registry: ToolRegistry,
     permission_manager: PermissionManager,
     context: ToolContext,
+    policy_load_warning: Option<String>,
+    permission_audit_log: PermissionAuditLog,
+    last_denial_message: Option<String>,
 }
 
 impl ToolExecutor {
-    fn build_permission_manager(trust_mode: bool) -> PermissionManager {
-        if trust_mode {
-            PermissionManager::with_trust_mode()
+    fn build_permission_manager(
+        context: &ToolContext,
+        trust_mode: bool,
+    ) -> (PermissionManager, Option<String>) {
+        let (policy, warning) = match super::PermissionPolicy::load_for_workspace(
+            &context.working_directory,
+            context.project_root.as_deref(),
+        ) {
+            Ok(policy) => (policy, None),
+            Err(err) => {
+                let warning = format!(
+                    "Failed to load permissions policy; continuing with interactive permissions only: {}",
+                    err
+                );
+                tracing::warn!("{}", warning);
+                (super::PermissionPolicy::default(), Some(warning))
+            }
+        };
+
+        let manager = if trust_mode {
+            PermissionManager::with_policy_and_trust_mode(policy)
         } else {
-            PermissionManager::new()
+            PermissionManager::with_policy(policy)
+        };
+
+        (manager, warning)
+    }
+
+    fn format_policy_source(source: &super::PolicySource) -> String {
+        match source {
+            super::PolicySource::User(path) => format!("user ({})", path.display()),
+            super::PolicySource::Project(path) => format!("project ({})", path.display()),
         }
+    }
+
+    fn format_policy_deny_message(policy_match: &super::PolicyMatch) -> String {
+        let source = Self::format_policy_source(&policy_match.source);
+        if let Some(reason) = policy_match.reason.as_ref() {
+            format!(
+                "Denied by permission policy [{}]: {}",
+                source,
+                reason.trim()
+            )
+        } else {
+            format!("Denied by permission policy [{}]", source)
+        }
+    }
+
+    fn record_permission_event(
+        &self,
+        request: &super::PermissionRequest,
+        decision: PermissionDecision,
+        policy_match: Option<&super::PolicyMatch>,
+        user_response: Option<&str>,
+        note: Option<String>,
+    ) {
+        let mut event = PermissionAuditEvent::new(
+            request.tool_name.clone(),
+            request.action_description.clone(),
+            request.affected_paths.clone(),
+            request.is_destructive,
+            decision,
+        );
+
+        if let Some(matched) = policy_match {
+            event = event.with_policy_match(matched.effect, &matched.source);
+            event.policy_reason = matched.reason.clone();
+        }
+
+        if let Some(response) = user_response {
+            event.user_response = Some(response.to_string());
+        }
+        event.note = note;
+
+        if let Err(err) = self.permission_audit_log.append(&event) {
+            tracing::warn!(
+                target: "ted.audit.permissions",
+                error = %err,
+                "Failed to append permission audit event"
+            );
+        }
+    }
+
+    fn authorize_request(
+        &mut self,
+        request: &super::PermissionRequest,
+    ) -> Result<PermissionAuthorization> {
+        let mut should_prompt = self.permission_manager.needs_permission(&request.tool_name);
+        let policy_match = self.permission_manager.policy_match(request);
+
+        if let Some(matched) = policy_match.as_ref() {
+            tracing::debug!(
+                target: "ted.tools.policy",
+                tool = %request.tool_name,
+                effect = ?matched.effect,
+                source = %Self::format_policy_source(&matched.source),
+                reason = ?matched.reason,
+                "Permission policy matched request"
+            );
+            match matched.effect {
+                super::PolicyEffect::Allow => {
+                    should_prompt = false;
+                }
+                super::PolicyEffect::Deny => {
+                    let deny_message = Self::format_policy_deny_message(matched);
+                    self.record_permission_event(
+                        request,
+                        PermissionDecision::PolicyDeny,
+                        policy_match.as_ref(),
+                        None,
+                        Some(deny_message.clone()),
+                    );
+                    return Ok(PermissionAuthorization::Denied(deny_message));
+                }
+                super::PolicyEffect::Ask => {
+                    // Trust mode does not support interactive prompts (e.g., TUI raw mode),
+                    // so "ask" degrades to auto-allow in that configuration.
+                    should_prompt = !self.permission_manager.is_trust_mode();
+                }
+            }
+        }
+
+        if should_prompt {
+            match self.permission_manager.request_permission(request) {
+                Ok(PermissionResponse::Allow) => {
+                    self.record_permission_event(
+                        request,
+                        PermissionDecision::PromptAllow,
+                        policy_match.as_ref(),
+                        Some("allow"),
+                        None,
+                    );
+                    return Ok(PermissionAuthorization::Allowed);
+                }
+                Ok(PermissionResponse::AllowAll) => {
+                    self.record_permission_event(
+                        request,
+                        PermissionDecision::PromptAllowAll,
+                        policy_match.as_ref(),
+                        Some("allow_all"),
+                        None,
+                    );
+                    return Ok(PermissionAuthorization::Allowed);
+                }
+                Ok(PermissionResponse::TrustAll) => {
+                    self.record_permission_event(
+                        request,
+                        PermissionDecision::PromptTrustAll,
+                        policy_match.as_ref(),
+                        Some("trust_all"),
+                        None,
+                    );
+                    return Ok(PermissionAuthorization::Allowed);
+                }
+                Ok(PermissionResponse::Deny) => {
+                    let deny_message = "Permission denied by user".to_string();
+                    self.record_permission_event(
+                        request,
+                        PermissionDecision::PromptDeny,
+                        policy_match.as_ref(),
+                        Some("deny"),
+                        Some(deny_message.clone()),
+                    );
+                    return Ok(PermissionAuthorization::Denied(deny_message));
+                }
+                Err(err) => {
+                    let msg = format!("Failed to get permission: {}", err);
+                    self.record_permission_event(
+                        request,
+                        PermissionDecision::PromptError,
+                        policy_match.as_ref(),
+                        None,
+                        Some(msg.clone()),
+                    );
+                    return Err(TedError::ToolExecution(msg));
+                }
+            }
+        }
+
+        let (decision, note) = match policy_match.as_ref().map(|m| m.effect) {
+            Some(super::PolicyEffect::Allow) => (PermissionDecision::PolicyAllow, None),
+            Some(super::PolicyEffect::Ask) if self.permission_manager.is_trust_mode() => (
+                PermissionDecision::AutoAllow,
+                Some("Auto-approved by trust mode (policy requested ask)".to_string()),
+            ),
+            _ if self.permission_manager.is_trust_mode() => (
+                PermissionDecision::AutoAllow,
+                Some("Auto-approved by trust mode".to_string()),
+            ),
+            _ => (
+                PermissionDecision::AutoAllow,
+                Some("Auto-approved by default permission heuristics".to_string()),
+            ),
+        };
+        self.record_permission_event(request, decision, policy_match.as_ref(), None, note);
+        Ok(PermissionAuthorization::Allowed)
     }
 
     /// Create a new executor
     pub fn new(context: ToolContext, trust_mode: bool) -> Self {
-        let permission_manager = Self::build_permission_manager(trust_mode);
+        let (permission_manager, policy_load_warning) =
+            Self::build_permission_manager(&context, trust_mode);
 
         Self {
             registry: ToolRegistry::with_builtins(),
             permission_manager,
             context,
+            policy_load_warning,
+            permission_audit_log: PermissionAuditLog::default(),
+            last_denial_message: None,
         }
     }
 
     /// Create a new executor with no registered tools.
     /// Useful for strict chat-only turns where tool execution must be impossible.
     pub fn new_without_tools(context: ToolContext, trust_mode: bool) -> Self {
-        let permission_manager = Self::build_permission_manager(trust_mode);
+        let (permission_manager, policy_load_warning) =
+            Self::build_permission_manager(&context, trust_mode);
 
         Self {
             registry: ToolRegistry::new(),
             permission_manager,
             context,
+            policy_load_warning,
+            permission_audit_log: PermissionAuditLog::default(),
+            last_denial_message: None,
         }
+    }
+
+    /// Returns a non-fatal policy load warning, when policy parsing failed.
+    pub fn policy_load_warning(&self) -> Option<&str> {
+        self.policy_load_warning.as_deref()
+    }
+
+    /// Returns the path to the permissions audit JSONL log.
+    pub fn permissions_audit_log_path(&self) -> &Path {
+        self.permission_audit_log.path()
+    }
+
+    /// Take and clear the most recent denial reason from approve_and_get_tool.
+    pub fn take_last_denial_message(&mut self) -> Option<String> {
+        self.last_denial_message.take()
     }
 
     /// Get tool definitions for the LLM
@@ -68,23 +292,22 @@ impl ToolExecutor {
         tool_name: &str,
         input: &serde_json::Value,
     ) -> Result<Option<(std::sync::Arc<dyn super::Tool>, ToolContext)>> {
+        self.last_denial_message = None;
+
         let tool = self
             .registry
             .get(tool_name)
             .ok_or_else(|| TedError::ToolExecution(format!("Unknown tool: {}", tool_name)))?
             .clone();
 
-        if tool.requires_permission() && self.permission_manager.needs_permission(tool_name) {
+        if tool.requires_permission() {
             if let Some(request) = tool.permission_request(input) {
-                match self.permission_manager.request_permission(&request) {
-                    Ok(PermissionResponse::Deny) => return Ok(None),
-                    Err(e) => {
-                        return Err(TedError::ToolExecution(format!(
-                            "Failed to get permission: {}",
-                            e
-                        )));
+                match self.authorize_request(&request)? {
+                    PermissionAuthorization::Allowed => {}
+                    PermissionAuthorization::Denied(reason) => {
+                        self.last_denial_message = Some(reason);
+                        return Ok(None);
                     }
-                    _ => {} // Granted
                 }
             }
         }
@@ -107,20 +330,15 @@ impl ToolExecutor {
             .clone();
 
         // Check permissions
-        if tool.requires_permission() && self.permission_manager.needs_permission(tool_name) {
+        if tool.requires_permission() {
             if let Some(request) = tool.permission_request(&input) {
-                match self.permission_manager.request_permission(&request) {
-                    Ok(PermissionResponse::Deny) => {
-                        return Ok(ToolResult::error(tool_use_id, "Permission denied by user"));
+                match self.authorize_request(&request) {
+                    Ok(PermissionAuthorization::Allowed) => {}
+                    Ok(PermissionAuthorization::Denied(reason)) => {
+                        return Ok(ToolResult::error(tool_use_id, reason));
                     }
-                    Err(e) => {
-                        return Ok(ToolResult::error(
-                            tool_use_id,
-                            format!("Failed to get permission: {}", e),
-                        ));
-                    }
-                    _ => {
-                        // Permission granted
+                    Err(err) => {
+                        return Ok(ToolResult::error(tool_use_id, err.to_string()));
                     }
                 }
             }
@@ -971,5 +1189,146 @@ mod tests {
             .unwrap();
 
         assert!(approved.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_execute_tool_use_policy_deny_includes_source_context() {
+        let temp_dir = TempDir::new().unwrap();
+        let project_policy_dir = temp_dir.path().join(".ted");
+        std::fs::create_dir_all(&project_policy_dir).unwrap();
+        std::fs::write(
+            project_policy_dir.join("permissions.toml"),
+            r#"
+[[rules]]
+effect = "deny"
+tools = ["shell"]
+commands = ["echo *"]
+reason = "shell echo blocked for test"
+"#,
+        )
+        .unwrap();
+
+        let context = create_test_context(&temp_dir);
+        let mut executor = ToolExecutor::new(context, false);
+        let result = executor
+            .execute_tool_use(
+                "tool-1",
+                "shell",
+                serde_json::json!({"command": "echo hello"}),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error());
+        assert!(result.output_text().contains("Denied by permission policy"));
+        assert!(result.output_text().contains("project"));
+        assert!(result.output_text().contains("shell echo blocked for test"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_tool_use_policy_deny_applies_in_trust_mode() {
+        let temp_dir = TempDir::new().unwrap();
+        let project_policy_dir = temp_dir.path().join(".ted");
+        std::fs::create_dir_all(&project_policy_dir).unwrap();
+        std::fs::write(
+            project_policy_dir.join("permissions.toml"),
+            r#"
+[[rules]]
+effect = "deny"
+tools = ["shell"]
+commands = ["echo *"]
+reason = "deny still enforced in trust mode"
+"#,
+        )
+        .unwrap();
+
+        let context = create_test_context(&temp_dir);
+        let mut executor = ToolExecutor::new(context, true);
+        let result = executor
+            .execute_tool_use(
+                "tool-1",
+                "shell",
+                serde_json::json!({"command": "echo hello"}),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error());
+        assert!(result.output_text().contains("Denied by permission policy"));
+        assert!(result
+            .output_text()
+            .contains("deny still enforced in trust mode"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_tool_use_policy_ask_auto_allows_in_trust_mode() {
+        let temp_dir = TempDir::new().unwrap();
+        let project_policy_dir = temp_dir.path().join(".ted");
+        std::fs::create_dir_all(&project_policy_dir).unwrap();
+        std::fs::write(
+            project_policy_dir.join("permissions.toml"),
+            r#"
+[[rules]]
+effect = "ask"
+tools = ["shell"]
+commands = ["echo *"]
+"#,
+        )
+        .unwrap();
+
+        let context = create_test_context(&temp_dir);
+        let mut executor = ToolExecutor::new(context, true);
+        let result = executor
+            .execute_tool_use(
+                "tool-1",
+                "shell",
+                serde_json::json!({"command": "echo hello"}),
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error());
+        assert!(result.output_text().contains("hello"));
+    }
+
+    #[test]
+    fn test_approve_and_get_tool_policy_deny_stores_last_denial_message() {
+        let temp_dir = TempDir::new().unwrap();
+        let project_policy_dir = temp_dir.path().join(".ted");
+        std::fs::create_dir_all(&project_policy_dir).unwrap();
+        std::fs::write(
+            project_policy_dir.join("permissions.toml"),
+            r#"
+[[rules]]
+effect = "deny"
+tools = ["shell"]
+commands = ["echo *"]
+"#,
+        )
+        .unwrap();
+
+        let context = create_test_context(&temp_dir);
+        let mut executor = ToolExecutor::new(context, false);
+        let approved = executor
+            .approve_and_get_tool("shell", &serde_json::json!({"command": "echo hello"}))
+            .unwrap();
+
+        assert!(approved.is_none());
+        let denial = executor.take_last_denial_message();
+        assert!(denial.is_some());
+        assert!(denial.unwrap().contains("Denied by permission policy"));
+    }
+
+    #[test]
+    fn test_policy_load_warning_when_policy_file_invalid() {
+        let temp_dir = TempDir::new().unwrap();
+        let project_policy_dir = temp_dir.path().join(".ted");
+        std::fs::create_dir_all(&project_policy_dir).unwrap();
+        std::fs::write(project_policy_dir.join("permissions.toml"), "[[rules]\n").unwrap();
+
+        let context = create_test_context(&temp_dir);
+        let executor = ToolExecutor::new(context, false);
+
+        assert!(executor.policy_load_warning().is_some());
     }
 }

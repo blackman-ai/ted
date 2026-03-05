@@ -129,6 +129,26 @@ pub struct ConversationHistoryData {
     pub messages: Vec<HistoryMessageData>,
 }
 
+/// Session metadata event data (for cross-surface attach/resume contracts)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionMetadataData {
+    pub resumed: bool,
+    pub working_directory: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_root: Option<String>,
+    pub provider: String,
+    pub model: String,
+    pub caps: Vec<String>,
+    pub trust_mode: bool,
+    pub max_response_tokens: u32,
+    pub user_policy_path: String,
+    pub project_policy_path: String,
+    pub user_policy_present: bool,
+    pub project_policy_present: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_load_warning: Option<String>,
+}
+
 /// Individual message in history
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryMessageData {
@@ -328,6 +348,43 @@ impl JsonLEmitter {
 
     pub fn emit_conversation_history(&self, messages: Vec<HistoryMessageData>) -> io::Result<()> {
         self.emit("conversation_history", ConversationHistoryData { messages })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn emit_session_metadata(
+        &self,
+        resumed: bool,
+        working_directory: String,
+        project_root: Option<String>,
+        provider: String,
+        model: String,
+        caps: Vec<String>,
+        trust_mode: bool,
+        max_response_tokens: u32,
+        user_policy_path: String,
+        project_policy_path: String,
+        user_policy_present: bool,
+        project_policy_present: bool,
+        policy_load_warning: Option<String>,
+    ) -> io::Result<()> {
+        self.emit(
+            "session_metadata",
+            SessionMetadataData {
+                resumed,
+                working_directory,
+                project_root,
+                provider,
+                model,
+                caps,
+                trust_mode,
+                max_response_tokens,
+                user_policy_path,
+                project_policy_path,
+                user_policy_present,
+                project_policy_present,
+                policy_load_warning,
+            },
+        )
     }
 }
 
@@ -1303,6 +1360,27 @@ mod tests {
     fn test_jsonl_emitter_emit_conversation_history_empty() {
         let emitter = JsonLEmitter::new("test-session".to_string());
         let result = emitter.emit_conversation_history(vec![]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jsonl_emitter_emit_session_metadata() {
+        let emitter = JsonLEmitter::new("test-session".to_string());
+        let result = emitter.emit_session_metadata(
+            true,
+            "/tmp/project".to_string(),
+            Some("/tmp/project".to_string()),
+            "anthropic".to_string(),
+            "claude-sonnet-4-20250514".to_string(),
+            vec!["base".to_string(), "reviewer".to_string()],
+            false,
+            4096,
+            "/home/user/.ted/permissions.toml".to_string(),
+            "/tmp/project/.ted/permissions.toml".to_string(),
+            true,
+            false,
+            None,
+        );
         assert!(result.is_ok());
     }
 

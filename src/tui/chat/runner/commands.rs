@@ -86,17 +86,44 @@ pub(super) fn handle_command(
             return Ok(());
         }
 
+        let previous_caps = state.enabled_caps.clone();
+
         // Toggle the cap
+        let attempted_disable = state.enabled_caps.iter().any(|c| c == cap_name);
         if let Some(pos) = state.enabled_caps.iter().position(|c| c == cap_name) {
             state.enabled_caps.remove(pos);
-            state.set_status(&format!("Disabled cap: {}", cap_name));
         } else {
             state.enabled_caps.push(cap_name.to_string());
-            state.set_status(&format!("Enabled cap: {}", cap_name));
+        }
+
+        if let Err(err) = crate::caps::enforce_governance(
+            &mut state.enabled_caps,
+            state.enforce_caps_policy,
+            &state.required_caps,
+            &state.disallowed_caps,
+        ) {
+            state.enabled_caps = previous_caps;
+            state.set_error(&err.to_string());
+            return Ok(());
         }
 
         // Update config.caps so new messages use updated caps
         state.config.caps = state.enabled_caps.clone();
+        if let Some(ref mut settings_state) = state.settings_state {
+            settings_state.caps_enabled = state.enabled_caps.clone();
+        }
+        state.caps_changed = true;
+        let cap_is_enabled = state.enabled_caps.iter().any(|cap| cap == cap_name);
+        if attempted_disable && cap_is_enabled {
+            state.set_status(&format!(
+                "Cap '{}' remains enabled due to governance policy",
+                cap_name
+            ));
+        } else if cap_is_enabled {
+            state.set_status(&format!("Enabled cap: {}", cap_name));
+        } else {
+            state.set_status(&format!("Disabled cap: {}", cap_name));
+        }
         return Ok(());
     }
 

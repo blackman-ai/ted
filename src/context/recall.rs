@@ -101,7 +101,7 @@ pub async fn store_conversation(
 ///         3  // Top 3 most relevant past conversations
 ///     ).await {
 ///         // Append recalled context to system prompt
-///         merged_cap.system_prompt.push_str(&context);
+///         extra_system_prompt.push_str(&context);
 ///     }
 /// }
 /// ```

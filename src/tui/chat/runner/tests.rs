@@ -757,6 +757,50 @@ fn test_handle_command_cap_toggle() {
 }
 
 #[test]
+fn test_handle_command_cap_toggle_blocked_by_disallowed_policy() {
+    let mut state = create_test_tui_state();
+    state.available_caps = vec![
+        ("base".to_string(), true),
+        ("security-analyst".to_string(), true),
+    ];
+    state.enabled_caps = vec!["base".to_string()];
+    state.enforce_caps_policy = true;
+    state.disallowed_caps = vec!["security-analyst".to_string()];
+
+    handle_command("/cap security-analyst", &mut state, None).unwrap();
+
+    assert!(!state.enabled_caps.contains(&"security-analyst".to_string()));
+    assert!(state.status_is_error);
+    assert!(state
+        .status_message
+        .as_ref()
+        .unwrap()
+        .contains("disallowed by governance policy"));
+}
+
+#[test]
+fn test_handle_command_cap_toggle_required_cap_stays_enabled() {
+    let mut state = create_test_tui_state();
+    state.available_caps = vec![
+        ("base".to_string(), true),
+        ("code-reviewer".to_string(), true),
+    ];
+    state.enabled_caps = vec!["base".to_string(), "code-reviewer".to_string()];
+    state.enforce_caps_policy = true;
+    state.required_caps = vec!["code-reviewer".to_string()];
+
+    handle_command("/cap code-reviewer", &mut state, None).unwrap();
+
+    assert!(state.enabled_caps.contains(&"code-reviewer".to_string()));
+    assert!(!state.status_is_error);
+    assert!(state
+        .status_message
+        .as_ref()
+        .unwrap()
+        .contains("remains enabled due to governance policy"));
+}
+
+#[test]
 fn test_handle_command_cap_unknown() {
     let mut state = create_test_tui_state();
     state.available_caps = vec![("base".to_string(), true)];
@@ -2311,6 +2355,34 @@ fn test_handle_settings_key_no_settings_state() {
 
     // Should switch back to Input mode
     assert_eq!(state.mode, ChatMode::Input);
+}
+
+#[test]
+fn test_handle_settings_key_save_rejects_disallowed_caps_by_governance() {
+    let mut state = create_test_tui_state();
+    state.mode = ChatMode::Settings;
+    state.enforce_caps_policy = true;
+    state.disallowed_caps = vec!["security-analyst".to_string()];
+    state.enabled_caps = vec!["base".to_string()];
+    if let Some(ref mut settings) = state.settings_state {
+        settings.has_changes = true;
+        settings.caps_enabled = vec!["base".to_string(), "security-analyst".to_string()];
+    }
+
+    let key = crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('s'),
+        crossterm::event::KeyModifiers::NONE,
+    );
+    handle_settings_key(&mut state, key).unwrap();
+
+    assert_eq!(state.mode, ChatMode::Settings);
+    assert!(state.status_is_error);
+    assert!(state
+        .status_message
+        .as_ref()
+        .unwrap()
+        .contains("disallowed by governance policy"));
+    assert_eq!(state.enabled_caps, vec!["base".to_string()]);
 }
 
 // ===== handle_key Tests =====

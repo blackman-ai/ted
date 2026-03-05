@@ -9,6 +9,8 @@ use crossterm::style::{Color, ResetColor, SetForegroundColor};
 use crossterm::ExecutableCommand;
 use std::io::{self, Write};
 
+use super::{PermissionPolicy, PolicyEffect, PolicyMatch};
+
 /// Request for permission to perform an action
 #[derive(Debug, Clone)]
 pub struct PermissionRequest {
@@ -39,6 +41,8 @@ pub enum PermissionResponse {
 pub struct PermissionManager {
     /// Tools that have been granted "allow all" permission
     allowed_tools: std::collections::HashSet<String>,
+    /// Merged static permission policy from user/project scopes.
+    policy: PermissionPolicy,
     /// Whether trust mode is enabled
     trust_mode: bool,
     /// Whether to auto-approve read operations
@@ -48,8 +52,14 @@ pub struct PermissionManager {
 impl PermissionManager {
     /// Create a new permission manager
     pub fn new() -> Self {
+        Self::with_policy(PermissionPolicy::default())
+    }
+
+    /// Create a new permission manager with static policy rules.
+    pub fn with_policy(policy: PermissionPolicy) -> Self {
         Self {
             allowed_tools: std::collections::HashSet::new(),
+            policy,
             trust_mode: false,
             auto_approve_reads: true,
         }
@@ -57,8 +67,14 @@ impl PermissionManager {
 
     /// Create with trust mode enabled
     pub fn with_trust_mode() -> Self {
+        Self::with_policy_and_trust_mode(PermissionPolicy::default())
+    }
+
+    /// Create with trust mode and static policy rules.
+    pub fn with_policy_and_trust_mode(policy: PermissionPolicy) -> Self {
         Self {
             allowed_tools: std::collections::HashSet::new(),
+            policy,
             trust_mode: true,
             auto_approve_reads: true,
         }
@@ -132,6 +148,30 @@ impl PermissionManager {
 
         println!();
         Ok(response)
+    }
+
+    /// Evaluate policy rules for this request.
+    pub fn policy_match(&self, request: &PermissionRequest) -> Option<PolicyMatch> {
+        self.policy.evaluate(
+            &request.tool_name,
+            &request.action_description,
+            &request.affected_paths,
+            request.is_destructive,
+        )
+    }
+
+    /// Whether an action should be allowed immediately due to policy.
+    pub fn is_policy_allow(&self, request: &PermissionRequest) -> bool {
+        self.policy_match(request)
+            .map(|matched| matched.effect == PolicyEffect::Allow)
+            .unwrap_or(false)
+    }
+
+    /// Whether an action should be denied immediately due to policy.
+    pub fn is_policy_deny(&self, request: &PermissionRequest) -> bool {
+        self.policy_match(request)
+            .map(|matched| matched.effect == PolicyEffect::Deny)
+            .unwrap_or(false)
     }
 
     /// Enable trust mode
@@ -263,6 +303,62 @@ mod tests {
 
         let manager2 = PermissionManager::with_trust_mode();
         assert!(manager2.is_trust_mode());
+    }
+
+    #[test]
+    fn test_policy_allow_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        let policy_path = tmp.path().join("permissions.toml");
+        std::fs::write(
+            &policy_path,
+            r#"
+[[rules]]
+effect = "allow"
+tools = ["shell"]
+commands = ["cargo *"]
+"#,
+        )
+        .unwrap();
+
+        let policy = PermissionPolicy::load_from_paths(&policy_path, None).unwrap();
+        let manager = PermissionManager::with_policy(policy);
+        let request = PermissionRequest {
+            tool_name: "shell".to_string(),
+            action_description: "Execute: cargo test".to_string(),
+            affected_paths: Vec::new(),
+            is_destructive: false,
+        };
+
+        assert!(manager.is_policy_allow(&request));
+        assert!(!manager.is_policy_deny(&request));
+    }
+
+    #[test]
+    fn test_policy_deny_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        let policy_path = tmp.path().join("permissions.toml");
+        std::fs::write(
+            &policy_path,
+            r#"
+[[rules]]
+effect = "deny"
+tools = ["file_edit"]
+paths = ["secrets/**"]
+"#,
+        )
+        .unwrap();
+
+        let policy = PermissionPolicy::load_from_paths(&policy_path, None).unwrap();
+        let manager = PermissionManager::with_policy(policy);
+        let request = PermissionRequest {
+            tool_name: "file_edit".to_string(),
+            action_description: "Edit file: secrets/prod.env".to_string(),
+            affected_paths: vec!["secrets/prod.env".to_string()],
+            is_destructive: true,
+        };
+
+        assert!(manager.is_policy_deny(&request));
+        assert!(!manager.is_policy_allow(&request));
     }
 
     #[test]

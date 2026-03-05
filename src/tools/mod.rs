@@ -19,10 +19,12 @@ pub mod definition;
 pub mod executor;
 pub mod external;
 pub mod permission;
+pub mod policy;
 
 pub use definition::*;
 pub use executor::*;
 pub use permission::*;
+pub use policy::*;
 
 use async_trait::async_trait;
 use serde_json::Value;

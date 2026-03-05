@@ -22,6 +22,7 @@ use self::tooling::{
     map_shell_arguments, tool_call_key,
 };
 
+use crate::caps::render::render_system_prompt;
 use crate::caps::{CapLoader, CapResolver};
 use crate::chat;
 use crate::cli::ChatArgs;
@@ -205,15 +206,22 @@ async fn run_embedded_chat_with_emitter(
     };
 
     // Load caps
-    let cap_names: Vec<String> = if args.cap.is_empty() {
+    let mut cap_names: Vec<String> = if args.cap.is_empty() {
         settings.defaults.caps.clone()
     } else {
         args.cap.clone()
     };
+    crate::caps::enforce_governance(
+        &mut cap_names,
+        settings.defaults.enforce_caps_policy,
+        &settings.defaults.required_caps,
+        &settings.defaults.disallowed_caps,
+    )?;
 
     let loader = CapLoader::new();
     let resolver = CapResolver::new(loader.clone());
-    let mut merged_cap = resolver.resolve_and_merge(&cap_names)?;
+    let merged_cap = resolver.resolve_and_merge(&cap_names)?;
+    let mut extra_system_prompt = String::new();
 
     // If a system prompt file was provided (by frontend like Teddy), append its content
     // This allows frontends to inject opinionated defaults without modifying Ted's core
@@ -225,10 +233,10 @@ async fn run_embedded_chat_with_emitter(
                         "[PROMPT] Appending custom system prompt from {:?}",
                         prompt_file
                     );
-                    if !merged_cap.system_prompt.is_empty() {
-                        merged_cap.system_prompt.push_str("\n\n");
+                    if !extra_system_prompt.is_empty() {
+                        extra_system_prompt.push_str("\n\n");
                     }
-                    merged_cap.system_prompt.push_str(&extra_prompt);
+                    extra_system_prompt.push_str(&extra_prompt);
                 }
             }
             Err(e) => {
@@ -285,11 +293,38 @@ async fn run_embedded_chat_with_emitter(
     } else {
         ToolExecutor::new(tool_context, args.trust)
     };
+    let policy_load_warning = tool_executor.policy_load_warning().map(|w| w.to_string());
+    if let Some(warning) = policy_load_warning.as_ref() {
+        let warning_message = format!("Permissions policy warning: {}", warning);
+        eprintln!("[PERMISSIONS] {}", warning_message);
+        let _ = emitter.emit_status("warning", warning_message, None);
+    }
     let tool_definitions = if args.no_tools {
         Vec::new()
     } else {
         tool_executor.tool_definitions()
     };
+
+    let user_policy_path = Settings::permissions_policy_path();
+    let project_policy_base = project_root
+        .clone()
+        .unwrap_or_else(|| working_directory.clone());
+    let project_policy_path = Settings::project_permissions_policy_path(&project_policy_base);
+    let _ = emitter.emit_session_metadata(
+        args.resume.is_some(),
+        working_directory.display().to_string(),
+        project_root.as_ref().map(|p| p.display().to_string()),
+        provider_name.clone(),
+        model.clone(),
+        cap_names.clone(),
+        args.trust,
+        settings.defaults.max_tokens,
+        user_policy_path.display().to_string(),
+        project_policy_path.display().to_string(),
+        user_policy_path.exists(),
+        project_policy_path.exists(),
+        policy_load_warning,
+    );
 
     // Initialize conversation memory (only if explicitly enabled)
     // Memory is disabled by default because the summarizer can produce garbage summaries
@@ -407,7 +442,10 @@ async fn run_embedded_chat_with_emitter(
         match recall::recall_relevant_context(&prompt, memory_store, 3).await {
             Ok(Some(context)) => {
                 eprintln!("[MEMORY] Recalled relevant context from past conversations");
-                merged_cap.system_prompt.push_str(&context);
+                if !extra_system_prompt.is_empty() {
+                    extra_system_prompt.push_str("\n\n");
+                }
+                extra_system_prompt.push_str(&context);
             }
             Ok(None) => {
                 eprintln!("[MEMORY] No relevant past conversations found");
@@ -442,8 +480,15 @@ async fn run_embedded_chat_with_emitter(
 
         let mut conversation = Conversation::new();
         conversation.messages = messages.clone();
-        if !merged_cap.system_prompt.is_empty() {
-            conversation.set_system(&merged_cap.system_prompt);
+        let mut system_prompt = render_system_prompt(&merged_cap);
+        if !extra_system_prompt.trim().is_empty() {
+            if !system_prompt.is_empty() {
+                system_prompt.push_str("\n\n");
+            }
+            system_prompt.push_str(extra_system_prompt.trim());
+        }
+        if !system_prompt.is_empty() {
+            conversation.set_system(system_prompt);
         }
 
         let mut observer = EmbeddedStreamObserver {

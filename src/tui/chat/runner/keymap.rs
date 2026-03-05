@@ -309,7 +309,17 @@ pub(super) fn handle_settings_key(state: &mut TuiState, key: KeyEvent) -> Result
                 let new_provider = settings.provider.clone();
                 let new_temp = settings.temperature;
                 let new_max_tokens = settings.max_tokens;
-                let new_caps = settings.caps_enabled.clone();
+                let mut new_caps = settings.caps_enabled.clone();
+                if let Err(err) = crate::caps::enforce_governance(
+                    &mut new_caps,
+                    state.enforce_caps_policy,
+                    &state.required_caps,
+                    &state.disallowed_caps,
+                ) {
+                    state.set_error(&err.to_string());
+                    return Ok(());
+                }
+                settings.caps_enabled = new_caps.clone();
                 // Save current API key to the map before saving
                 settings
                     .api_keys_by_provider

@@ -6,6 +6,8 @@ use async_trait::async_trait;
 use futures::stream;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
+use ted::audit::{PermissionAuditEvent, PermissionAuditLog, PermissionDecision};
+use ted::error::TedError;
 use ted::llm::provider::{
     CompletionRequest, CompletionResponse, ContentBlockDelta, ContentBlockResponse, LlmProvider,
     ModelInfo, StopReason, StreamEvent, Usage,
@@ -18,11 +20,37 @@ use tempfile::TempDir;
 
 /// Create a temp directory and set TED_HOME to it so that settings
 /// writes go to a throwaway location instead of the real ~/.ted/.
-/// Returns the TempDir guard — settings.save() is safe as long as this lives.
-fn sandbox_ted_home() -> TempDir {
+/// Returns a guard that restores TED_HOME on drop.
+struct TedHomeGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    previous_ted_home: Option<String>,
+    _dir: TempDir,
+}
+
+fn ted_home_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+impl Drop for TedHomeGuard {
+    fn drop(&mut self) {
+        match &self.previous_ted_home {
+            Some(value) => std::env::set_var("TED_HOME", value),
+            None => std::env::remove_var("TED_HOME"),
+        }
+    }
+}
+
+fn sandbox_ted_home() -> TedHomeGuard {
+    let lock = ted_home_lock().lock().expect("ted home test lock poisoned");
     let dir = TempDir::new().expect("failed to create temp dir");
+    let previous_ted_home = std::env::var("TED_HOME").ok();
     std::env::set_var("TED_HOME", dir.path());
-    dir
+    TedHomeGuard {
+        _lock: lock,
+        previous_ted_home,
+        _dir: dir,
+    }
 }
 
 fn cwd_lock() -> &'static std::sync::Mutex<()> {
@@ -832,6 +860,38 @@ fn test_run_history_command_show_invalid_id() {
 }
 
 #[test]
+fn test_run_history_command_attach_invalid_id() {
+    let args = ted::cli::HistoryArgs {
+        command: ted::cli::HistoryCommands::Attach {
+            session_id: "invalid".to_string(),
+        },
+    };
+
+    let result = run_history_command(args);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_run_history_command_attach_valid_session() {
+    let _ted_home = sandbox_ted_home();
+    let mut store = HistoryStore::open().expect("open history store");
+    let id = uuid::Uuid::new_v4();
+    let mut info = SessionInfo::new(id, std::env::current_dir().unwrap());
+    info.summary = Some("test attach".to_string());
+    info.caps = vec!["base".to_string()];
+    store.upsert(info).expect("insert session");
+
+    let args = ted::cli::HistoryArgs {
+        command: ted::cli::HistoryCommands::Attach {
+            session_id: id.to_string(),
+        },
+    };
+
+    let result = run_history_command(args);
+    assert!(result.is_ok());
+}
+
+#[test]
 fn test_run_history_command_delete_invalid_id() {
     let args = ted::cli::HistoryArgs {
         command: ted::cli::HistoryCommands::Delete {
@@ -960,6 +1020,163 @@ fn test_run_caps_command_import_nonexistent_file() {
 
     let result = run_caps_command(args);
     assert!(result.is_err());
+}
+
+// ==================== Permissions command tests ====================
+
+#[test]
+fn test_run_permissions_command_show_no_policy_files() {
+    let _ted_home = sandbox_ted_home();
+    let project = TempDir::new().expect("temp dir");
+    let _cwd = CwdGuard::enter(project.path());
+
+    let args = ted::cli::PermissionsArgs {
+        command: ted::cli::PermissionsCommands::Show,
+    };
+
+    let result = run_permissions_command(args);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_run_permissions_command_init_project_and_check() {
+    let _ted_home = sandbox_ted_home();
+    let project = TempDir::new().expect("temp dir");
+    let _cwd = CwdGuard::enter(project.path());
+
+    let init_args = ted::cli::PermissionsArgs {
+        command: ted::cli::PermissionsCommands::Init {
+            scope: ted::cli::PermissionPolicyScope::Project,
+            force: false,
+        },
+    };
+
+    let init_result = run_permissions_command(init_args);
+    assert!(init_result.is_ok());
+    assert!(project.path().join(".ted/permissions.toml").exists());
+
+    let check_args = ted::cli::PermissionsArgs {
+        command: ted::cli::PermissionsCommands::Check {
+            tool: "shell".to_string(),
+            action: "cargo test".to_string(),
+            path: vec![],
+            destructive: false,
+        },
+    };
+    let check_result = run_permissions_command(check_args);
+    assert!(check_result.is_ok());
+}
+
+#[test]
+fn test_run_permissions_command_init_user_creates_user_file() {
+    let _ted_home = sandbox_ted_home();
+    let project = TempDir::new().expect("temp dir");
+    let _cwd = CwdGuard::enter(project.path());
+
+    let args = ted::cli::PermissionsArgs {
+        command: ted::cli::PermissionsCommands::Init {
+            scope: ted::cli::PermissionPolicyScope::User,
+            force: false,
+        },
+    };
+
+    let result = run_permissions_command(args);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_run_permissions_command_init_existing_without_force_fails() {
+    let _ted_home = sandbox_ted_home();
+    let project = TempDir::new().expect("temp dir");
+    let _cwd = CwdGuard::enter(project.path());
+
+    let policy_path = project.path().join(".ted/permissions.toml");
+    std::fs::create_dir_all(policy_path.parent().expect("policy parent")).expect("create dir");
+    std::fs::write(&policy_path, "[[rules]]\neffect = \"ask\"\n").expect("write policy file");
+
+    let args = ted::cli::PermissionsArgs {
+        command: ted::cli::PermissionsCommands::Init {
+            scope: ted::cli::PermissionPolicyScope::Project,
+            force: false,
+        },
+    };
+
+    let result = run_permissions_command(args);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("already exists"));
+}
+
+#[test]
+fn test_run_permissions_command_log_empty() {
+    let _ted_home = sandbox_ted_home();
+    let project = TempDir::new().expect("temp dir");
+    let _cwd = CwdGuard::enter(project.path());
+
+    let args = ted::cli::PermissionsArgs {
+        command: ted::cli::PermissionsCommands::Log { limit: 20 },
+    };
+
+    let result = run_permissions_command(args);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_run_permissions_command_log_with_entries() {
+    let _ted_home = sandbox_ted_home();
+    let project = TempDir::new().expect("temp dir");
+    let _cwd = CwdGuard::enter(project.path());
+
+    let log = PermissionAuditLog::default();
+    let event = PermissionAuditEvent::new(
+        "shell".to_string(),
+        "Execute: cargo test".to_string(),
+        vec![],
+        false,
+        PermissionDecision::PolicyAllow,
+    );
+    log.append(&event).expect("append audit event");
+
+    let args = ted::cli::PermissionsArgs {
+        command: ted::cli::PermissionsCommands::Log { limit: 10 },
+    };
+
+    let result = run_permissions_command(args);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_run_compliance_command_empty_log() {
+    let _ted_home = sandbox_ted_home();
+    let args = ted::cli::ComplianceArgs {
+        since: None,
+        limit: 100,
+    };
+
+    let result = run_compliance_command(args);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_run_compliance_command_with_since_filter() {
+    let _ted_home = sandbox_ted_home();
+    let log = PermissionAuditLog::default();
+    let mut event = PermissionAuditEvent::new(
+        "shell".to_string(),
+        "Execute: cargo test".to_string(),
+        vec![],
+        false,
+        PermissionDecision::PolicyAllow,
+    );
+    event.timestamp = chrono::Utc::now();
+    log.append(&event).expect("append audit event");
+
+    let args = ted::cli::ComplianceArgs {
+        since: Some(chrono::Utc::now().format("%Y-%m-%d").to_string()),
+        limit: 100,
+    };
+
+    let result = run_compliance_command(args);
+    assert!(result.is_ok());
 }
 
 // ==================== Custom command tests ====================
@@ -3002,7 +3219,7 @@ fn test_cap_resolver_resolve_multiple_caps() {
     assert!(result.is_ok());
 
     let merged = result.unwrap();
-    assert!(!merged.system_prompt.is_empty());
+    assert!(merged.legacy_prompt_tail.is_some());
 }
 
 // ==================== Additional Caps command tests ====================
@@ -3177,6 +3394,34 @@ fn test_settings_caps_dir() {
     assert!(!path.to_string_lossy().is_empty());
 }
 
+#[test]
+fn test_enforce_caps_governance_adds_required_caps() {
+    let mut settings = Settings::default();
+    settings.defaults.enforce_caps_policy = true;
+    settings.defaults.required_caps = vec!["security-analyst".to_string()];
+    settings.defaults.disallowed_caps = vec![];
+
+    let mut caps = vec!["code-reviewer".to_string()];
+    enforce_caps_governance(&mut caps, &settings).expect("governance should pass");
+
+    assert_eq!(
+        caps,
+        vec!["code-reviewer".to_string(), "security-analyst".to_string()]
+    );
+}
+
+#[test]
+fn test_enforce_caps_governance_rejects_disallowed_cap() {
+    let mut settings = Settings::default();
+    settings.defaults.enforce_caps_policy = true;
+    settings.defaults.disallowed_caps = vec!["security-analyst".to_string()];
+
+    let mut caps = vec!["security-analyst".to_string()];
+    let err = enforce_caps_governance(&mut caps, &settings)
+        .expect_err("disallowed caps should fail governance");
+    assert!(err.to_string().contains("disallowed by governance policy"));
+}
+
 // ==================== Additional Tool executor tests ====================
 
 #[test]
@@ -3189,6 +3434,44 @@ fn test_tool_executor_new() {
     // Verify it has tool definitions
     let definitions = executor.tool_definitions();
     assert!(!definitions.is_empty());
+}
+
+#[tokio::test]
+async fn test_cli_surface_policy_deny_shell_uses_explainable_message() {
+    let temp_dir = TempDir::new().unwrap();
+    let policy_dir = temp_dir.path().join(".ted");
+    std::fs::create_dir_all(&policy_dir).unwrap();
+    std::fs::write(
+        policy_dir.join("permissions.toml"),
+        r#"
+[[rules]]
+effect = "deny"
+tools = ["shell"]
+commands = ["echo *"]
+reason = "org policy blocked shell"
+"#,
+    )
+    .unwrap();
+
+    let context = ToolContext::new(
+        temp_dir.path().to_path_buf(),
+        Some(temp_dir.path().to_path_buf()),
+        uuid::Uuid::new_v4(),
+        false,
+    );
+    let mut executor = ToolExecutor::new(context, false);
+    let result = executor
+        .execute_tool_use(
+            "deny_1",
+            "shell",
+            serde_json::json!({"command": "echo should-not-run"}),
+        )
+        .await
+        .unwrap();
+
+    assert!(result.is_error());
+    assert!(result.output_text().contains("Denied by permission policy"));
+    assert!(result.output_text().contains("org policy blocked shell"));
 }
 
 // ==================== Provider specific tests ====================

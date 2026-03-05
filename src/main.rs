@@ -17,6 +17,7 @@ use crossterm::{
     ExecutableCommand,
 };
 
+use ted::caps::render::render_system_prompt;
 use ted::caps::CapLoader;
 #[cfg(test)]
 use ted::caps::CapResolver;
@@ -28,8 +29,6 @@ use ted::config::Settings;
 use ted::context::ContextManager;
 use ted::context::SessionId;
 use ted::error::Result;
-#[cfg(test)]
-use ted::error::TedError;
 #[cfg(test)]
 use ted::history::HistoryStore;
 use ted::history::SessionInfo;
@@ -68,8 +67,9 @@ use chat_ui::{print_tool_invocation, print_tool_result};
 use chat_ui::{prompt_session_choice, resume_session};
 use cli_commands::{
     print_cap_badge, print_help, print_response_prefix, print_welcome, read_user_input, run_ask,
-    run_caps_command, run_clear, run_context_command, run_custom_command, run_history_command,
-    run_init, run_settings_command, run_settings_tui, run_update_command,
+    run_caps_command, run_clear, run_compliance_command, run_context_command, run_custom_command,
+    run_history_command, run_init, run_permissions_command, run_settings_command, run_settings_tui,
+    run_update_command,
 };
 
 /// Maximum number of retries for rate-limited requests
@@ -90,6 +90,15 @@ const BASE_RETRY_DELAY: u64 = 2;
 // - ted::chat::streaming - Streaming response handling
 // - ted::chat::provider_config - Provider configuration
 
+fn enforce_caps_governance(cap_names: &mut Vec<String>, settings: &Settings) -> Result<()> {
+    ted::caps::enforce_governance(
+        cap_names,
+        settings.defaults.enforce_caps_policy,
+        &settings.defaults.required_caps,
+        &settings.defaults.disallowed_caps,
+    )
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parse CLI arguments
@@ -106,6 +115,7 @@ async fn main() -> Result<()> {
             "ted.chat.engine=debug",
             "ted.tui.runner=debug",
             "ted.embedded=debug",
+            "ted.tools.policy=debug",
         ] {
             if let Ok(parsed) = directive.parse() {
                 env_filter = env_filter.add_directive(parsed);
@@ -146,11 +156,17 @@ async fn main() -> Result<()> {
         Some(Commands::Caps(args)) => {
             run_caps_command(args)?;
         }
+        Some(Commands::Permissions(args)) => {
+            run_permissions_command(args)?;
+        }
         Some(Commands::History(args)) => {
             run_history_command(args)?;
         }
         Some(Commands::Context(args)) => {
             run_context_command(args, &settings).await?;
+        }
+        Some(Commands::Compliance(args)) => {
+            run_compliance_command(args)?;
         }
         Some(Commands::Init) => {
             run_init()?;
@@ -220,6 +236,19 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
         _compaction_handle,
     } = initialize_chat_runtime(&args, settings, verbose).await?;
 
+    let caps_before_governance = cap_names.clone();
+    enforce_caps_governance(&mut cap_names, &settings)?;
+    if cap_names != caps_before_governance {
+        merged_cap = resolver.resolve_and_merge(&cap_names)?;
+        let rendered_system_prompt = render_system_prompt(&merged_cap);
+        if rendered_system_prompt.is_empty() {
+            conversation.system_prompt = None;
+        } else {
+            conversation.set_system(rendered_system_prompt);
+        }
+        session_info.caps = cap_names.clone();
+    }
+
     // Use TUI or simple mode
     if !args.no_tui {
         // TUI mode requires trust mode for tool permissions since interactive
@@ -271,6 +300,10 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
             agent_progress_tracker,
         )
         .await;
+    }
+
+    if let Some(warning) = tool_executor.policy_load_warning() {
+        eprintln!("Warning: {}", warning);
     }
 
     // Print welcome message with cap info (only for simple mode)
@@ -571,13 +604,15 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
                         let new_caps = new_settings.defaults.caps.clone();
                         if new_caps != cap_names {
                             cap_names = new_caps;
+                            enforce_caps_governance(&mut cap_names, &new_settings)?;
                             // Re-resolve caps and update system prompt
                             loader = CapLoader::new();
                             merged_cap = resolver.resolve_and_merge(&cap_names)?;
-                            if merged_cap.system_prompt.is_empty() {
+                            let rendered_system_prompt = render_system_prompt(&merged_cap);
+                            if rendered_system_prompt.is_empty() {
                                 conversation.system_prompt = None;
                             } else {
-                                conversation.set_system(&merged_cap.system_prompt);
+                                conversation.set_system(rendered_system_prompt);
                             }
                             session_info.caps = cap_names.clone();
 
@@ -699,16 +734,19 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
 
                 // Clear and reset conversation
                 conversation.clear();
-                if !merged_cap.system_prompt.is_empty() {
-                    conversation.set_system(&merged_cap.system_prompt);
+                let rendered_system_prompt = render_system_prompt(&merged_cap);
+                if !rendered_system_prompt.is_empty() {
+                    conversation.set_system(rendered_system_prompt);
                 }
 
                 // Restore caps from the session if available
                 if !session_info.caps.is_empty() {
                     cap_names = session_info.caps.clone();
+                    enforce_caps_governance(&mut cap_names, &settings)?;
                     merged_cap = resolver.resolve_and_merge(&cap_names)?;
-                    if !merged_cap.system_prompt.is_empty() {
-                        conversation.set_system(&merged_cap.system_prompt);
+                    let rendered_system_prompt = render_system_prompt(&merged_cap);
+                    if !rendered_system_prompt.is_empty() {
+                        conversation.set_system(rendered_system_prompt);
                     }
                 }
 
@@ -756,8 +794,9 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
 
             // Clear conversation but keep caps
             conversation.clear();
-            if !merged_cap.system_prompt.is_empty() {
-                conversation.set_system(&merged_cap.system_prompt);
+            let rendered_system_prompt = render_system_prompt(&merged_cap);
+            if !rendered_system_prompt.is_empty() {
+                conversation.set_system(rendered_system_prompt);
             }
 
             println!("Context cleared. Ready for a fresh conversation.\n");
@@ -922,11 +961,18 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
                             println!("\nCap '{}' is already active.\n", name);
                             continue;
                         }
+                        let previous_caps = cap_names.clone();
                         cap_names.push(name.to_string());
+                        if let Err(err) = enforce_caps_governance(&mut cap_names, &settings) {
+                            cap_names = previous_caps;
+                            println!("\n{}\n", err);
+                            continue;
+                        }
 
                         // Re-resolve and update system prompt
                         merged_cap = resolver.resolve_and_merge(&cap_names)?;
-                        conversation.set_system(&merged_cap.system_prompt);
+                        let rendered_system_prompt = render_system_prompt(&merged_cap);
+                        conversation.set_system(rendered_system_prompt);
                         session_info.caps = cap_names.clone();
 
                         print!("\nAdded cap: ");
@@ -939,14 +985,21 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
                 "remove" => {
                     if let Some(name) = arg {
                         if let Some(pos) = cap_names.iter().position(|c| c == name) {
+                            let previous_caps = cap_names.clone();
                             cap_names.remove(pos);
+                            if let Err(err) = enforce_caps_governance(&mut cap_names, &settings) {
+                                cap_names = previous_caps;
+                                println!("\n{}\n", err);
+                                continue;
+                            }
 
                             // Re-resolve and update system prompt
                             merged_cap = resolver.resolve_and_merge(&cap_names)?;
-                            if merged_cap.system_prompt.is_empty() {
+                            let rendered_system_prompt = render_system_prompt(&merged_cap);
+                            if rendered_system_prompt.is_empty() {
                                 conversation.system_prompt = None;
                             } else {
-                                conversation.set_system(&merged_cap.system_prompt);
+                                conversation.set_system(rendered_system_prompt);
                             }
                             session_info.caps = cap_names.clone();
 
@@ -974,12 +1027,19 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
                             }
                         }
 
+                        let previous_caps = cap_names.clone();
                         cap_names = new_caps;
+                        if let Err(err) = enforce_caps_governance(&mut cap_names, &settings) {
+                            cap_names = previous_caps;
+                            println!("\n{}\n", err);
+                            continue;
+                        }
                         merged_cap = resolver.resolve_and_merge(&cap_names)?;
-                        if merged_cap.system_prompt.is_empty() {
+                        let rendered_system_prompt = render_system_prompt(&merged_cap);
+                        if rendered_system_prompt.is_empty() {
                             conversation.system_prompt = None;
                         } else {
-                            conversation.set_system(&merged_cap.system_prompt);
+                            conversation.set_system(rendered_system_prompt);
                         }
                         session_info.caps = cap_names.clone();
 
@@ -1001,11 +1061,33 @@ async fn run_chat(args: ChatArgs, mut settings: Settings, verbose: u8) -> Result
                     }
                 }
                 "clear" => {
+                    let previous_caps = cap_names.clone();
                     cap_names.clear();
+                    if let Err(err) = enforce_caps_governance(&mut cap_names, &settings) {
+                        cap_names = previous_caps;
+                        println!("\n{}\n", err);
+                        continue;
+                    }
                     merged_cap = resolver.resolve_and_merge(&cap_names)?;
-                    conversation.system_prompt = None;
+                    let rendered_system_prompt = render_system_prompt(&merged_cap);
+                    if rendered_system_prompt.is_empty() {
+                        conversation.system_prompt = None;
+                    } else {
+                        conversation.set_system(rendered_system_prompt);
+                    }
                     session_info.caps = cap_names.clone();
-                    println!("\nAll caps removed.\n");
+                    if cap_names.is_empty() {
+                        println!("\nAll caps removed.\n");
+                    } else {
+                        print!("\nActive caps: ");
+                        for (i, cap) in cap_names.iter().enumerate() {
+                            if i > 0 {
+                                print!(" ");
+                            }
+                            print_cap_badge(cap)?;
+                        }
+                        println!("\n");
+                    }
                 }
                 "create" => {
                     if let Some(name) = arg {
