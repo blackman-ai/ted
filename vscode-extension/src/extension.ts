@@ -140,6 +140,60 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  context.subscriptions.push(
+    vscode.commands.registerCommand('ted.attachSession', async () => {
+      if (!tedRunner) return;
+
+      try {
+        const sessions = await tedRunner.listRecentSessions(20);
+        if (sessions.length === 0) {
+          vscode.window.showInformationMessage('Ted: No recent sessions found');
+          return;
+        }
+
+        const selected = await vscode.window.showQuickPick(
+          sessions.map((session) => ({
+            label: `${session.id}  ${session.summary}`,
+            description: `${session.date} • ${session.directory}`,
+            session,
+          })),
+          { placeHolder: 'Select a Ted session to attach in VS Code' }
+        );
+
+        if (!selected) return;
+
+        tedRunner.setResumeSession(selected.session.id);
+        const metadata = await tedRunner.getSessionAttachMetadata(selected.session.id);
+        const caps = Array.isArray(metadata?.capabilities?.caps)
+          ? metadata.capabilities.caps.join(', ')
+          : 'unknown';
+        const model = metadata?.capabilities?.model || 'unknown';
+        vscode.window.showInformationMessage(
+          `Ted: Attached to session ${selected.session.id} (model: ${model}, caps: ${caps})`
+        );
+      } catch (error: any) {
+        vscode.window.showErrorMessage(`Ted attach failed: ${error?.message || error}`);
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('ted.resumeInCli', async () => {
+      if (!tedRunner) return;
+      const currentSessionId = tedRunner.sessionId;
+      if (!currentSessionId) {
+        vscode.window.showWarningMessage(
+          'No active Ted session in VS Code. Use "Ted: Attach Session" first.'
+        );
+        return;
+      }
+
+      const terminal = vscode.window.createTerminal('Ted CLI');
+      terminal.show(true);
+      terminal.sendText(`ted chat --resume ${currentSessionId}`);
+    })
+  );
+
   // Show status bar item
   const statusBarItem = vscode.window.createStatusBarItem(
     vscode.StatusBarAlignment.Right,

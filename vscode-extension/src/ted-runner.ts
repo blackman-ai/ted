@@ -9,6 +9,8 @@ import * as fs from 'fs';
 
 export interface TedEvent {
   type: string;
+  session_id?: string;
+  data?: any;
   content?: string;
   tool_name?: string;
   tool_input?: any;
@@ -20,6 +22,13 @@ export interface TedEvent {
 
 export type TedStatus = 'idle' | 'running' | 'error';
 
+export interface TedSessionSummary {
+  id: string;
+  date: string;
+  directory: string;
+  summary: string;
+}
+
 export class TedRunner {
   private process: cp.ChildProcess | null = null;
   private context: vscode.ExtensionContext;
@@ -27,9 +36,19 @@ export class TedRunner {
   private eventListeners: ((event: TedEvent) => void)[] = [];
   private outputListeners: ((text: string) => void)[] = [];
   private _status: TedStatus = 'idle';
+  private activeSessionId: string | null = null;
+  private activeSessionMetadata: any | null = null;
 
   constructor(context: vscode.ExtensionContext) {
     this.context = context;
+  }
+
+  get sessionId(): string | null {
+    return this.activeSessionId;
+  }
+
+  get sessionMetadata(): any | null {
+    return this.activeSessionMetadata;
   }
 
   get status(): TedStatus {
@@ -142,7 +161,7 @@ export class TedRunner {
   /**
    * Build command arguments based on configuration
    */
-  private buildArgs(prompt: string): string[] {
+  private buildArgs(prompt: string, resumeSessionId?: string): string[] {
     const config = vscode.workspace.getConfiguration('ted');
     const args: string[] = [];
 
@@ -172,6 +191,10 @@ export class TedRunner {
     const trustMode = config.get<boolean>('trustMode');
     if (trustMode) {
       args.push('--trust');
+    }
+
+    if (resumeSessionId) {
+      args.push('--resume', resumeSessionId);
     }
 
     // The prompt
@@ -204,7 +227,7 @@ export class TedRunner {
   /**
    * Run Ted with a prompt
    */
-  async run(prompt: string): Promise<void> {
+  async run(prompt: string, resumeSessionId?: string): Promise<void> {
     if (this.process) {
       vscode.window.showWarningMessage('Ted is already running. Stop it first.');
       return;
@@ -232,7 +255,8 @@ export class TedRunner {
       return;
     }
 
-    const args = this.buildArgs(prompt);
+    const effectiveResumeId = resumeSessionId || this.activeSessionId || undefined;
+    const args = this.buildArgs(prompt, effectiveResumeId);
     const env = this.buildEnv();
 
     console.log(`[Ted] Running: ${tedPath} ${args.join(' ')}`);
@@ -305,6 +329,12 @@ export class TedRunner {
    */
   private handleEvent(event: TedEvent) {
     console.log('[Ted] Event:', event.type);
+    if (event.session_id) {
+      this.activeSessionId = event.session_id;
+    }
+    if (event.type === 'session_metadata' && event.data) {
+      this.activeSessionMetadata = event.data;
+    }
     this.emitEvent(event);
 
     // Special handling for certain events
@@ -348,6 +378,62 @@ export class TedRunner {
   clearHistory(): void {
     // History is managed per-process, so just ensure we're clean
     this.stop();
+    this.activeSessionMetadata = null;
+  }
+
+  setResumeSession(sessionId: string | null): void {
+    this.activeSessionId = sessionId;
+    this.activeSessionMetadata = null;
+  }
+
+  private execTedCommand(args: string[]): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const tedPath = this.findTedBinary();
+      if (!tedPath) {
+        reject(new Error('Ted binary not found'));
+        return;
+      }
+
+      const projectRoot = this.getProjectRoot() || os.homedir();
+      cp.execFile(tedPath, args, { cwd: projectRoot, env: this.buildEnv() }, (err, stdout, stderr) => {
+        if (err) {
+          reject(new Error(stderr?.toString().trim() || err.message));
+          return;
+        }
+        resolve(stdout.toString());
+      });
+    });
+  }
+
+  async listRecentSessions(limit = 20): Promise<TedSessionSummary[]> {
+    const output = await this.execTedCommand(['history', 'list', '--limit', String(limit)]);
+    const sessions: TedSessionSummary[] = [];
+
+    for (const line of output.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('Recent sessions') || trimmed.startsWith('No sessions')) {
+        continue;
+      }
+
+      const match = trimmed.match(/^([0-9a-f]{8})\s*\|\s*([^|]+)\|\s*([^|]+)\|\s*(.+)$/i);
+      if (!match) {
+        continue;
+      }
+
+      sessions.push({
+        id: match[1],
+        date: match[2].trim(),
+        directory: match[3].trim(),
+        summary: match[4].trim(),
+      });
+    }
+
+    return sessions;
+  }
+
+  async getSessionAttachMetadata(sessionId: string): Promise<any> {
+    const output = await this.execTedCommand(['history', 'attach', sessionId]);
+    return JSON.parse(output);
   }
 
   /**

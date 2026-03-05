@@ -65,6 +65,8 @@ Open VS Code settings and search for "Ted" to configure:
 | Ted: Stop Current Task | - | Stop Ted if it's running |
 | Ted: Clear Conversation History | - | Clear the chat history |
 | Ted: Set AI Provider | - | Change the AI provider |
+| Ted: Attach Session | - | Attach VS Code to an existing Ted session |
+| Ted: Resume Session In CLI | - | Open an integrated terminal and resume the active Ted session |
 
 ## License
 

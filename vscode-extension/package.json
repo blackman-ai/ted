@@ -59,6 +59,14 @@
       {
         "command": "ted.setProvider",
         "title": "Ted: Set AI Provider"
+      },
+      {
+        "command": "ted.attachSession",
+        "title": "Ted: Attach Session"
+      },
+      {
+        "command": "ted.resumeInCli",
+        "title": "Ted: Resume Session In CLI"
       }
     ],
     "keybindings": [
@@ -116,6 +124,16 @@
           "command": "ted.clearHistory",
           "when": "view == ted.chatView",
           "group": "navigation"
+        },
+        {
+          "command": "ted.attachSession",
+          "when": "view == ted.chatView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "ted.resumeInCli",
+          "when": "view == ted.chatView",
+          "group": "navigation@2"
         }
       ]
     },
